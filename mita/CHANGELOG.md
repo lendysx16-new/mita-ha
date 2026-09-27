@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.38.0-6
+
+- Added a browser-friendly subscription landing page at the existing `/sub/<token>` URL.
+- Added Open in Clash Mi and Open in Clash deep links with X-HWID enabled automatically.
+- Added Copy link and Clash Mi download links for macOS, Windows, iOS, and Android.
+- Kept subscription clients backward-compatible through Accept-based HTML/YAML content negotiation.
+- Added `?raw=1` to force raw YAML in a browser.
+- Bundled the frontend as one SSR HTML file using Vue 3 from jsDelivr.
+
 ## 3.38.0-5
 
 - Format Last active timestamps using the browser locale instead of showing raw ISO strings.
