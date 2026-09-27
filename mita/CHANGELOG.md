@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.38.0-12
+
+- Added a dark emerald gradient theme to the public subscription landing page.
+- Added subtle glass/blur, emerald accents, and stronger mobile visual hierarchy.
+
 ## 3.38.0-11
 
 - Detect the subscription-page visitor OS from the browser User-Agent.
