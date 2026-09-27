@@ -1,7 +1,7 @@
 name: Mita (mieru server)
-version: "3.38.0-1"
+version: "3.38.0-2"
 slug: mita
-description: "Mita server for the mieru proxy protocol"
+description: "Mita server for the mieru proxy protocol with local admin UI and subscriptions"
 url: "https://github.com/lendysx16-new/mita-ha"
 arch:
   - amd64
@@ -9,10 +9,16 @@ arch:
 startup: services
 boot: auto
 init: false
+ingress: true
+ingress_port: 8098
+panel_icon: mdi:account-network
+panel_admin: true
 ports:
   "2022/tcp": 2022
+  "8099/tcp": 8099
 ports_description:
   "2022/tcp": "Mieru / mita TCP"
+  "8099/tcp": "Subscription HTTP server (reverse proxy only /sub/* through Caddy)"
 options:
   users:
     - username: "change-me"
@@ -21,6 +27,9 @@ options:
   prefer_ipv4: true
   allow_private_ip: false
   allow_loopback_ip: false
+  public_mieru_host: "me.lendysx16.ru"
+  public_mieru_port: 8443
+  subscription_base_url: "https://me.lendysx16.ru"
 schema:
   users:
     - username: str
@@ -29,3 +38,6 @@ schema:
   prefer_ipv4: bool
   allow_private_ip: bool
   allow_loopback_ip: bool
+  public_mieru_host: str
+  public_mieru_port: "int(1,65535)"
+  subscription_base_url: url
