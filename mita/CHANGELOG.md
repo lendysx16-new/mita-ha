@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.38.0-10
+
+- Added direct latest GitHub Release downloads for Clash Mi, Karing, FlClash, and Clash Verge Rev where App Store links are not available.
+- Added release-asset resolution on the subscription server, with a short cache and redirect to the matching GitHub asset.
+- Activity timestamps now default to localized relative time via `Intl.RelativeTimeFormat`.
+- Clicking an activity timestamp toggles between relative and exact localized date/time.
+
 ## 3.38.0-9
 
 - Switched traffic timestamps to `Intl.DateTimeFormat` using the browser locale.
