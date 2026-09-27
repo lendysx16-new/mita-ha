@@ -68,7 +68,8 @@ Opening the subscription URL in a browser shows a mobile-first landing page. It 
 - automatic `xhwid=true` for Clash Mi and Karing, which support HWID subscription headers;
 - a **Copy link** button;
 - download links that change with the selected client and only show the platforms that client publishes;
-- direct latest GitHub Release installers for desktop/Android where there is no App Store link. The add-on resolves the latest matching release asset at click time and redirects to GitHub.
+- direct latest GitHub Release installers for desktop/Android where there is no App Store link. The add-on resolves the latest matching release asset at click time and redirects to GitHub;
+- browser User-Agent platform detection, so the landing page shows downloads for the visitor's current OS first and hides the other platforms behind an **Other platforms** disclosure.
 
 The same `/sub/<token>` URL still returns YAML to ClashMi and other clients because they request it as a subscription instead of HTML. Add `?raw=1` to force the YAML response in a browser.
 
