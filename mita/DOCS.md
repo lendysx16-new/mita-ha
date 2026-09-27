@@ -13,7 +13,10 @@ The admin UI is not published as a normal host port. It is served through Home A
 - choose per-user LAN/loopback access;
 - rotate subscription tokens;
 - copy subscription URLs;
-- configure the public Mieru hostname and port.
+- configure the public Mieru hostname and port;
+- view per-user traffic in a separate **Traffic** tab (24 hours, 7 days, and 30 days, split into download/upload).
+
+Traffic data comes from Mita's native per-user metrics. The Web UI refreshes it on demand and every 30 seconds while the Traffic tab is open. Metrics are stored under `/data/mita-state` so they survive normal add-on restarts and future container updates.
 
 User changes are applied with `mita reload`; the app does not need to be restarted.
 
