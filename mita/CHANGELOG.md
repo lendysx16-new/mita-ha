@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.38.0-4
+
+- Added HWID-aware device registration behind the existing per-user subscription URL.
+- Added a Devices tab with per-user device limits, device metadata, and device removal.
+- Added backward-compatible legacy credentials so existing imported profiles continue working during migration.
+- Added the option to disable legacy access after at least one HWID device has registered.
+- Added separate Mieru credentials per device and grouped device traffic under the parent user.
+- Added Remnawave-compatible HWID response headers for unsupported clients and reached device limits.
+
 ## 3.38.0-3
 
 - Added a separate Traffic tab to the Home Assistant Ingress UI.
