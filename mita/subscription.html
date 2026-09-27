@@ -66,8 +66,10 @@ createApp({
     const copied = ref(false);
 
     const schemeUrl = scheme => {
+      const rawUrl = new URL(data.url);
+      rawUrl.searchParams.set('raw', '1');
       const params = new URLSearchParams({
-        url: data.url,
+        url: rawUrl.toString(),
         name: 'Mieru ' + data.username,
         xhwid: 'true'
       });
