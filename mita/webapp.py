@@ -497,6 +497,17 @@ mode: rule
 log-level: info
 ipv6: true
 
+# Use Runet Freedom geodata directly in Mihomo-compatible clients.
+# In Rule mode, blocked Russian destinations go through Mieru and
+# everything else stays direct.
+geodata-mode: true
+geodata-loader: memconservative
+geo-auto-update: true
+geo-update-interval: 6
+geox-url:
+  geosite: "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat"
+  geoip: "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geoip.dat"
+
 proxies:
   - name: {yaml_q(name)}
     type: mieru
@@ -513,10 +524,11 @@ proxy-groups:
     type: select
     proxies:
       - {yaml_q(name)}
-      - DIRECT
 
 rules:
-  - MATCH,PROXY
+  - GEOSITE,ru-blocked,PROXY
+  - GEOIP,ru-blocked,PROXY,no-resolve
+  - MATCH,DIRECT
 """
 
 
