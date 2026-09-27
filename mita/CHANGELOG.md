@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.38.0-8
+
+- Reworked the subscription landing page as a mobile-first layout.
+- Added a client selector for Clash Mi, Karing, FlClash, Clash Verge Rev, and generic Clash/Mihomo clients.
+- Download links now change with the selected client and platform support.
+- Added verified app deep links for Clash Mi, Karing, and FlClash.
+- HWID is enabled automatically only for clients that support it.
+
 ## 3.38.0-7
 
 - Hardened HTML/YAML negotiation: browser landing pages are detected using Fetch Metadata instead of Accept alone.
