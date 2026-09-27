@@ -686,7 +686,7 @@ input{font:inherit;padding:10px 12px;border:1px solid color-mix(in srgb,CanvasTe
 button:disabled{opacity:.55;cursor:default}button.secondary{background:color-mix(in srgb,CanvasText 12%,Canvas)}button.danger{background:#d64b4b}.actions{display:flex;gap:8px;flex-wrap:wrap}
 .section-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.section-head h2{margin-right:auto}.traffic-pair{white-space:nowrap}.traffic-pair span{display:block}
 .device-user{border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent);padding:16px 0}.device-user:first-child{border-top:0}.device-settings{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:10px 0}.device-settings label{min-width:150px}.device-list{margin-top:12px}.device-meta{font-size:12px;opacity:.7}.legacy-note{font-size:12px;opacity:.7}
-.traffic-parent-row td{padding-top:14px;padding-bottom:14px}.traffic-parent-row td:first-child{white-space:nowrap}.traffic-toggle{display:inline-flex;align-items:center;gap:7px;background:transparent;color:CanvasText;padding:0;border:0;font-weight:700}.traffic-toggle .chevron{display:inline-block;width:14px;transition:transform .15s ease}.traffic-toggle.open .chevron{transform:rotate(90deg)}.traffic-count{font-size:12px;opacity:.55;font-weight:500}.child-row td{background:color-mix(in srgb,CanvasText 3%,Canvas)}.child-row td:first-child{padding-left:36px}.traffic-spacer td{height:18px;padding:0;border:0;background:Canvas}
+.traffic-parent-row td{padding-top:14px;padding-bottom:14px}.traffic-parent-row td:first-child{white-space:nowrap}.traffic-toggle{display:inline-flex;align-items:center;gap:7px;background:transparent;color:CanvasText;padding:0;border:0;font-weight:700}.traffic-toggle .chevron{display:inline-block;width:14px;transition:transform .15s ease}.traffic-toggle.open .chevron{transform:rotate(90deg)}.traffic-count{font-size:12px;opacity:.55;font-weight:500}.child-row td{background:color-mix(in srgb,CanvasText 3%,Canvas)}.child-row td:first-child{padding-left:36px}.traffic-spacer td{height:18px;padding:0;border:0;background:Canvas}.timestamp-toggle{background:transparent;color:CanvasText;padding:0;border:0;border-bottom:1px dashed color-mix(in srgb,CanvasText 35%,transparent);border-radius:0;white-space:nowrap;font-weight:400}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent)}
 code{font-size:12px;word-break:break-all}@media(max-width:700px){.grid{grid-template-columns:1fr}thead{display:none}tr{display:block;padding:10px 0}td{display:block;border:0;padding:5px 0}.traffic-table thead{display:table-header-group}.traffic-table tr{display:table-row}.traffic-table td{display:table-cell;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent);padding:9px 6px}.traffic-table{font-size:12px}.traffic-table th{padding:9px 6px}}
 </style>
@@ -754,6 +754,7 @@ function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;',
 function message(s){$('#msg').textContent=s;setTimeout(()=>{$('#msg').textContent=''},4000)}
 let trafficTimer=null;
 const openTrafficUsers=new Set();
+const absoluteTimeKeys=new Set();
 
 function setTab(id){
   document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===id));
@@ -776,11 +777,57 @@ const dateTimeFormatter=new Intl.DateTimeFormat(navigator.languages||navigator.l
 const timeFormatter=new Intl.DateTimeFormat(navigator.languages||navigator.language,{
   timeStyle:'medium'
 });
+const relativeTimeFormatter=new Intl.RelativeTimeFormat(navigator.languages||navigator.language,{
+  numeric:'auto'
+});
 
 function displayTime(value){
   if(!value||value==='-')return '-';
   const d=new Date(value);
   return Number.isNaN(d.getTime())?value:dateTimeFormatter.format(d);
+}
+
+function displayRelativeTime(value){
+  if(!value||value==='-')return '-';
+  const d=new Date(value);
+  if(Number.isNaN(d.getTime()))return value;
+
+  const diff=d.getTime()-Date.now();
+  const abs=Math.abs(diff);
+  const units=[
+    ['year',365*24*60*60*1000],
+    ['month',30*24*60*60*1000],
+    ['week',7*24*60*60*1000],
+    ['day',24*60*60*1000],
+    ['hour',60*60*1000],
+    ['minute',60*1000],
+    ['second',1000]
+  ];
+  for(const [unit,size] of units){
+    if(abs>=size||unit==='second'){
+      return relativeTimeFormatter.format(Math.round(diff/size),unit);
+    }
+  }
+  return relativeTimeFormatter.format(0,'second');
+}
+
+function timeControl(value,key){
+  if(!value||value==='-')return '-';
+  const absolute=absoluteTimeKeys.has(key);
+  const text=absolute?displayTime(value):displayRelativeTime(value);
+  return '<button class="timestamp-toggle" data-time-key="'+esc(key)+'" data-time-value="'+esc(value)+'" title="Click to toggle exact time">'+esc(text)+'</button>';
+}
+
+function bindTimeToggles(root=document){
+  root.querySelectorAll('[data-time-key]').forEach(button=>{
+    button.onclick=()=>{
+      const key=button.dataset.timeKey;
+      const value=button.dataset.timeValue;
+      if(absoluteTimeKeys.has(key))absoluteTimeKeys.delete(key);
+      else absoluteTimeKeys.add(key);
+      button.textContent=absoluteTimeKeys.has(key)?displayTime(value):displayRelativeTime(value);
+    };
+  });
 }
 
 function displayClock(value=new Date()){
@@ -794,7 +841,7 @@ function renderDevices(users){
       u.devices.map(d=>'<tr>'+
         '<td><strong>'+esc(d.name)+'</strong><div class="device-meta">'+esc([d.os,d.os_version].filter(Boolean).join(' '))+'</div></td>'+
         '<td><code>'+esc(d.hwid)+'</code></td>'+
-        '<td>'+esc(displayTime(d.last_seen))+'</td>'+
+        '<td>'+timeControl(d.last_seen,'device:'+u.username+':'+d.id)+'</td>'+
         '<td><button class="danger" data-remove-device="'+esc(d.id)+'" data-user="'+esc(u.username)+'">Remove</button></td></tr>'
       ).join('')+'</tbody></table>':'<div class="muted" style="margin-top:12px">No HWID devices registered yet. Refresh the subscription from a supported client to register one.</div>';
     return '<div class="device-user" data-device-card="'+esc(u.username)+'">'+
@@ -809,6 +856,7 @@ function renderDevices(users){
   }).join('');
   document.querySelectorAll('[data-save-devices]').forEach(b=>b.onclick=()=>saveDeviceSettings(b.dataset.saveDevices));
   document.querySelectorAll('[data-remove-device]').forEach(b=>b.onclick=()=>removeDevice(b.dataset.user,b.dataset.removeDevice));
+  bindTimeToggles($('#deviceUsers'));
 }
 
 async function saveDeviceSettings(username){
@@ -861,13 +909,13 @@ async function loadTraffic(){
         '<td><button class="traffic-toggle '+(open?'open':'')+'" data-traffic-toggle="'+esc(username)+'" aria-expanded="'+(open?'true':'false')+'">'+
           '<span class="chevron">›</span><span>'+esc(username)+'</span><span class="traffic-count">'+childCount+'</span>'+
         '</button></td>'+
-        '<td>'+esc(displayTime(u.last_active))+'</td>'+
+        '<td>'+timeControl(u.last_active,'traffic:'+username)+'</td>'+
         '<td>'+trafficPair(u.day_down,u.day_up)+'</td>'+
         '<td>'+trafficPair(u.week_down,u.week_up)+'</td>'+
         '<td>'+trafficPair(u.month_down,u.month_up)+'</td></tr>';
       const children=(u.children||[]).map(d=>'<tr class="child-row" data-traffic-child="'+esc(username)+'" '+(open?'':'hidden')+'>'+
         '<td>'+esc(d.name)+(d.kind==='legacy'?' <span class="muted">(legacy)</span>':'')+'</td>'+
-        '<td>'+esc(displayTime(d.last_active))+'</td>'+
+        '<td>'+timeControl(d.last_active,'traffic:'+username+':'+String(d.device_id||d.username||d.name))+'</td>'+
         '<td>'+trafficPair(d.day_down,d.day_up)+'</td>'+
         '<td>'+trafficPair(d.week_down,d.week_up)+'</td>'+
         '<td>'+trafficPair(d.month_down,d.month_up)+'</td></tr>').join('');
@@ -877,6 +925,7 @@ async function loadTraffic(){
     document.querySelectorAll('[data-traffic-toggle]').forEach(b=>{
       b.onclick=()=>toggleTrafficUser(b.dataset.trafficToggle);
     });
+    bindTimeToggles($('#traffic'));
     $('#trafficUpdated').textContent='Updated '+displayClock()+'. Rolling counters from mita.';
   }catch(e){
     $('#trafficUpdated').textContent='Unable to load traffic: '+e.message;
