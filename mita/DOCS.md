@@ -61,12 +61,13 @@ Then each user gets a URL like:
 https://me.lendysx16.ru/sub/<random-token>
 ```
 
-Opening the subscription URL in a browser shows a minimal landing page. It has:
+Opening the subscription URL in a browser shows a mobile-first landing page. It has:
 
-- **Open in Clash Mi** and **Open in Clash** buttons;
-- automatic `xhwid=true` in the app deep link;
+- a client picker for Clash Mi, Karing, FlClash, Clash Verge Rev, and a generic Clash/Mihomo client;
+- **Open in client** deep links where the client exposes a verified URL scheme;
+- automatic `xhwid=true` for Clash Mi and Karing, which support HWID subscription headers;
 - a **Copy link** button;
-- download links for macOS, Windows, iOS, and Android.
+- download links that change with the selected client and only show the platforms that client publishes.
 
 The same `/sub/<token>` URL still returns YAML to ClashMi and other clients because they request it as a subscription instead of HTML. Add `?raw=1` to force the YAML response in a browser.
 
