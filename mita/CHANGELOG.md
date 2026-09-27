@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.38.0-9
+
+- Switched traffic timestamps to `Intl.DateTimeFormat` using the browser locale.
+- Collapsed per-device traffic under expandable user rows.
+- Added clearer spacing between traffic user groups.
+
 ## 3.38.0-8
 
 - Reworked the subscription landing page as a mobile-first layout.
