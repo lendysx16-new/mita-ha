@@ -14,9 +14,12 @@ The admin UI is not published as a normal host port. It is served through Home A
 - rotate subscription tokens;
 - copy subscription URLs;
 - configure the public Mieru hostname and port;
-- view per-user traffic in a separate **Traffic** tab (24 hours, 7 days, and 30 days, split into download/upload).
+- view per-user traffic in a separate **Traffic** tab (24 hours, 7 days, and 30 days, split into download/upload);
+- automatically register HWID-capable clients as separate devices behind the same subscription URL;
+- set a per-user device limit and remove individual devices;
+- keep legacy credentials enabled during migration, then disable them after all needed devices have registered.
 
-Traffic data comes from Mita's native per-user metrics. The Web UI refreshes it on demand and every 30 seconds while the Traffic tab is open. Metrics are stored under `/data/mita-state` so they survive normal add-on restarts and future container updates.
+Traffic data comes from Mita's native per-user metrics. Device-specific Mieru credentials are grouped back under the parent user in the Traffic tab. The Web UI refreshes it on demand and every 30 seconds while the Traffic tab is open. Metrics are stored under `/data/mita-state` so they survive normal add-on restarts and future container updates.
 
 User changes are applied with `mita reload`; the app does not need to be restarted.
 
@@ -59,6 +62,24 @@ https://me.lendysx16.ru/sub/<random-token>
 ```
 
 ClashMi can use this URL in **Add Profile Link**.
+
+### Device-aware subscriptions
+
+The subscription endpoint understands the Remnawave/Happ HWID headers:
+
+```text
+x-hwid
+x-device-os
+x-ver-os
+x-device-model
+user-agent
+```
+
+When a valid `x-hwid` is present, the add-on creates a private Mieru credential for that device while keeping the same public subscription URL. Device limits are enforced when a new HWID is registered.
+
+For existing installations, **Legacy credential enabled** is on by default. Requests without HWID continue to receive the old username/password, so existing imported profiles keep working. After supported clients refresh their subscription and appear under **Devices**, legacy access can be disabled for that user.
+
+HWID support depends on the client. Some clients, including ClashMi, can have HWID sending disabled by default.
 
 The public subscription endpoint serves only `/sub/<token>`; it has no admin API.
 
