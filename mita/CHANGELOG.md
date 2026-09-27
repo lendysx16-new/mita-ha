@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.38.0-3
+
+- Added a separate Traffic tab to the Home Assistant Ingress UI.
+- Added per-user 24-hour, 7-day, and 30-day download/upload counters from `mita get users`.
+- Added automatic traffic refresh every 30 seconds while the Traffic tab is open.
+- Persisted Mita metrics under `/data/mita-state`.
+
 ## 3.38.0-2
 
 - Added Home Assistant Ingress admin UI.
