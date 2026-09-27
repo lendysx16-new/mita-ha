@@ -1,43 +1,64 @@
 # Mita (mieru server)
 
-This Home Assistant app runs the `mita` server from the mieru project.
+This app runs `mita`, provides a Home Assistant Ingress admin UI, and serves per-user ClashMi subscriptions.
 
-## Configuration
+## Admin UI
 
-Add one or more users in the app configuration:
+Open the app and click **Open Web UI**.
 
-```yaml
-users:
-  - username: gleb
-    password: "use-a-long-random-password"
-log_level: INFO
-prefer_ipv4: true
-allow_private_ip: false
-allow_loopback_ip: false
-```
+The admin UI is not published as a normal host port. It is served through Home Assistant Ingress and lets you:
 
-Set `allow_private_ip: true` only if you also want clients to reach private/LAN IPs through Mita.
+- add users;
+- delete users;
+- choose per-user LAN/loopback access;
+- rotate subscription tokens;
+- copy subscription URLs;
+- configure the public Mieru hostname and port.
 
-The container always listens on `2022/TCP`. Change the **host port** from the app's **Network** section in Home Assistant if you want another LAN port.
+User changes are applied with `mita reload`; the app does not need to be restarted.
 
-## Router
+## Mieru port
 
-Forward a TCP port from your router to the Home Assistant host port.
+The container listens on `2022/TCP`.
 
-Example:
+Example router forwarding:
 
 ```text
 Internet TCP 8443 -> Home Assistant IP TCP 2022
 ```
 
-If you change the Home Assistant host port to `8443`, use:
+Or set the app's host port for `2022/tcp` to `8443` and forward:
 
 ```text
 Internet TCP 8443 -> Home Assistant IP TCP 8443
 ```
 
-Do not forward TCP 443 to this app if TCP 443 is already used by Caddy on the same public IP.
+## Subscription server
 
-## Client
+The subscription HTTP server listens on host port `8099/TCP`.
 
-Use the same public hostname/IP, public TCP port, username and password in a mieru-compatible client such as ClashMi.
+Do **not** forward 8099 directly from the router. Expose only `/sub/*` through your existing Caddy HTTPS endpoint.
+
+Example:
+
+```caddy
+me.lendysx16.ru {
+  handle /sub/* {
+    reverse_proxy http://HOME_ASSISTANT_IP:8099
+  }
+}
+```
+
+Then each user gets a URL like:
+
+```text
+https://me.lendysx16.ru/sub/<random-token>
+```
+
+ClashMi can use this URL in **Add Profile Link**.
+
+The public subscription endpoint serves only `/sub/<token>`; it has no admin API.
+
+## Existing installations
+
+On first start after upgrading, existing users from the Home Assistant app configuration are migrated to `/data/users.json`. After that, the Web UI becomes the user database.
