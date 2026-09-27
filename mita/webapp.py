@@ -271,13 +271,34 @@ def yaml_q(value):
     return json.dumps(str(value), ensure_ascii=False)
 
 
-def subscription_yaml(user):
+def device_display_name(device):
+    model = str(device.get("model", "")).strip()
+    os_name = str(device.get("os", "")).strip()
+    os_version = str(device.get("os_version", "")).strip()
+    if model:
+        return model
+    if os_name and os_version:
+        return f"{os_name} {os_version}"
+    if os_name:
+        return os_name
+    return "Device " + str(device.get("id", ""))[:6]
+
+
+def subscription_yaml(user, credential=None):
     settings = get_settings()
+    credential = credential or {
+        "username": user["username"],
+        "password": user["password"],
+        "label": user["username"],
+    }
     name = "Mieru " + user["username"]
+    label = str(credential.get("label", "")).strip()
+    if label and label != user["username"]:
+        name += " · " + label
     host = settings["public_mieru_host"]
     port = int(settings["public_mieru_port"])
-    username = user["username"]
-    password = user["password"]
+    username = credential["username"]
+    password = credential["password"]
 
     return f"""mixed-port: 7890
 allow-lan: false
@@ -308,6 +329,20 @@ rules:
 """
 
 
+def public_device(device):
+    return {
+        "id": device.get("id", ""),
+        "hwid": device.get("hwid", ""),
+        "name": device_display_name(device),
+        "os": device.get("os", ""),
+        "os_version": device.get("os_version", ""),
+        "model": device.get("model", ""),
+        "user_agent": device.get("user_agent", ""),
+        "first_seen": device.get("first_seen", ""),
+        "last_seen": device.get("last_seen", ""),
+    }
+
+
 def public_user(user):
     base = get_settings().get("subscription_base_url", "").rstrip("/")
     return {
@@ -315,7 +350,104 @@ def public_user(user):
         "allow_private_ip": bool(user.get("allow_private_ip", False)),
         "allow_loopback_ip": bool(user.get("allow_loopback_ip", False)),
         "subscription_url": base + "/sub/" + user["token"],
+        "legacy_enabled": bool(user.get("legacy_enabled", True)),
+        "device_limit": int(user.get("device_limit", 0) or 0),
+        "devices": [public_device(d) for d in user.get("devices", [])],
     }
+
+
+def _header(headers, name, max_len=256):
+    return str(headers.get(name, "") or "").strip()[:max_len]
+
+
+def _new_device(user, hwid, headers):
+    device_id = secrets.token_hex(8)
+    return {
+        "id": device_id,
+        "hwid": hwid,
+        "mita_username": "dev_" + secrets.token_hex(12),
+        "password": secrets.token_urlsafe(24),
+        "os": _header(headers, "x-device-os", 80),
+        "os_version": _header(headers, "x-ver-os", 80),
+        "model": _header(headers, "x-device-model", 120),
+        "user_agent": _header(headers, "user-agent", 200),
+        "first_seen": utc_now(),
+        "last_seen": utc_now(),
+    }
+
+
+def resolve_subscription(token, headers):
+    response_headers = {"x-hwid-active": "true"}
+    raw_hwid = _header(headers, "x-hwid", 128)
+    hwid = raw_hwid if HWID_RE.fullmatch(raw_hwid) else ""
+
+    with LOCK:
+        users = get_users()
+        user = next(
+            (u for u in users if secrets.compare_digest(str(u.get("token", "")), token)),
+            None,
+        )
+        if not user:
+            return None, None, {}, HTTPStatus.NOT_FOUND, "subscription not found"
+
+        if not hwid:
+            response_headers["x-hwid-not-supported"] = "true"
+            if user.get("legacy_enabled", True):
+                credential = {
+                    "username": user["username"],
+                    "password": user["password"],
+                    "label": user["username"],
+                }
+                return user, credential, response_headers, None, None
+            return None, None, response_headers, HTTPStatus.NOT_FOUND, "HWID is required for this subscription"
+
+        devices = user.setdefault("devices", [])
+        device = next((d for d in devices if secrets.compare_digest(str(d.get("hwid", "")), hwid)), None)
+        if device:
+            changed = False
+            metadata = {
+                "os": _header(headers, "x-device-os", 80),
+                "os_version": _header(headers, "x-ver-os", 80),
+                "model": _header(headers, "x-device-model", 120),
+                "user_agent": _header(headers, "user-agent", 200),
+            }
+            for key, value in metadata.items():
+                if value and device.get(key) != value:
+                    device[key] = value
+                    changed = True
+            device["last_seen"] = utc_now()
+            changed = True
+            if changed:
+                write_json(USERS_PATH, users)
+            credential = {
+                "username": device["mita_username"],
+                "password": device["password"],
+                "label": device_display_name(device),
+            }
+            return user, credential, response_headers, None, None
+
+        limit = int(user.get("device_limit", 0) or 0)
+        if limit > 0 and len(devices) >= limit:
+            response_headers["x-hwid-max-devices-reached"] = "true"
+            response_headers["x-hwid-limit"] = "true"
+            return None, None, response_headers, HTTPStatus.NOT_FOUND, "device limit reached"
+
+        device = _new_device(user, hwid, headers)
+        devices.append(device)
+        write_json(USERS_PATH, users)
+        ok, output = reload_mita()
+        if not ok:
+            devices[:] = [d for d in devices if d.get("id") != device["id"]]
+            write_json(USERS_PATH, users)
+            rebuild_mita_config()
+            return None, None, response_headers, HTTPStatus.SERVICE_UNAVAILABLE, output or "failed to register device"
+
+        credential = {
+            "username": device["mita_username"],
+            "password": device["password"],
+            "label": device_display_name(device),
+        }
+        return user, credential, response_headers, None, None
 
 
 PAGE = r"""<!doctype html>
