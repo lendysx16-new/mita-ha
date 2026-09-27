@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.38.0.16
+
+- Added a first-pass Rule-mode routing test using Runet Freedom `geosite.dat` and `geoip.dat`.
+- `GEOSITE,ru-blocked` and `GEOIP,ru-blocked` now route through Mieru; unmatched traffic goes `DIRECT`.
+- Enabled Mihomo geodata auto-update every 6 hours with the memory-conservative loader.
+- Removed `DIRECT` from the selectable PROXY group so the Mieru route cannot be accidentally changed there.
+
 ## 3.38.0.15
 
 - Fixed legacy compatibility with Clash Mi: `x-hwid-not-supported` is now returned only when legacy access is disabled and HWID is actually required.
