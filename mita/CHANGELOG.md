@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.38.0-7
+
+- Hardened HTML/YAML negotiation: browser landing pages are detected using Fetch Metadata instead of Accept alone.
+- Added `?web=1` to explicitly force the landing page and kept `?raw=1` for raw YAML.
+- Clash/Mihomo deep links now use the raw subscription URL explicitly.
+
 ## 3.38.0-6
 
 - Added a browser-friendly subscription landing page at the existing `/sub/<token>` URL.
