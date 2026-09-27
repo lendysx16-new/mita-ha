@@ -267,6 +267,106 @@ def get_mita_user_traffic():
     return parse_mita_users_output(output)
 
 
+def parse_iec_bytes(value):
+    value = str(value or "").strip()
+    if not value or value == "-":
+        return 0
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)(B|KiB|MiB|GiB|TiB|PiB)", value)
+    if not match:
+        return 0
+    scale = {
+        "B": 1,
+        "KiB": 1024,
+        "MiB": 1024 ** 2,
+        "GiB": 1024 ** 3,
+        "TiB": 1024 ** 4,
+        "PiB": 1024 ** 5,
+    }[match.group(2)]
+    return int(float(match.group(1)) * scale)
+
+
+def format_iec_bytes(value):
+    value = int(value)
+    if value < 1024:
+        return f"{value}B"
+    units = ["KiB", "MiB", "GiB", "TiB", "PiB"]
+    size = float(value)
+    for unit in units:
+        size /= 1024.0
+        if size < 1024.0 or unit == units[-1]:
+            return f"{size:.1f}{unit}"
+    return f"{value}B"
+
+
+def latest_activity(values):
+    best_text = "-"
+    best_dt = None
+    for value in values:
+        value = str(value or "").strip()
+        if not value or value == "-":
+            continue
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if best_dt is None or parsed > best_dt:
+            best_dt = parsed
+            best_text = value
+    return best_text
+
+
+def summarize_traffic_rows(rows):
+    fields = ("day_down", "day_up", "week_down", "week_up", "month_down", "month_up")
+    result = {key: format_iec_bytes(sum(parse_iec_bytes(row.get(key)) for row in rows)) for key in fields}
+    result["last_active"] = latest_activity(row.get("last_active") for row in rows)
+    return result
+
+
+def get_traffic_view():
+    raw_rows = get_mita_user_traffic()
+    raw_by_username = {row["username"]: row for row in raw_rows}
+    result = []
+
+    for user in get_users():
+        children = []
+        legacy_row = raw_by_username.get(user["username"])
+        if legacy_row:
+            children.append({"name": "Legacy", "kind": "legacy", **legacy_row})
+
+        for device in user.get("devices", []):
+            row = raw_by_username.get(device.get("mita_username"))
+            if row:
+                children.append({
+                    "name": device_display_name(device),
+                    "kind": "device",
+                    "device_id": device.get("id", ""),
+                    **row,
+                })
+            else:
+                children.append({
+                    "name": device_display_name(device),
+                    "kind": "device",
+                    "device_id": device.get("id", ""),
+                    "username": device.get("mita_username", ""),
+                    "last_active": "-",
+                    "day_down": "0B",
+                    "day_up": "0B",
+                    "week_down": "0B",
+                    "week_up": "0B",
+                    "month_down": "0B",
+                    "month_up": "0B",
+                })
+
+        totals = summarize_traffic_rows(children)
+        result.append({
+            "username": user["username"],
+            **totals,
+            "children": children,
+        })
+
+    return result
+
+
 def yaml_q(value):
     return json.dumps(str(value), ensure_ascii=False)
 
@@ -653,7 +753,7 @@ class AdminHandler(CommonHandler):
             return
         if path == "/api/traffic":
             try:
-                self.send_json(HTTPStatus.OK, {"users": get_mita_user_traffic()})
+                self.send_json(HTTPStatus.OK, {"users": get_traffic_view()})
             except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
                 self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
             return
