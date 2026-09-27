@@ -31,7 +31,9 @@ RUN apk add --no-cache python3
 COPY --from=downloader /tmp/mita-root/usr/bin/mita /usr/bin/mita
 COPY run.sh /run.sh
 COPY webapp.py /app/webapp.py
+COPY subscription.html /app/subscription.html
 
-RUN chmod 0755 /usr/bin/mita /run.sh /app/webapp.py
+RUN chmod 0755 /usr/bin/mita /run.sh /app/webapp.py \
+    && chmod 0644 /app/subscription.html
 
 CMD ["/run.sh"]
