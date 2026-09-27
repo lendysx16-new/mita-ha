@@ -596,7 +596,8 @@ input{font:inherit;padding:10px 12px;border:1px solid color-mix(in srgb,CanvasTe
 .check{display:flex;flex-direction:row;align-items:center;gap:8px}button{font:inherit;padding:9px 12px;border:0;border-radius:9px;cursor:pointer;background:#03a9f4;color:white}
 button:disabled{opacity:.55;cursor:default}button.secondary{background:color-mix(in srgb,CanvasText 12%,Canvas)}button.danger{background:#d64b4b}.actions{display:flex;gap:8px;flex-wrap:wrap}
 .section-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.section-head h2{margin-right:auto}.traffic-pair{white-space:nowrap}.traffic-pair span{display:block}
-.device-user{border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent);padding:16px 0}.device-user:first-child{border-top:0}.device-settings{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:10px 0}.device-settings label{min-width:150px}.device-list{margin-top:12px}.device-meta{font-size:12px;opacity:.7}.child-row td:first-child{padding-left:26px}.legacy-note{font-size:12px;opacity:.7}
+.device-user{border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent);padding:16px 0}.device-user:first-child{border-top:0}.device-settings{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:10px 0}.device-settings label{min-width:150px}.device-list{margin-top:12px}.device-meta{font-size:12px;opacity:.7}.legacy-note{font-size:12px;opacity:.7}
+.traffic-parent-row td{padding-top:14px;padding-bottom:14px}.traffic-parent-row td:first-child{white-space:nowrap}.traffic-toggle{display:inline-flex;align-items:center;gap:7px;background:transparent;color:CanvasText;padding:0;border:0;font-weight:700}.traffic-toggle .chevron{display:inline-block;width:14px;transition:transform .15s ease}.traffic-toggle.open .chevron{transform:rotate(90deg)}.traffic-count{font-size:12px;opacity:.55;font-weight:500}.child-row td{background:color-mix(in srgb,CanvasText 3%,Canvas)}.child-row td:first-child{padding-left:36px}.traffic-spacer td{height:18px;padding:0;border:0;background:Canvas}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent)}
 code{font-size:12px;word-break:break-all}@media(max-width:700px){.grid{grid-template-columns:1fr}thead{display:none}tr{display:block;padding:10px 0}td{display:block;border:0;padding:5px 0}.traffic-table thead{display:table-header-group}.traffic-table tr{display:table-row}.traffic-table td{display:table-cell;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent);padding:9px 6px}.traffic-table{font-size:12px}.traffic-table th{padding:9px 6px}}
 </style>
@@ -663,6 +664,7 @@ async function request(path,opts={}){
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function message(s){$('#msg').textContent=s;setTimeout(()=>{$('#msg').textContent=''},4000)}
 let trafficTimer=null;
+const openTrafficUsers=new Set();
 
 function setTab(id){
   document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===id));
@@ -678,10 +680,23 @@ function trafficPair(down,up){
   return '<div class="traffic-pair"><span>↓ '+esc(down||'-')+'</span><span>↑ '+esc(up||'-')+'</span></div>';
 }
 
+const dateTimeFormatter=new Intl.DateTimeFormat(navigator.languages||navigator.language,{
+  dateStyle:'medium',
+  timeStyle:'medium'
+});
+const timeFormatter=new Intl.DateTimeFormat(navigator.languages||navigator.language,{
+  timeStyle:'medium'
+});
+
 function displayTime(value){
   if(!value||value==='-')return '-';
   const d=new Date(value);
-  return Number.isNaN(d.getTime())?value:d.toLocaleString();
+  return Number.isNaN(d.getTime())?value:dateTimeFormatter.format(d);
+}
+
+function displayClock(value=new Date()){
+  const d=value instanceof Date?value:new Date(value);
+  return Number.isNaN(d.getTime())?'-':timeFormatter.format(d);
 }
 
 function renderDevices(users){
@@ -727,27 +742,53 @@ async function removeDevice(username,deviceId){
   }catch(e){alert(e.message)}
 }
 
+function toggleTrafficUser(username){
+  if(openTrafficUsers.has(username))openTrafficUsers.delete(username);
+  else openTrafficUsers.add(username);
+
+  document.querySelectorAll('[data-traffic-child]').forEach(row=>{
+    if(row.dataset.trafficChild===username)row.hidden=!openTrafficUsers.has(username);
+  });
+  document.querySelectorAll('[data-traffic-toggle]').forEach(button=>{
+    if(button.dataset.trafficToggle===username){
+      const open=openTrafficUsers.has(username);
+      button.classList.toggle('open',open);
+      button.setAttribute('aria-expanded',open?'true':'false');
+    }
+  });
+}
+
 async function loadTraffic(){
   const button=$('#refreshTraffic');
   button.disabled=true;
   try{
     const data=await request('api/traffic');
-    $('#traffic').innerHTML=data.users.length?data.users.map(u=>{
-      const parent='<tr>'+
-        '<td><strong>'+esc(u.username)+'</strong></td>'+
+    $('#traffic').innerHTML=data.users.length?data.users.map((u,index)=>{
+      const username=String(u.username);
+      const open=openTrafficUsers.has(username);
+      const childCount=(u.children||[]).length;
+      const spacer=index?'<tr class="traffic-spacer"><td colspan="5"></td></tr>':'';
+      const parent='<tr class="traffic-parent-row">'+
+        '<td><button class="traffic-toggle '+(open?'open':'')+'" data-traffic-toggle="'+esc(username)+'" aria-expanded="'+(open?'true':'false')+'">'+
+          '<span class="chevron">›</span><span>'+esc(username)+'</span><span class="traffic-count">'+childCount+'</span>'+
+        '</button></td>'+
         '<td>'+esc(displayTime(u.last_active))+'</td>'+
         '<td>'+trafficPair(u.day_down,u.day_up)+'</td>'+
         '<td>'+trafficPair(u.week_down,u.week_up)+'</td>'+
         '<td>'+trafficPair(u.month_down,u.month_up)+'</td></tr>';
-      const children=(u.children||[]).map(d=>'<tr class="child-row">'+
-        '<td>↳ '+esc(d.name)+(d.kind==='legacy'?' <span class="muted">(legacy)</span>':'')+'</td>'+
+      const children=(u.children||[]).map(d=>'<tr class="child-row" data-traffic-child="'+esc(username)+'" '+(open?'':'hidden')+'>'+
+        '<td>'+esc(d.name)+(d.kind==='legacy'?' <span class="muted">(legacy)</span>':'')+'</td>'+
         '<td>'+esc(displayTime(d.last_active))+'</td>'+
         '<td>'+trafficPair(d.day_down,d.day_up)+'</td>'+
         '<td>'+trafficPair(d.week_down,d.week_up)+'</td>'+
         '<td>'+trafficPair(d.month_down,d.month_up)+'</td></tr>').join('');
-      return parent+children;
+      return spacer+parent+children;
     }).join(''):'<tr><td colspan="5" class="muted">No traffic data yet</td></tr>';
-    $('#trafficUpdated').textContent='Updated '+new Date().toLocaleTimeString()+'. Rolling counters from mita.';
+
+    document.querySelectorAll('[data-traffic-toggle]').forEach(b=>{
+      b.onclick=()=>toggleTrafficUser(b.dataset.trafficToggle);
+    });
+    $('#trafficUpdated').textContent='Updated '+displayClock()+'. Rolling counters from mita.';
   }catch(e){
     $('#trafficUpdated').textContent='Unable to load traffic: '+e.message;
   }finally{
