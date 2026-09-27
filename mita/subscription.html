@@ -121,6 +121,9 @@
       color:var(--muted);
       font-size:13px;
     }
+    details{margin-top:12px}
+    summary{cursor:pointer;color:var(--muted);font-size:13px}
+    details .downloads{margin-top:10px}
     @media(min-width:700px){
       body{display:grid;place-items:center;padding:32px}
       .card{padding:22px}
@@ -166,10 +169,14 @@
     </div>
 
     <div class="section">
-      <h2>Download {{ selected.name }}</h2>
-      <div v-if="downloadEntries.length" class="downloads">
+      <div class="client-head">
+        <h2 style="margin:0">Download for {{ platformLabel }}</h2>
+        <span class="badge" v-if="detectedPlatform !== 'unknown'">Detected from browser</span>
+      </div>
+
+      <div v-if="deviceDownloads.length" class="downloads">
         <a
-          v-for="item in downloadEntries"
+          v-for="item in deviceDownloads"
           :key="item.platform"
           class="download"
           :href="item.url"
@@ -180,7 +187,26 @@
           <span>{{ item.note }}</span>
         </a>
       </div>
-      <div v-else class="empty">No official download links for this client.</div>
+      <div v-else class="empty">
+        {{ selected.name }} has no download for {{ platformLabel }}.
+      </div>
+
+      <details v-if="otherDownloads.length">
+        <summary>Other platforms</summary>
+        <div class="downloads">
+          <a
+            v-for="item in otherDownloads"
+            :key="item.platform"
+            class="download"
+            :href="item.url"
+            target="_blank"
+            rel="noopener"
+          >
+            <span>{{ item.platform }}</span>
+            <span>{{ item.note }}</span>
+          </a>
+        </div>
+      </details>
     </div>
   </section>
 </main>
@@ -202,10 +228,10 @@ createApp({
         scheme: 'clashmi',
         hwid: true,
         downloads: [
-          { platform: 'macOS', target: 'macos', note: 'Latest DMG · GitHub' },
-          { platform: 'Windows', target: 'windows', note: 'Latest EXE · GitHub' },
-          { platform: 'iOS', url: 'https://apps.apple.com/us/app/clash-mi/id6744321968', note: 'App Store' },
-          { platform: 'Android', target: 'android-arm64', note: 'Latest ARM64 APK · GitHub' }
+          { os: 'macos', platform: 'macOS', target: 'macos', note: 'Latest DMG · GitHub' },
+          { os: 'windows', platform: 'Windows', target: 'windows', note: 'Latest EXE · GitHub' },
+          { os: 'ios', platform: 'iOS', url: 'https://apps.apple.com/us/app/clash-mi/id6744321968', note: 'App Store' },
+          { os: 'android', platform: 'Android', target: 'android-arm64', note: 'Latest ARM64 APK · GitHub' }
         ]
       },
       {
@@ -214,10 +240,10 @@ createApp({
         scheme: 'karing',
         hwid: true,
         downloads: [
-          { platform: 'macOS', target: 'macos', note: 'Latest DMG · GitHub' },
-          { platform: 'Windows', target: 'windows', note: 'Latest EXE · GitHub' },
-          { platform: 'iOS', url: 'https://apps.apple.com/us/app/karing/id6472431552', note: 'App Store' },
-          { platform: 'Android', target: 'android-arm64', note: 'Latest ARM64 APK · GitHub' }
+          { os: 'macos', platform: 'macOS', target: 'macos', note: 'Latest DMG · GitHub' },
+          { os: 'windows', platform: 'Windows', target: 'windows', note: 'Latest EXE · GitHub' },
+          { os: 'ios', platform: 'iOS', url: 'https://apps.apple.com/us/app/karing/id6472431552', note: 'App Store' },
+          { os: 'android', platform: 'Android', target: 'android-arm64', note: 'Latest ARM64 APK · GitHub' }
         ]
       },
       {
@@ -226,12 +252,12 @@ createApp({
         scheme: 'flclash',
         hwid: false,
         downloads: [
-          { platform: 'macOS · Apple Silicon', target: 'macos-arm64', note: 'Latest DMG · GitHub' },
-          { platform: 'macOS · Intel', target: 'macos-amd64', note: 'Latest DMG · GitHub' },
-          { platform: 'Windows · x64', target: 'windows-amd64', note: 'Latest EXE · GitHub' },
-          { platform: 'Windows · ARM64', target: 'windows-arm64', note: 'Latest EXE · GitHub' },
-          { platform: 'Android · ARM64', target: 'android-arm64', note: 'Latest APK · GitHub' },
-          { platform: 'Android · ARMv7', target: 'android-armv7', note: 'Latest APK · GitHub' }
+          { os: 'macos', platform: 'macOS · Apple Silicon', target: 'macos-arm64', note: 'Latest DMG · GitHub' },
+          { os: 'macos', platform: 'macOS · Intel', target: 'macos-amd64', note: 'Latest DMG · GitHub' },
+          { os: 'windows', platform: 'Windows · x64', target: 'windows-amd64', note: 'Latest EXE · GitHub' },
+          { os: 'windows', platform: 'Windows · ARM64', target: 'windows-arm64', note: 'Latest EXE · GitHub' },
+          { os: 'android', platform: 'Android · ARM64', target: 'android-arm64', note: 'Latest APK · GitHub' },
+          { os: 'android', platform: 'Android · ARMv7', target: 'android-armv7', note: 'Latest APK · GitHub' }
         ]
       },
       {
@@ -240,10 +266,10 @@ createApp({
         scheme: null,
         hwid: false,
         downloads: [
-          { platform: 'macOS · Apple Silicon', target: 'macos-arm64', note: 'Latest DMG · GitHub' },
-          { platform: 'macOS · Intel', target: 'macos-amd64', note: 'Latest DMG · GitHub' },
-          { platform: 'Windows · x64', target: 'windows-amd64', note: 'Latest EXE · GitHub' },
-          { platform: 'Windows · ARM64', target: 'windows-arm64', note: 'Latest EXE · GitHub' }
+          { os: 'macos', platform: 'macOS · Apple Silicon', target: 'macos-arm64', note: 'Latest DMG · GitHub' },
+          { os: 'macos', platform: 'macOS · Intel', target: 'macos-amd64', note: 'Latest DMG · GitHub' },
+          { os: 'windows', platform: 'Windows · x64', target: 'windows-amd64', note: 'Latest EXE · GitHub' },
+          { os: 'windows', platform: 'Windows · ARM64', target: 'windows-arm64', note: 'Latest EXE · GitHub' }
         ]
       },
       {
@@ -257,6 +283,17 @@ createApp({
 
     const selectedId = ref('clashmi');
     const selected = computed(() => clients.find(x => x.id === selectedId.value) || clients[0]);
+
+    const detectedPlatform = data.platform || 'unknown';
+    const platformNames = {
+      ios: 'iOS',
+      android: 'Android',
+      macos: 'macOS',
+      windows: 'Windows',
+      linux: 'Linux',
+      unknown: 'this device'
+    };
+    const platformLabel = computed(() => platformNames[detectedPlatform] || 'this device');
 
     const rawUrl = computed(() => {
       const url = new URL(data.url);
@@ -292,6 +329,16 @@ createApp({
       }))
     );
 
+    const deviceDownloads = computed(() => {
+      if (detectedPlatform === 'unknown') return downloadEntries.value;
+      return downloadEntries.value.filter(item => item.os === detectedPlatform);
+    });
+
+    const otherDownloads = computed(() => {
+      if (detectedPlatform === 'unknown') return [];
+      return downloadEntries.value.filter(item => item.os !== detectedPlatform);
+    });
+
     async function copyLink() {
       try {
         await navigator.clipboard.writeText(data.url);
@@ -316,7 +363,10 @@ createApp({
       copied,
       openUrl,
       genericClashUrl,
-      downloadEntries,
+      detectedPlatform,
+      platformLabel,
+      deviceDownloads,
+      otherDownloads,
       copyLink
     };
   }
