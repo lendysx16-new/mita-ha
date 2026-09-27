@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.38.0.15
+
+- Fixed legacy compatibility with Clash Mi: `x-hwid-not-supported` is now returned only when legacy access is disabled and HWID is actually required.
+- Manual subscription imports keep working while **Legacy credential enabled** is on.
+- HWID-capable deep links still register separate devices normally.
+
 ## 3.38.0.14
 
 - Refined the public subscription page using the emerald palette #092328 / #12544F / #2A835F / #8BBB92.
