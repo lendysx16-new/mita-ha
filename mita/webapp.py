@@ -531,11 +531,33 @@ def find_user_by_token(token):
     )
 
 
-def render_subscription_page(user):
+def detect_platform_from_user_agent(user_agent):
+    ua = str(user_agent or "").lower()
+    if "android" in ua:
+        return "android"
+    if any(token in ua for token in ("iphone", "ipad", "ipod")):
+        return "ios"
+    if "windows" in ua:
+        return "windows"
+    if "macintosh" in ua or "mac os x" in ua:
+        return "macos"
+    if "linux" in ua:
+        return "linux"
+    return "unknown"
+
+
+def render_subscription_page(user, request_headers=None):
     template = SUBSCRIPTION_PAGE_PATH.read_text(encoding="utf-8")
     subscription_url = public_user(user)["subscription_url"]
+    user_agent = ""
+    if request_headers is not None:
+        user_agent = str(request_headers.get("User-Agent", "") or "")
     bootstrap = json.dumps(
-        {"username": user["username"], "url": subscription_url},
+        {
+            "username": user["username"],
+            "url": subscription_url,
+            "platform": detect_platform_from_user_agent(user_agent),
+        },
         ensure_ascii=False,
     ).replace("</", "<\\/")
 
@@ -1280,7 +1302,7 @@ class SubscriptionHandler(CommonHandler):
                 )
                 return
             try:
-                page = render_subscription_page(user)
+                page = render_subscription_page(user, self.headers)
             except OSError as exc:
                 self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
                 return
