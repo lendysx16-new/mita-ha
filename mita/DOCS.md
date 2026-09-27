@@ -19,7 +19,7 @@ The admin UI is not published as a normal host port. It is served through Home A
 - set a per-user device limit and remove individual devices;
 - keep legacy credentials enabled during migration, then disable them after all needed devices have registered.
 
-Traffic data comes from Mita's native per-user metrics. Device-specific Mieru credentials are grouped back under the parent user in the Traffic tab. The Web UI refreshes it on demand and every 30 seconds while the Traffic tab is open. Metrics are stored under `/data/mita-state` so they survive normal add-on restarts and future container updates.
+Traffic data comes from Mita's native per-user metrics. Device-specific Mieru credentials are grouped back under the parent user in the Traffic tab. Activity timestamps are shown as localized relative time (for example, “1 hour ago”); clicking a timestamp toggles the exact localized date/time. The Web UI refreshes it on demand and every 30 seconds while the Traffic tab is open. Metrics are stored under `/data/mita-state` so they survive normal add-on restarts and future container updates.
 
 User changes are applied with `mita reload`; the app does not need to be restarted.
 
@@ -67,7 +67,8 @@ Opening the subscription URL in a browser shows a mobile-first landing page. It 
 - **Open in client** deep links where the client exposes a verified URL scheme;
 - automatic `xhwid=true` for Clash Mi and Karing, which support HWID subscription headers;
 - a **Copy link** button;
-- download links that change with the selected client and only show the platforms that client publishes.
+- download links that change with the selected client and only show the platforms that client publishes;
+- direct latest GitHub Release installers for desktop/Android where there is no App Store link. The add-on resolves the latest matching release asset at click time and redirects to GitHub.
 
 The same `/sub/<token>` URL still returns YAML to ClashMi and other clients because they request it as a subscription instead of HTML. Add `?raw=1` to force the YAML response in a browser.
 
