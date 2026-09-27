@@ -1,5 +1,5 @@
 name: Mita (mieru server)
-version: "3.38.0.14"
+version: "3.38.0.15"
 slug: mita
 description: "Mita server for the mieru proxy protocol with local admin UI and subscriptions"
 url: "https://github.com/lendysx16-new/mita-ha"
