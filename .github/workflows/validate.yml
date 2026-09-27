@@ -1,0 +1,25 @@
+name: Validate add-on
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax
+        run: python3 -m py_compile mita/webapp.py
+      - name: Shell syntax
+        run: bash -n mita/run.sh
+      - name: Parse YAML
+        run: |
+          python3 - <<'PY'
+          import yaml
+          for path in ["repository.yaml", "mita/config.yaml"]:
+              with open(path, "r", encoding="utf-8") as f:
+                  yaml.safe_load(f)
+              print(path, "OK")
+          PY
