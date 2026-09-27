@@ -632,7 +632,6 @@ def resolve_subscription(token, headers):
             return None, None, {}, HTTPStatus.NOT_FOUND, "subscription not found"
 
         if not hwid:
-            response_headers["x-hwid-not-supported"] = "true"
             if user.get("legacy_enabled", True):
                 credential = {
                     "username": user["username"],
@@ -640,6 +639,10 @@ def resolve_subscription(token, headers):
                     "label": user["username"],
                 }
                 return user, credential, response_headers, None, None
+
+            # Only advertise "HWID not supported" when HWID is actually
+            # required. Clash Mi treats this header pair as a hard error.
+            response_headers["x-hwid-not-supported"] = "true"
             return None, None, response_headers, HTTPStatus.NOT_FOUND, "HWID is required for this subscription"
 
         devices = user.setdefault("devices", [])
