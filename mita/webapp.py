@@ -705,13 +705,13 @@ async function loadTraffic(){
     $('#traffic').innerHTML=data.users.length?data.users.map(u=>{
       const parent='<tr>'+
         '<td><strong>'+esc(u.username)+'</strong></td>'+
-        '<td>'+esc(u.last_active||'-')+'</td>'+
+        '<td>'+esc(displayTime(u.last_active))+'</td>'+
         '<td>'+trafficPair(u.day_down,u.day_up)+'</td>'+
         '<td>'+trafficPair(u.week_down,u.week_up)+'</td>'+
         '<td>'+trafficPair(u.month_down,u.month_up)+'</td></tr>';
       const children=(u.children||[]).map(d=>'<tr class="child-row">'+
         '<td>↳ '+esc(d.name)+(d.kind==='legacy'?' <span class="muted">(legacy)</span>':'')+'</td>'+
-        '<td>'+esc(d.last_active||'-')+'</td>'+
+        '<td>'+esc(displayTime(d.last_active))+'</td>'+
         '<td>'+trafficPair(d.day_down,d.day_up)+'</td>'+
         '<td>'+trafficPair(d.week_down,d.week_up)+'</td>'+
         '<td>'+trafficPair(d.month_down,d.month_up)+'</td></tr>').join('');
