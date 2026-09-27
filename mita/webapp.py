@@ -614,18 +614,25 @@ class CommonHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print("[web] %s - %s" % (self.address_string(), fmt % args), flush=True)
 
-    def send_bytes(self, status, content_type, data):
+    def send_bytes(self, status, content_type, data, headers=None):
         if isinstance(data, str):
             data = data.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in (headers or {}).items():
+            self.send_header(name, str(value))
         self.end_headers()
         self.wfile.write(data)
 
-    def send_json(self, status, value):
-        self.send_bytes(status, "application/json; charset=utf-8", json.dumps(value, ensure_ascii=False))
+    def send_json(self, status, value, headers=None):
+        self.send_bytes(
+            status,
+            "application/json; charset=utf-8",
+            json.dumps(value, ensure_ascii=False),
+            headers=headers,
+        )
 
     def read_json(self):
         length = int(self.headers.get("Content-Length", "0"))
@@ -674,6 +681,9 @@ class AdminHandler(CommonHandler):
                     "allow_private_ip": bool(body.get("allow_private_ip", False)),
                     "allow_loopback_ip": bool(body.get("allow_loopback_ip", False)),
                     "token": secrets.token_urlsafe(24),
+                    "legacy_enabled": True,
+                    "device_limit": 0,
+                    "devices": [],
                 }
                 users.append(user)
                 write_json(USERS_PATH, users)
@@ -704,7 +714,54 @@ class AdminHandler(CommonHandler):
         self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_PUT(self):
-        if urllib.parse.urlparse(self.path).path != "/api/settings":
+        path = urllib.parse.urlparse(self.path).path
+
+        m = re.fullmatch(r"/api/users/([^/]+)/device-settings", path)
+        if m:
+            username = urllib.parse.unquote(m.group(1))
+            try:
+                body = self.read_json()
+                with LOCK:
+                    users = get_users()
+                    user = next((u for u in users if u["username"] == username), None)
+                    if not user:
+                        self.send_json(HTTPStatus.NOT_FOUND, {"error": "user not found"})
+                        return
+
+                    limit = int(body.get("device_limit", user.get("device_limit", 0) or 0))
+                    if limit < 0 or limit > 100:
+                        raise ValueError("device_limit must be between 0 and 100")
+                    legacy_enabled = bool(body.get("legacy_enabled", user.get("legacy_enabled", True)))
+                    if not legacy_enabled and not user.get("devices"):
+                        raise ValueError("register at least one HWID device before disabling legacy access")
+                    if limit > 0 and len(user.get("devices", [])) > limit:
+                        raise ValueError("device_limit is lower than the number of registered devices")
+
+                    old_legacy = bool(user.get("legacy_enabled", True))
+                    old_limit = int(user.get("device_limit", 0) or 0)
+                    user["legacy_enabled"] = legacy_enabled
+                    user["device_limit"] = limit
+                    write_json(USERS_PATH, users)
+
+                    if old_legacy != legacy_enabled:
+                        ok, output = reload_mita()
+                        if not ok:
+                            user["legacy_enabled"] = old_legacy
+                            user["device_limit"] = old_limit
+                            write_json(USERS_PATH, users)
+                            rebuild_mita_config()
+                            self.send_json(
+                                HTTPStatus.SERVICE_UNAVAILABLE,
+                                {"error": output or "mita reload failed"},
+                            )
+                            return
+
+                    self.send_json(HTTPStatus.OK, {"user": public_user(user)})
+            except (ValueError, json.JSONDecodeError) as exc:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+
+        if path != "/api/settings":
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         try:
@@ -727,6 +784,44 @@ class AdminHandler(CommonHandler):
 
     def do_DELETE(self):
         path = urllib.parse.urlparse(self.path).path
+
+        m = re.fullmatch(r"/api/users/([^/]+)/devices/([A-Fa-f0-9]{16})", path)
+        if m:
+            username = urllib.parse.unquote(m.group(1))
+            device_id = m.group(2)
+            with LOCK:
+                users = get_users()
+                user = next((u for u in users if u["username"] == username), None)
+                if not user:
+                    self.send_json(HTTPStatus.NOT_FOUND, {"error": "user not found"})
+                    return
+                devices = user.get("devices", [])
+                device = next((d for d in devices if d.get("id") == device_id), None)
+                if not device:
+                    self.send_json(HTTPStatus.NOT_FOUND, {"error": "device not found"})
+                    return
+                original_devices = list(devices)
+                user["devices"] = [d for d in devices if d.get("id") != device_id]
+                if not user.get("legacy_enabled", True) and not user["devices"]:
+                    self.send_json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "enable legacy access before removing the last device"},
+                    )
+                    return
+                write_json(USERS_PATH, users)
+                ok, output = reload_mita()
+                if not ok:
+                    user["devices"] = original_devices
+                    write_json(USERS_PATH, users)
+                    rebuild_mita_config()
+                    self.send_json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": output or "mita reload failed"},
+                    )
+                    return
+                self.send_json(HTTPStatus.OK, {"deleted": device_id, "user": public_user(user)})
+            return
+
         m = re.fullmatch(r"/api/users/([^/]+)", path)
         if not m:
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -752,12 +847,21 @@ class SubscriptionHandler(CommonHandler):
         if not m:
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
-        token = m.group(1)
-        user = next((u for u in get_users() if secrets.compare_digest(str(u.get("token", "")), token)), None)
-        if not user:
-            self.send_json(HTTPStatus.NOT_FOUND, {"error": "subscription not found"})
+
+        user, credential, response_headers, error_status, error_message = resolve_subscription(
+            m.group(1),
+            self.headers,
+        )
+        if error_status is not None:
+            self.send_json(error_status, {"error": error_message}, headers=response_headers)
             return
-        self.send_bytes(HTTPStatus.OK, "text/yaml; charset=utf-8", subscription_yaml(user))
+
+        self.send_bytes(
+            HTTPStatus.OK,
+            "text/yaml; charset=utf-8",
+            subscription_yaml(user, credential),
+            headers=response_headers,
+        )
 
 
 def serve():
