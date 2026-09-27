@@ -1,0 +1,31 @@
+name: Mita (mieru server)
+version: "3.38.0-1"
+slug: mita
+description: "Mita server for the mieru proxy protocol"
+url: "https://github.com/lendysx16-new/mita-ha"
+arch:
+  - amd64
+  - aarch64
+startup: services
+boot: auto
+init: false
+ports:
+  "2022/tcp": 2022
+ports_description:
+  "2022/tcp": "Mieru / mita TCP"
+options:
+  users:
+    - username: "change-me"
+      password: "change-this-password"
+  log_level: "INFO"
+  prefer_ipv4: true
+  allow_private_ip: false
+  allow_loopback_ip: false
+schema:
+  users:
+    - username: str
+      password: password
+  log_level: "list(FATAL|ERROR|WARN|INFO|DEBUG|TRACE)"
+  prefer_ipv4: bool
+  allow_private_ip: bool
+  allow_loopback_ip: bool
