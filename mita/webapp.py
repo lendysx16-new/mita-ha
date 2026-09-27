@@ -8,7 +8,10 @@ import secrets
 import signal
 import subprocess
 import threading
+import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,6 +30,92 @@ USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 HWID_RE = re.compile(r"^[A-Za-z0-9=-]{10,64}$")
 DEVICE_ID_RE = re.compile(r"^[A-Fa-f0-9]{16}$")
 LOCK = threading.RLock()
+RELEASE_CACHE_LOCK = threading.RLock()
+RELEASE_CACHE = {}
+RELEASE_CACHE_TTL = 900
+
+GITHUB_DOWNLOADS = {
+    "clashmi": {
+        "repo": "KaringX/clashmi",
+        "targets": {
+            "macos": r"^clashmi_.*_macos_universal\.dmg$",
+            "windows": r"^clashmi_.*_windows_x64\.exe$",
+            "android-arm64": r"^clashmi_.*_android_arm64-v8a\.apk$",
+            "android-armv7": r"^clashmi_.*_android_armeabi-v7a\.apk$",
+        },
+    },
+    "karing": {
+        "repo": "KaringX/karing",
+        "targets": {
+            "macos": r"^karing_.*_macos_universal\.dmg$",
+            "windows": r"^karing_.*_windows_x64\.exe$",
+            "android-arm64": r"^karing_.*_android_arm64-v8a\.apk$",
+            "android-armv7": r"^karing_.*_android_armeabi-v7a\.apk$",
+        },
+    },
+    "flclash": {
+        "repo": "chen08209/FlClash",
+        "targets": {
+            "macos-arm64": r"^FlClash-.*-macos-arm64\.dmg$",
+            "macos-amd64": r"^FlClash-.*-macos-amd64\.dmg$",
+            "windows-amd64": r"^FlClash-.*-windows-amd64-setup\.exe$",
+            "windows-arm64": r"^FlClash-.*-windows-arm64-setup\.exe$",
+            "android-arm64": r"^FlClash-.*-android-arm64-v8a\.apk$",
+            "android-armv7": r"^FlClash-.*-android-armeabi-v7a\.apk$",
+        },
+    },
+    "verge": {
+        "repo": "clash-verge-rev/clash-verge-rev",
+        "targets": {
+            "macos-arm64": r"^Clash\.Verge_.*_aarch64\.dmg$",
+            "macos-amd64": r"^Clash\.Verge_.*_x64\.dmg$",
+            "windows-amd64": r"^Clash\.Verge_.*_x64-setup\.exe$",
+            "windows-arm64": r"^Clash\.Verge_.*_arm64-setup\.exe$",
+        },
+    },
+}
+
+
+def resolve_github_download(client_id, target_id):
+    client = GITHUB_DOWNLOADS.get(client_id)
+    if not client:
+        raise ValueError("unknown client")
+    pattern = client["targets"].get(target_id)
+    if not pattern:
+        raise ValueError("unknown download target")
+
+    repo = client["repo"]
+    now = time.monotonic()
+    with RELEASE_CACHE_LOCK:
+        cached = RELEASE_CACHE.get(repo)
+        if cached and now - cached["time"] < RELEASE_CACHE_TTL:
+            assets = cached["assets"]
+        else:
+            request = urllib.request.Request(
+                f"https://api.github.com/repos/{repo}/releases/latest",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "mita-ha",
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    payload = json.load(response)
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"GitHub release lookup failed: {exc}") from exc
+
+            assets = {
+                str(asset.get("name", "")): str(asset.get("browser_download_url", ""))
+                for asset in payload.get("assets", [])
+                if asset.get("name") and asset.get("browser_download_url")
+            }
+            RELEASE_CACHE[repo] = {"time": now, "assets": assets}
+
+    regex = re.compile(pattern)
+    for name, url in assets.items():
+        if regex.fullmatch(name):
+            return url
+    raise RuntimeError("matching release asset not found")
 
 
 def load_json(path, default):
@@ -1084,6 +1173,31 @@ class SubscriptionHandler(CommonHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+
+        download_match = re.fullmatch(
+            r"/sub/([A-Za-z0-9_-]{16,})/download/([a-z0-9-]+)/([a-z0-9-]+)",
+            path,
+        )
+        if download_match:
+            token, client_id, target_id = download_match.groups()
+            if not find_user_by_token(token):
+                self.send_json(HTTPStatus.NOT_FOUND, {"error": "subscription not found"})
+                return
+            try:
+                location = resolve_github_download(client_id, target_id)
+            except ValueError as exc:
+                self.send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+                return
+            except RuntimeError as exc:
+                self.send_json(HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
+                return
+
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", location)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+
         m = re.fullmatch(r"/sub/([A-Za-z0-9_-]{16,})", path)
         if not m:
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
