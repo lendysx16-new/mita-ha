@@ -1050,8 +1050,21 @@ class SubscriptionHandler(CommonHandler):
 
         token = m.group(1)
         query = urllib.parse.parse_qs(parsed.query)
-        accept = self.headers.get("Accept", "")
-        wants_html = "text/html" in accept and query.get("raw", ["0"])[0] != "1"
+        force_raw = query.get("raw", ["0"])[0] == "1"
+        force_web = query.get("web", ["0"])[0] == "1"
+        accept = self.headers.get("Accept", "").lower()
+        fetch_mode = self.headers.get("Sec-Fetch-Mode", "").lower()
+        fetch_dest = self.headers.get("Sec-Fetch-Dest", "").lower()
+
+        # Do not use Accept alone here. Many HTTP clients send */*, and some
+        # embedded clients may advertise text/html. Browser top-level
+        # navigations are much more reliably identified by Fetch Metadata.
+        browser_navigation = fetch_mode == "navigate" or fetch_dest == "document"
+        wants_html = force_web or (
+            not force_raw
+            and browser_navigation
+            and "text/html" in accept
+        )
 
         if wants_html:
             user = find_user_by_token(token)
