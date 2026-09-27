@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>@@PAGE_TITLE@@</title>
+  <style>
+    :root{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color-scheme:dark light}
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;background:#111318;color:#f5f7fa;display:grid;place-items:center;padding:24px}
+    main{width:min(560px,100%)}
+    .card{background:#191c23;border:1px solid #2a2f3a;border-radius:20px;padding:24px;box-shadow:0 16px 50px rgba(0,0,0,.22)}
+    h1{font-size:24px;margin:0 0 6px}.muted{color:#9aa3b2}.section{margin-top:24px}
+    .url{display:flex;align-items:center;gap:10px;background:#111318;border:1px solid #303643;border-radius:12px;padding:12px}
+    code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+    .buttons{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+    button,a.button{appearance:none;border:0;border-radius:12px;padding:12px 14px;font:600 14px system-ui;text-align:center;text-decoration:none;cursor:pointer}
+    .primary{background:#f5f7fa;color:#111318}.secondary{background:#272c36;color:#f5f7fa}.copy{background:#272c36;color:#f5f7fa;white-space:nowrap}
+    .downloads{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+    .download{display:flex;justify-content:space-between;align-items:center;background:#15181e;border:1px solid #2a2f3a;border-radius:12px;padding:12px 14px;text-decoration:none;color:inherit}
+    .download small{color:#9aa3b2}
+    .hint{font-size:13px;line-height:1.5;margin-top:12px;color:#9aa3b2}
+    @media(max-width:520px){.buttons,.downloads{grid-template-columns:1fr}.card{padding:18px}}
+  </style>
+</head>
+<body>
+<main id="app">
+  <section class="card">
+    <h1>@@USERNAME_HTML@@</h1>
+    <div class="muted">Mieru subscription</div>
+
+    <div class="section">
+      <div class="url">
+        <code>@@SUBSCRIPTION_URL_HTML@@</code>
+        <button class="copy" @click="copyLink">{{ copied ? 'Copied' : 'Copy link' }}</button>
+      </div>
+
+      <div class="buttons">
+        <a class="button primary" :href="clashMiUrl">Open in Clash Mi</a>
+        <a class="button secondary" :href="clashUrl">Open in Clash</a>
+      </div>
+      <div class="hint">Open buttons add this subscription with X-HWID enabled, so this device can be tracked separately.</div>
+    </div>
+
+    <div class="section">
+      <strong>Download Clash Mi</strong>
+      <div class="downloads">
+        <a class="download" href="https://clashmi.app/download" target="_blank" rel="noopener"><span>macOS</span><small>12+</small></a>
+        <a class="download" href="https://clashmi.app/download" target="_blank" rel="noopener"><span>Windows</span><small>10+</small></a>
+        <a class="download" href="https://apps.apple.com/us/app/clash-mi/id6744321968" target="_blank" rel="noopener"><span>iOS</span><small>App Store</small></a>
+        <a class="download" href="https://clashmi.app/download" target="_blank" rel="noopener"><span>Android</span><small>8+</small></a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>window.__SUBSCRIPTION__=@@BOOTSTRAP_JSON@@;</script>
+<script src="https://cdn.jsdelivr.net/npm/vue@3.5.22/dist/vue.global.prod.js"></script>
+<script>
+const { createApp, ref, computed } = Vue;
+
+createApp({
+  setup() {
+    const data = window.__SUBSCRIPTION__;
+    const copied = ref(false);
+
+    const schemeUrl = scheme => {
+      const params = new URLSearchParams({
+        url: data.url,
+        name: 'Mieru ' + data.username,
+        xhwid: 'true'
+      });
+      return scheme + '://install-config?' + params.toString();
+    };
+
+    const clashMiUrl = computed(() => schemeUrl('clashmi'));
+    const clashUrl = computed(() => schemeUrl('clash'));
+
+    async function copyLink() {
+      try {
+        await navigator.clipboard.writeText(data.url);
+      } catch (_) {
+        const input = document.createElement('textarea');
+        input.value = data.url;
+        input.style.position = 'fixed';
+        input.style.opacity = '0';
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        input.remove();
+      }
+      copied.value = true;
+      setTimeout(() => copied.value = false, 1600);
+    }
+
+    return { copied, clashMiUrl, clashUrl, copyLink };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>
