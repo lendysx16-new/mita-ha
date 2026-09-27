@@ -201,52 +201,57 @@ createApp({
         name: 'Clash Mi',
         scheme: 'clashmi',
         hwid: true,
-        downloads: {
-          macOS: ['https://clashmi.app/download', 'Official download'],
-          Windows: ['https://clashmi.app/download', 'Official download'],
-          iOS: ['https://apps.apple.com/us/app/clash-mi/id6744321968', 'App Store'],
-          Android: ['https://clashmi.app/download', 'Official download']
-        }
+        downloads: [
+          { platform: 'macOS', target: 'macos', note: 'Latest DMG · GitHub' },
+          { platform: 'Windows', target: 'windows', note: 'Latest EXE · GitHub' },
+          { platform: 'iOS', url: 'https://apps.apple.com/us/app/clash-mi/id6744321968', note: 'App Store' },
+          { platform: 'Android', target: 'android-arm64', note: 'Latest ARM64 APK · GitHub' }
+        ]
       },
       {
         id: 'karing',
         name: 'Karing',
         scheme: 'karing',
         hwid: true,
-        downloads: {
-          macOS: ['https://karing.app/download', 'Official download'],
-          Windows: ['https://karing.app/download', 'Official download'],
-          iOS: ['https://apps.apple.com/us/app/karing/id6472431552', 'App Store'],
-          Android: ['https://karing.app/download', 'Official download']
-        }
+        downloads: [
+          { platform: 'macOS', target: 'macos', note: 'Latest DMG · GitHub' },
+          { platform: 'Windows', target: 'windows', note: 'Latest EXE · GitHub' },
+          { platform: 'iOS', url: 'https://apps.apple.com/us/app/karing/id6472431552', note: 'App Store' },
+          { platform: 'Android', target: 'android-arm64', note: 'Latest ARM64 APK · GitHub' }
+        ]
       },
       {
         id: 'flclash',
         name: 'FlClash',
         scheme: 'flclash',
         hwid: false,
-        downloads: {
-          macOS: ['https://github.com/chen08209/FlClash/releases/latest', 'GitHub Releases'],
-          Windows: ['https://github.com/chen08209/FlClash/releases/latest', 'GitHub Releases'],
-          Android: ['https://github.com/chen08209/FlClash/releases/latest', 'GitHub Releases']
-        }
+        downloads: [
+          { platform: 'macOS · Apple Silicon', target: 'macos-arm64', note: 'Latest DMG · GitHub' },
+          { platform: 'macOS · Intel', target: 'macos-amd64', note: 'Latest DMG · GitHub' },
+          { platform: 'Windows · x64', target: 'windows-amd64', note: 'Latest EXE · GitHub' },
+          { platform: 'Windows · ARM64', target: 'windows-arm64', note: 'Latest EXE · GitHub' },
+          { platform: 'Android · ARM64', target: 'android-arm64', note: 'Latest APK · GitHub' },
+          { platform: 'Android · ARMv7', target: 'android-armv7', note: 'Latest APK · GitHub' }
+        ]
       },
       {
         id: 'verge',
         name: 'Clash Verge Rev',
         scheme: null,
         hwid: false,
-        downloads: {
-          macOS: ['https://github.com/clash-verge-rev/clash-verge-rev/releases/latest', 'GitHub Releases'],
-          Windows: ['https://github.com/clash-verge-rev/clash-verge-rev/releases/latest', 'GitHub Releases']
-        }
+        downloads: [
+          { platform: 'macOS · Apple Silicon', target: 'macos-arm64', note: 'Latest DMG · GitHub' },
+          { platform: 'macOS · Intel', target: 'macos-amd64', note: 'Latest DMG · GitHub' },
+          { platform: 'Windows · x64', target: 'windows-amd64', note: 'Latest EXE · GitHub' },
+          { platform: 'Windows · ARM64', target: 'windows-arm64', note: 'Latest EXE · GitHub' }
+        ]
       },
       {
         id: 'generic',
         name: 'Other Clash / Mihomo client',
         scheme: 'clash',
         hwid: false,
-        downloads: {}
+        downloads: []
       }
     ];
 
@@ -271,11 +276,19 @@ createApp({
     const openUrl = computed(() => appUrl(selected.value.scheme));
     const genericClashUrl = computed(() => appUrl('clash'));
 
+    const downloadUrl = target => {
+      const url = new URL(data.url);
+      url.search = '';
+      url.hash = '';
+      url.pathname = url.pathname.replace(/\/$/, '') +
+        '/download/' + encodeURIComponent(selected.value.id) + '/' + encodeURIComponent(target);
+      return url.toString();
+    };
+
     const downloadEntries = computed(() =>
-      Object.entries(selected.value.downloads).map(([platform, value]) => ({
-        platform,
-        url: value[0],
-        note: value[1]
+      selected.value.downloads.map(item => ({
+        ...item,
+        url: item.url || downloadUrl(item.target)
       }))
     );
 
