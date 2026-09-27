@@ -61,7 +61,18 @@ Then each user gets a URL like:
 https://me.lendysx16.ru/sub/<random-token>
 ```
 
-ClashMi can use this URL in **Add Profile Link**.
+Opening the subscription URL in a browser shows a minimal landing page. It has:
+
+- **Open in Clash Mi** and **Open in Clash** buttons;
+- automatic `xhwid=true` in the app deep link;
+- a **Copy link** button;
+- download links for macOS, Windows, iOS, and Android.
+
+The same `/sub/<token>` URL still returns YAML to ClashMi and other clients because they request it as a subscription instead of HTML. Add `?raw=1` to force the YAML response in a browser.
+
+The landing page is a single server-rendered HTML file bundled with the add-on. Vue 3 is loaded from jsDelivr; there is no frontend build step.
+
+ClashMi can also use the URL directly in **Add Profile Link**.
 
 ### Device-aware subscriptions
 
