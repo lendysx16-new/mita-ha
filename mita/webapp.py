@@ -150,17 +150,28 @@ def rebuild_mita_config():
         users = get_users()
         settings = get_settings()
         dns_policy = "PREFER_IPv4" if settings.get("prefer_ipv4", True) else "USE_FIRST_IP"
+        mita_users = []
+        for user in users:
+            access = {
+                "allowPrivateIP": bool(user.get("allow_private_ip", False)),
+                "allowLoopbackIP": bool(user.get("allow_loopback_ip", False)),
+            }
+            if user.get("legacy_enabled", True):
+                mita_users.append({
+                    "name": user["username"],
+                    "password": user["password"],
+                    **access,
+                })
+            for device in user.get("devices", []):
+                mita_users.append({
+                    "name": device["mita_username"],
+                    "password": device["password"],
+                    **access,
+                })
+
         config = {
             "portBindings": [{"port": 2022, "protocol": "TCP"}],
-            "users": [
-                {
-                    "name": u["username"],
-                    "password": u["password"],
-                    "allowPrivateIP": bool(u.get("allow_private_ip", False)),
-                    "allowLoopbackIP": bool(u.get("allow_loopback_ip", False)),
-                }
-                for u in users
-            ],
+            "users": mita_users,
             "loggingLevel": settings.get("log_level", "INFO"),
             "dns": {"dualStack": dns_policy},
         }
