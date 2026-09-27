@@ -566,6 +566,7 @@ input{font:inherit;padding:10px 12px;border:1px solid color-mix(in srgb,CanvasTe
 .check{display:flex;flex-direction:row;align-items:center;gap:8px}button{font:inherit;padding:9px 12px;border:0;border-radius:9px;cursor:pointer;background:#03a9f4;color:white}
 button:disabled{opacity:.55;cursor:default}button.secondary{background:color-mix(in srgb,CanvasText 12%,Canvas)}button.danger{background:#d64b4b}.actions{display:flex;gap:8px;flex-wrap:wrap}
 .section-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.section-head h2{margin-right:auto}.traffic-pair{white-space:nowrap}.traffic-pair span{display:block}
+.device-user{border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent);padding:16px 0}.device-user:first-child{border-top:0}.device-settings{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:10px 0}.device-settings label{min-width:150px}.device-list{margin-top:12px}.device-meta{font-size:12px;opacity:.7}.child-row td:first-child{padding-left:26px}.legacy-note{font-size:12px;opacity:.7}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent)}
 code{font-size:12px;word-break:break-all}@media(max-width:700px){.grid{grid-template-columns:1fr}thead{display:none}tr{display:block;padding:10px 0}td{display:block;border:0;padding:5px 0}.traffic-table thead{display:table-header-group}.traffic-table tr{display:table-row}.traffic-table td{display:table-cell;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent);padding:9px 6px}.traffic-table{font-size:12px}.traffic-table th{padding:9px 6px}}
 </style>
@@ -575,6 +576,7 @@ code{font-size:12px;word-break:break-all}@media(max-width:700px){.grid{grid-temp
 <div class="muted">Admin UI is available through Home Assistant Ingress.</div>
 <nav class="tabs">
 <button class="tab active" data-tab="usersTab">Users</button>
+<button class="tab" data-tab="devicesTab">Devices</button>
 <button class="tab" data-tab="trafficTab">Traffic</button>
 </nav>
 
@@ -593,9 +595,17 @@ code{font-size:12px;word-break:break-all}@media(max-width:700px){.grid{grid-temp
 </div><p><button id="saveSettings">Save settings</button></p></section>
 
 <section class="card"><h2>Users</h2><table>
-<thead><tr><th>User</th><th>Access</th><th>Subscription</th><th></th></tr></thead>
+<thead><tr><th>User</th><th>Access</th><th>Devices</th><th>Subscription</th><th></th></tr></thead>
 <tbody id="users"></tbody>
 </table></section>
+</div>
+
+<div id="devicesTab" class="tab-panel">
+<section class="card">
+<div class="section-head"><h2>Devices</h2></div>
+<div class="muted">The same subscription link can register separate HWID devices. Legacy access stays enabled until you turn it off for a user.</div>
+<div id="deviceUsers"></div>
+</section>
 </div>
 
 <div id="trafficTab" class="tab-panel">
@@ -638,18 +648,75 @@ function trafficPair(down,up){
   return '<div class="traffic-pair"><span>↓ '+esc(down||'-')+'</span><span>↑ '+esc(up||'-')+'</span></div>';
 }
 
+function displayTime(value){
+  if(!value||value==='-')return '-';
+  const d=new Date(value);
+  return Number.isNaN(d.getTime())?value:d.toLocaleString();
+}
+
+function renderDevices(users){
+  $('#deviceUsers').innerHTML=users.map(u=>{
+    const rows=u.devices.length?'<table class="device-list"><thead><tr><th>Device</th><th>HWID</th><th>Last subscription refresh</th><th></th></tr></thead><tbody>'+
+      u.devices.map(d=>'<tr>'+
+        '<td><strong>'+esc(d.name)+'</strong><div class="device-meta">'+esc([d.os,d.os_version].filter(Boolean).join(' '))+'</div></td>'+
+        '<td><code>'+esc(d.hwid)+'</code></td>'+
+        '<td>'+esc(displayTime(d.last_seen))+'</td>'+
+        '<td><button class="danger" data-remove-device="'+esc(d.id)+'" data-user="'+esc(u.username)+'">Remove</button></td></tr>'
+      ).join('')+'</tbody></table>':'<div class="muted" style="margin-top:12px">No HWID devices registered yet. Refresh the subscription from a supported client to register one.</div>';
+    return '<div class="device-user" data-device-card="'+esc(u.username)+'">'+
+      '<div class="section-head"><h3>'+esc(u.username)+'</h3><span class="muted">'+u.devices.length+' registered</span></div>'+
+      '<div class="device-settings">'+
+        '<label>Device limit<input data-device-limit type="number" min="0" max="100" value="'+esc(u.device_limit)+'"><span class="legacy-note">0 = unlimited</span></label>'+
+        '<label class="check"><input data-legacy type="checkbox" '+(u.legacy_enabled?'checked':'')+'>Legacy credential enabled</label>'+
+        '<button data-save-devices="'+esc(u.username)+'">Save</button>'+
+      '</div>'+
+      '<div class="legacy-note">Legacy mode keeps already imported profiles working. Disable it only after all needed devices have appeared here.</div>'+
+      rows+'</div>';
+  }).join('');
+  document.querySelectorAll('[data-save-devices]').forEach(b=>b.onclick=()=>saveDeviceSettings(b.dataset.saveDevices));
+  document.querySelectorAll('[data-remove-device]').forEach(b=>b.onclick=()=>removeDevice(b.dataset.user,b.dataset.removeDevice));
+}
+
+async function saveDeviceSettings(username){
+  const card=[...document.querySelectorAll('[data-device-card]')].find(x=>x.dataset.deviceCard===username);
+  if(!card)return;
+  try{
+    await request('api/users/'+encodeURIComponent(username)+'/device-settings',{method:'PUT',body:JSON.stringify({
+      device_limit:Number(card.querySelector('[data-device-limit]').value||0),
+      legacy_enabled:card.querySelector('[data-legacy]').checked
+    })});
+    await load();message('Device settings saved');
+  }catch(e){alert(e.message)}
+}
+
+async function removeDevice(username,deviceId){
+  if(!confirm('Remove this device? Its current device credential will stop working.'))return;
+  try{
+    await request('api/users/'+encodeURIComponent(username)+'/devices/'+encodeURIComponent(deviceId),{method:'DELETE'});
+    await load();message('Device removed');
+  }catch(e){alert(e.message)}
+}
+
 async function loadTraffic(){
   const button=$('#refreshTraffic');
   button.disabled=true;
   try{
     const data=await request('api/traffic');
-    $('#traffic').innerHTML=data.users.length?data.users.map(u=>'<tr>'+
-      '<td><strong>'+esc(u.username)+'</strong></td>'+
-      '<td>'+esc(u.last_active||'-')+'</td>'+
-      '<td>'+trafficPair(u.day_down,u.day_up)+'</td>'+
-      '<td>'+trafficPair(u.week_down,u.week_up)+'</td>'+
-      '<td>'+trafficPair(u.month_down,u.month_up)+'</td></tr>'
-    ).join(''):'<tr><td colspan="5" class="muted">No traffic data yet</td></tr>';
+    $('#traffic').innerHTML=data.users.length?data.users.map(u=>{
+      const parent='<tr>'+
+        '<td><strong>'+esc(u.username)+'</strong></td>'+
+        '<td>'+esc(u.last_active||'-')+'</td>'+
+        '<td>'+trafficPair(u.day_down,u.day_up)+'</td>'+
+        '<td>'+trafficPair(u.week_down,u.week_up)+'</td>'+
+        '<td>'+trafficPair(u.month_down,u.month_up)+'</td></tr>';
+      const children=(u.children||[]).map(d=>'<tr class="child-row">'+
+        '<td>↳ '+esc(d.name)+(d.kind==='legacy'?' <span class="muted">(legacy)</span>':'')+'</td>'+
+        '<td>'+esc(d.last_active||'-')+'</td>'+
+        '<td>'+trafficPair(d.day_down,d.day_up)+'</td>'+
+        '<td>'+trafficPair(d.week_down,d.week_up)+'</td>'+
+        '<td>'+trafficPair(d.month_down,d.month_up)+'</td></tr>').join('');
+      return parent+children;
+    }).join(''):'<tr><td colspan="5" class="muted">No traffic data yet</td></tr>';
     $('#trafficUpdated').textContent='Updated '+new Date().toLocaleTimeString()+'. Rolling counters from mita.';
   }catch(e){
     $('#trafficUpdated').textContent='Unable to load traffic: '+e.message;
@@ -668,6 +735,7 @@ async function load(){
   $('#users').innerHTML=data.users.map(u=>'<tr>'+
     '<td><strong>'+esc(u.username)+'</strong></td>'+
     '<td>'+(u.allow_private_ip?'LAN ':'')+(u.allow_loopback_ip?'Loopback':'')+'</td>'+
+    '<td>'+u.devices.length+(u.device_limit?' / '+u.device_limit:'')+(u.legacy_enabled?' + legacy':'')+'</td>'+
     '<td><code>'+esc(u.subscription_url)+'</code><div class="actions" style="margin-top:6px">'+
     '<button class="secondary" data-copy="'+esc(u.subscription_url)+'">Copy link</button>'+
     '<button class="secondary" data-rotate="'+esc(u.username)+'">Rotate token</button></div></td>'+
@@ -676,6 +744,7 @@ async function load(){
   document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>copyLink(b.dataset.copy));
   document.querySelectorAll('[data-rotate]').forEach(b=>b.onclick=()=>rotate(b.dataset.rotate));
   document.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>removeUser(b.dataset.delete));
+  renderDevices(data.users);
 }
 async function copyLink(v){await navigator.clipboard.writeText(v);message('Subscription link copied')}
 async function rotate(username){await request('api/users/'+encodeURIComponent(username)+'/rotate-token',{method:'POST',body:'{}'});await load();message('Token rotated')}
