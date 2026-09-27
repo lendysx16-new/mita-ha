@@ -26,8 +26,12 @@ LABEL \
     io.hass.type="app" \
     io.hass.arch="${BUILD_ARCH}"
 
+RUN apk add --no-cache python3
+
 COPY --from=downloader /tmp/mita-root/usr/bin/mita /usr/bin/mita
 COPY run.sh /run.sh
-RUN chmod 0755 /usr/bin/mita /run.sh
+COPY webapp.py /app/webapp.py
+
+RUN chmod 0755 /usr/bin/mita /run.sh /app/webapp.py
 
 CMD ["/run.sh"]
