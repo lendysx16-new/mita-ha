@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.38.0-11
+
+- Detect the subscription-page visitor OS from the browser User-Agent.
+- Show download links for the detected platform first.
+- Move installers for other operating systems under an expandable Other platforms section.
+- Keep architecture-specific choices visible when the browser cannot reliably identify CPU architecture.
+
 ## 3.38.0-10
 
 - Added direct latest GitHub Release downloads for Clash Mi, Karing, FlClash, and Clash Verge Rev where App Store links are not available.
