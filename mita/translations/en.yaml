@@ -1,0 +1,18 @@
+configuration:
+  users:
+    name: Users
+    description: Mita authentication users.
+  log_level:
+    name: Log level
+    description: Mita logging verbosity.
+  prefer_ipv4:
+    name: Prefer IPv4
+    description: Prefer IPv4 for outbound DNS resolution.
+  allow_private_ip:
+    name: Allow private IPs
+    description: Allow proxied users to access private LAN address ranges.
+  allow_loopback_ip:
+    name: Allow loopback IPs
+    description: Allow proxied users to access loopback addresses of the Mita container.
+network:
+  2022/tcp: Mieru / mita TCP server
