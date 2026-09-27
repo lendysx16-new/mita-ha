@@ -2,13 +2,23 @@
 
 Home Assistant app/add-on repository for **mita**, the server component of the [mieru](https://github.com/enfein/mieru) proxy protocol.
 
+Features:
+
+- Mita 3.38.0 for amd64/aarch64
+- TCP transport
+- Home Assistant Ingress admin UI
+- add/delete users without restarting the app
+- per-user LAN access settings
+- per-user ClashMi subscription links
+- public subscription endpoint separated from the private admin UI
+
 ## Install
 
-1. In Home Assistant open **Settings → Apps/Add-ons → App/Add-on Store → Repositories**.
-2. Add this repository URL.
-3. Install **Mita (mieru server)**.
-4. Replace the default username and password before starting.
-5. Configure the host TCP port in the app's **Network** section if needed.
-6. Forward that TCP port on your router to the Home Assistant host.
+1. Add this repository to the Home Assistant App/Add-on Store.
+2. Install **Mita (mieru server)**.
+3. Start the app.
+4. Open its Web UI and manage users there.
+5. Forward the Mieru TCP port on your router.
+6. Reverse proxy only `/sub/*` from HTTPS to the subscription server on port 8099.
 
-The image downloads the official mita 3.38.0 package from the upstream mieru release during build.
+See the app documentation for the Caddy example.
