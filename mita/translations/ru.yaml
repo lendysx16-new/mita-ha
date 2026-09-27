@@ -1,0 +1,18 @@
+configuration:
+  users:
+    name: Пользователи
+    description: Пользователи для авторизации в mita.
+  log_level:
+    name: Уровень логов
+    description: Подробность логирования mita.
+  prefer_ipv4:
+    name: Предпочитать IPv4
+    description: Предпочитать IPv4 при DNS-разрешении исходящих соединений.
+  allow_private_ip:
+    name: Разрешить приватные IP
+    description: Разрешить пользователям доступ к приватным адресам локальной сети через прокси.
+  allow_loopback_ip:
+    name: Разрешить loopback
+    description: Разрешить пользователям доступ к loopback-адресам контейнера Mita.
+network:
+  2022/tcp: TCP-сервер Mieru / mita
