@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.38.0-5
+
+- Format Last active timestamps using the browser locale instead of showing raw ISO strings.
+
 ## 3.38.0-4
 
 - Added HWID-aware device registration behind the existing per-user subscription URL.
