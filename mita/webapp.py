@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import html
 import json
 import os
 import re
@@ -18,6 +19,7 @@ OPTIONS_PATH = DATA_DIR / "options.json"
 USERS_PATH = DATA_DIR / "users.json"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 MITA_CONFIG_PATH = DATA_DIR / "mita-server.json"
+SUBSCRIPTION_PAGE_PATH = Path("/app/subscription.html")
 
 ADMIN_PORT = 8098
 SUB_PORT = 8099
@@ -427,6 +429,34 @@ proxy-groups:
 rules:
   - MATCH,PROXY
 """
+
+
+def find_user_by_token(token):
+    return next(
+        (
+            user
+            for user in get_users()
+            if secrets.compare_digest(str(user.get("token", "")), token)
+        ),
+        None,
+    )
+
+
+def render_subscription_page(user):
+    template = SUBSCRIPTION_PAGE_PATH.read_text(encoding="utf-8")
+    subscription_url = public_user(user)["subscription_url"]
+    bootstrap = json.dumps(
+        {"username": user["username"], "url": subscription_url},
+        ensure_ascii=False,
+    ).replace("</", "<\\/")
+
+    return (
+        template
+        .replace("@@PAGE_TITLE@@", html.escape("Mieru · " + user["username"]))
+        .replace("@@USERNAME_HTML@@", html.escape(user["username"]))
+        .replace("@@SUBSCRIPTION_URL_HTML@@", html.escape(subscription_url))
+        .replace("@@BOOTSTRAP_JSON@@", bootstrap)
+    )
 
 
 def public_device(device):
@@ -1011,14 +1041,37 @@ class AdminHandler(CommonHandler):
 
 class SubscriptionHandler(CommonHandler):
     def do_GET(self):
-        path = urllib.parse.urlparse(self.path).path
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
         m = re.fullmatch(r"/sub/([A-Za-z0-9_-]{16,})", path)
         if not m:
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
 
+        token = m.group(1)
+        query = urllib.parse.parse_qs(parsed.query)
+        accept = self.headers.get("Accept", "")
+        wants_html = "text/html" in accept and query.get("raw", ["0"])[0] != "1"
+
+        if wants_html:
+            user = find_user_by_token(token)
+            if not user:
+                self.send_bytes(
+                    HTTPStatus.NOT_FOUND,
+                    "text/html; charset=utf-8",
+                    "<!doctype html><title>Not found</title><h1>Subscription not found</h1>",
+                )
+                return
+            try:
+                page = render_subscription_page(user)
+            except OSError as exc:
+                self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+                return
+            self.send_bytes(HTTPStatus.OK, "text/html; charset=utf-8", page)
+            return
+
         user, credential, response_headers, error_status, error_message = resolve_subscription(
-            m.group(1),
+            token,
             self.headers,
         )
         if error_status is not None:
