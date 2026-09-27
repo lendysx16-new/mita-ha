@@ -10,6 +10,15 @@ export MITA_INSECURE_UDS="1"
 
 python3 /app/webapp.py --init
 
+# Mita stores rolling per-user metrics in /var/lib/mita/metrics.pb.
+# Home Assistant add-on updates may recreate the container, so keep that
+# directory on /data and link Mita's standard state path to it.
+mkdir -p /data/mita-state
+if [ -e /var/lib/mita ] && [ ! -L /var/lib/mita ]; then
+  rm -rf /var/lib/mita
+fi
+ln -sfn /data/mita-state /var/lib/mita
+
 USER_COUNT="$(python3 - <<'PY'
 import json
 with open("/data/users.json", "r", encoding="utf-8") as f:
