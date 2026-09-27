@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.38.0.13
+
+- Switched the add-on revision format from `3.38.0-N` to `3.38.0.N` so Home Assistant's AwesomeVersion comparison recognizes new revisions as updates.
+- Keeps the bundled Mita upstream version at 3.38.0 while using the fourth numeric component as the add-on revision.
+
 ## 3.38.0-12
 
 - Added a dark emerald gradient theme to the public subscription landing page.
