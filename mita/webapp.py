@@ -8,6 +8,7 @@ import signal
 import subprocess
 import threading
 import urllib.parse
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -21,6 +22,8 @@ MITA_CONFIG_PATH = DATA_DIR / "mita-server.json"
 ADMIN_PORT = 8098
 SUB_PORT = 8099
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+HWID_RE = re.compile(r"^[A-Za-z0-9=-]{10,64}$")
+DEVICE_ID_RE = re.compile(r"^[A-Fa-f0-9]{16}$")
 LOCK = threading.RLock()
 
 
@@ -43,6 +46,34 @@ def write_json(path, value):
 
 def load_options():
     return load_json(OPTIONS_PATH, {})
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def migrate_users():
+    users = get_users()
+    changed = False
+    for user in users:
+        if "legacy_enabled" not in user:
+            user["legacy_enabled"] = True
+            changed = True
+        if "device_limit" not in user:
+            user["device_limit"] = 0
+            changed = True
+        if "devices" not in user or not isinstance(user.get("devices"), list):
+            user["devices"] = []
+            changed = True
+        for device in user["devices"]:
+            if "first_seen" not in device:
+                device["first_seen"] = device.get("last_seen") or utc_now()
+                changed = True
+            if "last_seen" not in device:
+                device["last_seen"] = device["first_seen"]
+                changed = True
+    if changed:
+        write_json(USERS_PATH, users)
 
 
 def normalize_base_url(value):
@@ -72,6 +103,9 @@ def initialize():
                 "allow_private_ip": default_private,
                 "allow_loopback_ip": default_loopback,
                 "token": secrets.token_urlsafe(24),
+                "legacy_enabled": True,
+                "device_limit": 0,
+                "devices": [],
             })
         if not users:
             users = [{
@@ -80,8 +114,13 @@ def initialize():
                 "allow_private_ip": default_private,
                 "allow_loopback_ip": default_loopback,
                 "token": secrets.token_urlsafe(24),
+                "legacy_enabled": True,
+                "device_limit": 0,
+                "devices": [],
             }]
         write_json(USERS_PATH, users)
+
+    migrate_users()
 
     if not SETTINGS_PATH.exists():
         settings = {
