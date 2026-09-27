@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.38.0.14
+
+- Refined the public subscription page using the emerald palette #092328 / #12544F / #2A835F / #8BBB92.
+- Increased emerald gradient transitions while removing heavy shadows and glow.
+- Simplified card radius and hierarchy to keep the client UI minimal.
+
 ## 3.38.0.13
 
 - Switched the add-on revision format from `3.38.0-N` to `3.38.0.N` so Home Assistant's AwesomeVersion comparison recognizes new revisions as updates.
