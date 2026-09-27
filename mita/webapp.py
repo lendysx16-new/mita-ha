@@ -144,6 +144,79 @@ def reload_mita():
         return False, str(exc)
 
 
+def parse_mita_users_output(output):
+    lines = []
+    for raw in output.splitlines():
+        line = raw.strip()
+        if line.startswith("INFO "):
+            line = line[5:].lstrip()
+        if line:
+            lines.append(line)
+
+    header_index = next(
+        (i for i, line in enumerate(lines) if line.startswith("User") and "LastActive" in line),
+        None,
+    )
+    if header_index is None:
+        return []
+
+    header = re.split(r"\s{2,}", lines[header_index])
+    aliases = {
+        "User": "username",
+        "LastActive": "last_active",
+        "1DayDown": "day_down",
+        "1DayDownload": "day_down",
+        "1DayUp": "day_up",
+        "1DayUpload": "day_up",
+        "7DaysDown": "week_down",
+        "7DaysDownload": "week_down",
+        "7DaysUp": "week_up",
+        "7DaysUpload": "week_up",
+        "30DaysDown": "month_down",
+        "30DaysDownload": "month_down",
+        "30DaysUp": "month_up",
+        "30DaysUpload": "month_up",
+    }
+
+    result = []
+    for line in lines[header_index + 1:]:
+        fields = re.split(r"\s{2,}", line)
+        if len(fields) != len(header):
+            continue
+        row = {
+            "username": "",
+            "last_active": "-",
+            "day_down": "-",
+            "day_up": "-",
+            "week_down": "-",
+            "week_up": "-",
+            "month_down": "-",
+            "month_up": "-",
+        }
+        for key, value in zip(header, fields):
+            target = aliases.get(key)
+            if target:
+                row[target] = value
+        if row["username"]:
+            result.append(row)
+    return result
+
+
+def get_mita_user_traffic():
+    proc = subprocess.run(
+        ["/usr/bin/mita", "get", "users"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=10,
+        env=os.environ.copy(),
+    )
+    output = proc.stdout.strip()
+    if proc.returncode != 0:
+        raise RuntimeError(output or "mita get users failed")
+    return parse_mita_users_output(output)
+
+
 def yaml_q(value):
     return json.dumps(str(value), ensure_ascii=False)
 
@@ -205,18 +278,25 @@ PAGE = r"""<!doctype html>
 :root{color-scheme:light dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 body{margin:0;padding:20px;background:Canvas;color:CanvasText}main{max-width:980px;margin:0 auto}
 h1{font-size:24px;margin:0 0 6px}.muted{opacity:.65}.card{border:1px solid color-mix(in srgb,CanvasText 18%,transparent);border-radius:14px;padding:16px;margin:16px 0}
+.tabs{display:flex;gap:8px;margin:18px 0 4px}.tab{background:color-mix(in srgb,CanvasText 10%,Canvas);color:CanvasText}.tab.active{background:#03a9f4;color:white}.tab-panel{display:none}.tab-panel.active{display:block}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}label{display:flex;flex-direction:column;gap:6px;font-size:13px}
 input{font:inherit;padding:10px 12px;border:1px solid color-mix(in srgb,CanvasText 22%,transparent);border-radius:9px;background:Canvas}
 .check{display:flex;flex-direction:row;align-items:center;gap:8px}button{font:inherit;padding:9px 12px;border:0;border-radius:9px;cursor:pointer;background:#03a9f4;color:white}
-button.secondary{background:color-mix(in srgb,CanvasText 12%,Canvas)}button.danger{background:#d64b4b}.actions{display:flex;gap:8px;flex-wrap:wrap}
+button:disabled{opacity:.55;cursor:default}button.secondary{background:color-mix(in srgb,CanvasText 12%,Canvas)}button.danger{background:#d64b4b}.actions{display:flex;gap:8px;flex-wrap:wrap}
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.section-head h2{margin-right:auto}.traffic-pair{white-space:nowrap}.traffic-pair span{display:block}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent)}
-code{font-size:12px;word-break:break-all}@media(max-width:700px){.grid{grid-template-columns:1fr}thead{display:none}tr{display:block;padding:10px 0}td{display:block;border:0;padding:5px 0}}
+code{font-size:12px;word-break:break-all}@media(max-width:700px){.grid{grid-template-columns:1fr}thead{display:none}tr{display:block;padding:10px 0}td{display:block;border:0;padding:5px 0}.traffic-table thead{display:table-header-group}.traffic-table tr{display:table-row}.traffic-table td{display:table-cell;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent);padding:9px 6px}.traffic-table{font-size:12px}.traffic-table th{padding:9px 6px}}
 </style>
 </head>
 <body><main>
-<h1>Mita users</h1>
+<h1>Mita</h1>
 <div class="muted">Admin UI is available through Home Assistant Ingress.</div>
+<nav class="tabs">
+<button class="tab active" data-tab="usersTab">Users</button>
+<button class="tab" data-tab="trafficTab">Traffic</button>
+</nav>
 
+<div id="usersTab" class="tab-panel active">
 <section class="card"><h2>Add user</h2><div class="grid">
 <label>Username<input id="username" autocomplete="off"></label>
 <label>Password<input id="password" type="password" placeholder="Leave empty to generate"></label>
@@ -233,7 +313,21 @@ code{font-size:12px;word-break:break-all}@media(max-width:700px){.grid{grid-temp
 <section class="card"><h2>Users</h2><table>
 <thead><tr><th>User</th><th>Access</th><th>Subscription</th><th></th></tr></thead>
 <tbody id="users"></tbody>
-</table></section><div id="msg" class="muted"></div>
+</table></section>
+</div>
+
+<div id="trafficTab" class="tab-panel">
+<section class="card">
+<div class="section-head"><h2>Traffic</h2><button id="refreshTraffic" class="secondary">Refresh</button></div>
+<div id="trafficUpdated" class="muted">Traffic counters are reported by mita per authenticated user.</div>
+<table class="traffic-table">
+<thead><tr><th>User</th><th>Last active</th><th>24 hours</th><th>7 days</th><th>30 days</th></tr></thead>
+<tbody id="traffic"></tbody>
+</table>
+</section>
+</div>
+
+<div id="msg" class="muted"></div>
 </main>
 <script>
 const $=s=>document.querySelector(s);
@@ -246,6 +340,42 @@ async function request(path,opts={}){
 }
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function message(s){$('#msg').textContent=s;setTimeout(()=>{$('#msg').textContent=''},4000)}
+let trafficTimer=null;
+
+function setTab(id){
+  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===id));
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.toggle('active',p.id===id));
+  if(trafficTimer){clearInterval(trafficTimer);trafficTimer=null}
+  if(id==='trafficTab'){
+    loadTraffic();
+    trafficTimer=setInterval(loadTraffic,30000);
+  }
+}
+
+function trafficPair(down,up){
+  return '<div class="traffic-pair"><span>↓ '+esc(down||'-')+'</span><span>↑ '+esc(up||'-')+'</span></div>';
+}
+
+async function loadTraffic(){
+  const button=$('#refreshTraffic');
+  button.disabled=true;
+  try{
+    const data=await request('api/traffic');
+    $('#traffic').innerHTML=data.users.length?data.users.map(u=>'<tr>'+
+      '<td><strong>'+esc(u.username)+'</strong></td>'+
+      '<td>'+esc(u.last_active||'-')+'</td>'+
+      '<td>'+trafficPair(u.day_down,u.day_up)+'</td>'+
+      '<td>'+trafficPair(u.week_down,u.week_up)+'</td>'+
+      '<td>'+trafficPair(u.month_down,u.month_up)+'</td></tr>'
+    ).join(''):'<tr><td colspan="5" class="muted">No traffic data yet</td></tr>';
+    $('#trafficUpdated').textContent='Updated '+new Date().toLocaleTimeString()+'. Rolling counters from mita.';
+  }catch(e){
+    $('#trafficUpdated').textContent='Unable to load traffic: '+e.message;
+  }finally{
+    button.disabled=false;
+  }
+}
+
 async function load(){
   const data=await request('api/state');
   $('#host').value=data.settings.public_mieru_host||'';
@@ -278,6 +408,9 @@ $('#add').onclick=async()=>{
     message(data.generated_password?'User added. Generated password: '+data.generated_password:'User added');
   }catch(e){alert(e.message)}
 };
+document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
+$('#refreshTraffic').onclick=loadTraffic;
+
 $('#saveSettings').onclick=async()=>{
   try{
     await request('api/settings',{method:'PUT',body:JSON.stringify({
@@ -328,6 +461,12 @@ class AdminHandler(CommonHandler):
             return
         if path == "/api/state":
             self.send_json(HTTPStatus.OK, {"users": [public_user(u) for u in get_users()], "settings": get_settings()})
+            return
+        if path == "/api/traffic":
+            try:
+                self.send_json(HTTPStatus.OK, {"users": get_mita_user_traffic()})
+            except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
             return
         self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
