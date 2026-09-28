@@ -738,18 +738,20 @@ PAGE = r"""<!doctype html>
 <title>Mita users</title>
 <style>
 :root{color-scheme:light dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-body{margin:0;padding:20px;background:Canvas;color:CanvasText}main{max-width:980px;margin:0 auto}
-h1{font-size:24px;margin:0 0 6px}.muted{opacity:.65}.card{border:1px solid color-mix(in srgb,CanvasText 18%,transparent);border-radius:14px;padding:16px;margin:16px 0}
-.tabs{display:flex;gap:8px;margin:18px 0 4px}.tab{background:color-mix(in srgb,CanvasText 10%,Canvas);color:CanvasText}.tab.active{background:#03a9f4;color:white}.tab-panel{display:none}.tab-panel.active{display:block}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}label{display:flex;flex-direction:column;gap:6px;font-size:13px}
-input{font:inherit;padding:10px 12px;border:1px solid color-mix(in srgb,CanvasText 22%,transparent);border-radius:9px;background:Canvas}
-.check{display:flex;flex-direction:row;align-items:center;gap:8px}button{font:inherit;padding:9px 12px;border:0;border-radius:9px;cursor:pointer;background:#03a9f4;color:white}
+*{box-sizing:border-box}body{margin:0;padding:12px;background:Canvas;color:CanvasText}main{max-width:980px;margin:0 auto}
+h1{font-size:24px;margin:0 0 6px}h2{margin-top:0}.muted{opacity:.65}.card{border:1px solid color-mix(in srgb,CanvasText 18%,transparent);border-radius:14px;padding:14px;margin:12px 0}
+.tabs{display:flex;gap:8px;margin:16px 0 4px;overflow-x:auto}.tab{flex:1;min-height:44px;white-space:nowrap;background:color-mix(in srgb,CanvasText 10%,Canvas);color:CanvasText}.tab.active{background:#03a9f4;color:white}.tab-panel{display:none}.tab-panel.active{display:block}
+.grid{display:grid;grid-template-columns:1fr;gap:12px}label{display:flex;flex-direction:column;gap:6px;font-size:13px}
+input{width:100%;font:inherit;padding:11px 12px;border:1px solid color-mix(in srgb,CanvasText 22%,transparent);border-radius:9px;background:Canvas}
+.check{display:flex;flex-direction:row;align-items:center;gap:8px;min-height:40px}.check input{width:auto}button{font:inherit;min-height:40px;padding:9px 12px;border:0;border-radius:9px;cursor:pointer;background:#03a9f4;color:white}
 button:disabled{opacity:.55;cursor:default}button.secondary{background:color-mix(in srgb,CanvasText 12%,Canvas)}button.danger{background:#d64b4b}.actions{display:flex;gap:8px;flex-wrap:wrap}
-.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.section-head h2{margin-right:auto}.traffic-pair{white-space:nowrap}.traffic-pair span{display:block}
-.device-user{border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent);padding:16px 0}.device-user:first-child{border-top:0}.device-settings{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:10px 0}.device-settings label{min-width:150px}.device-list{margin-top:12px}.device-meta{font-size:12px;opacity:.7}.legacy-note{font-size:12px;opacity:.7}
-.traffic-parent-row td{padding-top:14px;padding-bottom:14px}.traffic-parent-row td:first-child{white-space:nowrap}.traffic-toggle{display:inline-flex;align-items:center;gap:7px;background:transparent;color:CanvasText;padding:0;border:0;font-weight:700}.traffic-toggle .chevron{display:inline-block;width:14px;transition:transform .15s ease}.traffic-toggle.open .chevron{transform:rotate(90deg)}.traffic-count{font-size:12px;opacity:.55;font-weight:500}.child-row td{background:color-mix(in srgb,CanvasText 3%,Canvas)}.child-row td:first-child{padding-left:36px}.traffic-spacer td{height:18px;padding:0;border:0;background:Canvas}.timestamp-toggle{background:transparent;color:CanvasText;padding:0;border:0;border-bottom:1px dashed color-mix(in srgb,CanvasText 35%,transparent);border-radius:0;white-space:nowrap;font-weight:400}
-table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent)}
-code{font-size:12px;word-break:break-all}@media(max-width:700px){.grid{grid-template-columns:1fr}thead{display:none}tr{display:block;padding:10px 0}td{display:block;border:0;padding:5px 0}.traffic-table thead{display:table-header-group}.traffic-table tr{display:table-row}.traffic-table td{display:table-cell;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent);padding:9px 6px}.traffic-table{font-size:12px}.traffic-table th{padding:9px 6px}}
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.section-head h2{margin-right:auto;margin-bottom:0}.traffic-pair{white-space:nowrap;font-variant-numeric:tabular-nums}.traffic-pair span{display:block}
+.device-user{border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent);padding:16px 0}.device-user:first-child{border-top:0}.device-settings{display:grid;grid-template-columns:1fr;gap:10px;margin:10px 0}.device-list{margin-top:12px}.device-meta{font-size:12px;opacity:.7}.legacy-note{font-size:12px;opacity:.7}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent)}code{font-size:12px;word-break:break-all}
+.timestamp-toggle{min-height:0;background:transparent;color:CanvasText;padding:0;border:0;border-bottom:1px dashed color-mix(in srgb,CanvasText 35%,transparent);border-radius:0;white-space:nowrap;font-weight:400}
+.traffic-table,.traffic-table tbody{display:block}.traffic-table thead{display:none}.traffic-table tr{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 12px;margin:12px 0;padding:14px;border:1px solid color-mix(in srgb,CanvasText 14%,transparent);border-radius:12px}.traffic-table td{display:block;min-width:0;padding:0;border:0}.traffic-table td::before{content:attr(data-label);display:block;margin-bottom:3px;font-size:10px;line-height:1.2;text-transform:uppercase;letter-spacing:.04em;opacity:.55}.traffic-table td:nth-child(1),.traffic-table td:nth-child(2){grid-column:1/-1}.traffic-table .traffic-spacer{display:none}.traffic-parent-row{background:color-mix(in srgb,CanvasText 2.5%,Canvas)}.traffic-toggle{display:inline-flex;align-items:center;gap:7px;min-height:0;background:transparent;color:CanvasText;padding:0;border:0;font-weight:700}.traffic-toggle .chevron{display:inline-block;width:14px;transition:transform .15s ease}.traffic-toggle.open .chevron{transform:rotate(90deg)}.traffic-count{font-size:12px;opacity:.55;font-weight:500}.traffic-table .child-row{margin-left:12px;background:color-mix(in srgb,CanvasText 4%,Canvas)}.traffic-table .child-row[hidden]{display:none!important}
+tbody:not(#traffic) tr{display:block;padding:12px 0;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent)}tbody:not(#traffic) td{display:grid;grid-template-columns:minmax(88px,34%) 1fr;gap:10px;border:0;padding:6px 0;align-items:start}tbody:not(#traffic) td[data-label]::before{content:attr(data-label);font-size:11px;opacity:.55}.row-actions{display:flex!important;justify-content:flex-end!important}
+@media(min-width:701px){body{padding:20px}.card{padding:16px;margin:16px 0}.grid{grid-template-columns:1fr 1fr}.tabs{overflow:visible}.tab{flex:0 0 auto;min-height:40px}.device-settings{display:flex;gap:12px;align-items:end;flex-wrap:wrap}.device-settings label{min-width:150px}.traffic-table{display:table}.traffic-table tbody{display:table-row-group}.traffic-table thead{display:table-header-group}.traffic-table tr{display:table-row;margin:0;padding:0;border:0;border-radius:0;background:transparent}.traffic-table td{display:table-cell;padding:10px 8px;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent)}.traffic-table td::before{display:none}.traffic-table .traffic-spacer{display:table-row}.traffic-parent-row td{padding-top:14px;padding-bottom:14px}.traffic-parent-row td:first-child{white-space:nowrap}.child-row td{background:color-mix(in srgb,CanvasText 3%,Canvas)}.child-row td:first-child{padding-left:36px}.traffic-spacer td{height:18px;padding:0;border:0;background:Canvas}tbody:not(#traffic) tr{display:table-row;padding:0;border:0}tbody:not(#traffic) td{display:table-cell;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent);padding:10px 8px}tbody:not(#traffic) td[data-label]::before{display:none}.row-actions{display:table-cell!important}}
 </style>
 </head>
 <body><main>
@@ -767,6 +769,7 @@ code{font-size:12px;word-break:break-all}@media(max-width:700px){.grid{grid-temp
 <label>Password<input id="password" type="password" placeholder="Leave empty to generate"></label>
 <label class="check"><input id="private" type="checkbox">Allow private/LAN IPs</label>
 <label class="check"><input id="loopback" type="checkbox">Allow loopback</label>
+<label class="check"><input id="newLegacy" type="checkbox" checked>Legacy credential enabled</label>
 </div><p><button id="add">Add user</button></p></section>
 
 <section class="card"><h2>Public settings</h2><div class="grid">
@@ -784,7 +787,7 @@ code{font-size:12px;word-break:break-all}@media(max-width:700px){.grid{grid-temp
 <div id="devicesTab" class="tab-panel">
 <section class="card">
 <div class="section-head"><h2>Devices</h2></div>
-<div class="muted">The same subscription link can register separate HWID devices. Legacy access stays enabled until you turn it off for a user.</div>
+<div class="muted">The same subscription link can register separate HWID devices. Legacy can be disabled before the first device: an HWID-capable client registers itself on its first subscription refresh.</div>
 <div id="deviceUsers"></div>
 </section>
 </div>
@@ -900,10 +903,10 @@ function renderDevices(users){
   $('#deviceUsers').innerHTML=users.map(u=>{
     const rows=u.devices.length?'<table class="device-list"><thead><tr><th>Device</th><th>HWID</th><th>Last subscription refresh</th><th></th></tr></thead><tbody>'+
       u.devices.map(d=>'<tr>'+
-        '<td><strong>'+esc(d.name)+'</strong><div class="device-meta">'+esc([d.os,d.os_version].filter(Boolean).join(' '))+'</div></td>'+
-        '<td><code>'+esc(d.hwid)+'</code></td>'+
-        '<td>'+timeControl(d.last_seen,'device:'+u.username+':'+d.id)+'</td>'+
-        '<td><button class="danger" data-remove-device="'+esc(d.id)+'" data-user="'+esc(u.username)+'">Remove</button></td></tr>'
+        '<td data-label="Device"><strong>'+esc(d.name)+'</strong><div class="device-meta">'+esc([d.os,d.os_version].filter(Boolean).join(' '))+'</div></td>'+
+        '<td data-label="HWID"><code>'+esc(d.hwid)+'</code></td>'+
+        '<td data-label="Last refresh">'+timeControl(d.last_seen,'device:'+u.username+':'+d.id)+'</td>'+
+        '<td class="row-actions"><button class="danger" data-remove-device="'+esc(d.id)+'" data-user="'+esc(u.username)+'">Remove</button></td></tr>'
       ).join('')+'</tbody></table>':'<div class="muted" style="margin-top:12px">No HWID devices registered yet. Refresh the subscription from a supported client to register one.</div>';
     return '<div class="device-user" data-device-card="'+esc(u.username)+'">'+
       '<div class="section-head"><h3>'+esc(u.username)+'</h3><span class="muted">'+u.devices.length+' registered</span></div>'+
@@ -912,7 +915,7 @@ function renderDevices(users){
         '<label class="check"><input data-legacy type="checkbox" '+(u.legacy_enabled?'checked':'')+'>Legacy credential enabled</label>'+
         '<button data-save-devices="'+esc(u.username)+'">Save</button>'+
       '</div>'+
-      '<div class="legacy-note">Legacy mode keeps already imported profiles working. Disable it only after all needed devices have appeared here.</div>'+
+      '<div class="legacy-note">With legacy disabled, clients without X-HWID cannot fetch the subscription. Supported clients can still register a new HWID on their first refresh.</div>'+
       rows+'</div>';
   }).join('');
   document.querySelectorAll('[data-save-devices]').forEach(b=>b.onclick=()=>saveDeviceSettings(b.dataset.saveDevices));
@@ -967,19 +970,19 @@ async function loadTraffic(){
       const childCount=(u.children||[]).length;
       const spacer=index?'<tr class="traffic-spacer"><td colspan="5"></td></tr>':'';
       const parent='<tr class="traffic-parent-row">'+
-        '<td><button class="traffic-toggle '+(open?'open':'')+'" data-traffic-toggle="'+esc(username)+'" aria-expanded="'+(open?'true':'false')+'">'+
+        '<td data-label="User"><button class="traffic-toggle '+(open?'open':'')+'" data-traffic-toggle="'+esc(username)+'" aria-expanded="'+(open?'true':'false')+'">'+
           '<span class="chevron">›</span><span>'+esc(username)+'</span><span class="traffic-count">'+childCount+'</span>'+
         '</button></td>'+
-        '<td>'+timeControl(u.last_active,'traffic:'+username)+'</td>'+
-        '<td>'+trafficPair(u.day_down,u.day_up)+'</td>'+
-        '<td>'+trafficPair(u.week_down,u.week_up)+'</td>'+
-        '<td>'+trafficPair(u.month_down,u.month_up)+'</td></tr>';
+        '<td data-label="Last active">'+timeControl(u.last_active,'traffic:'+username)+'</td>'+
+        '<td data-label="24 hours">'+trafficPair(u.day_down,u.day_up)+'</td>'+
+        '<td data-label="7 days">'+trafficPair(u.week_down,u.week_up)+'</td>'+
+        '<td data-label="30 days">'+trafficPair(u.month_down,u.month_up)+'</td></tr>';
       const children=(u.children||[]).map(d=>'<tr class="child-row" data-traffic-child="'+esc(username)+'" '+(open?'':'hidden')+'>'+
-        '<td>'+esc(d.name)+(d.kind==='legacy'?' <span class="muted">(legacy)</span>':'')+'</td>'+
-        '<td>'+timeControl(d.last_active,'traffic:'+username+':'+String(d.device_id||d.username||d.name))+'</td>'+
-        '<td>'+trafficPair(d.day_down,d.day_up)+'</td>'+
-        '<td>'+trafficPair(d.week_down,d.week_up)+'</td>'+
-        '<td>'+trafficPair(d.month_down,d.month_up)+'</td></tr>').join('');
+        '<td data-label="Device">'+esc(d.name)+(d.kind==='legacy'?' <span class="muted">(legacy)</span>':'')+'</td>'+
+        '<td data-label="Last active">'+timeControl(d.last_active,'traffic:'+username+':'+String(d.device_id||d.username||d.name))+'</td>'+
+        '<td data-label="24 hours">'+trafficPair(d.day_down,d.day_up)+'</td>'+
+        '<td data-label="7 days">'+trafficPair(d.week_down,d.week_up)+'</td>'+
+        '<td data-label="30 days">'+trafficPair(d.month_down,d.month_up)+'</td></tr>').join('');
       return spacer+parent+children;
     }).join(''):'<tr><td colspan="5" class="muted">No traffic data yet</td></tr>';
 
@@ -1003,13 +1006,13 @@ async function load(){
   $('#private').checked=!!data.settings.default_allow_private_ip;
   $('#loopback').checked=!!data.settings.default_allow_loopback_ip;
   $('#users').innerHTML=data.users.map(u=>'<tr>'+
-    '<td><strong>'+esc(u.username)+'</strong></td>'+
-    '<td>'+(u.allow_private_ip?'LAN ':'')+(u.allow_loopback_ip?'Loopback':'')+'</td>'+
-    '<td>'+u.devices.length+(u.device_limit?' / '+u.device_limit:'')+(u.legacy_enabled?' + legacy':'')+'</td>'+
-    '<td><code>'+esc(u.subscription_url)+'</code><div class="actions" style="margin-top:6px">'+
+    '<td data-label="User"><strong>'+esc(u.username)+'</strong></td>'+
+    '<td data-label="Access">'+(u.allow_private_ip?'LAN ':'')+(u.allow_loopback_ip?'Loopback':'')+'</td>'+
+    '<td data-label="Devices">'+u.devices.length+(u.device_limit?' / '+u.device_limit:'')+(u.legacy_enabled?' + legacy':'')+'</td>'+
+    '<td data-label="Subscription"><code>'+esc(u.subscription_url)+'</code><div class="actions" style="margin-top:6px">'+
     '<button class="secondary" data-copy="'+esc(u.subscription_url)+'">Copy link</button>'+
     '<button class="secondary" data-rotate="'+esc(u.username)+'">Rotate token</button></div></td>'+
-    '<td><button class="danger" data-delete="'+esc(u.username)+'">Delete</button></td></tr>'
+    '<td class="row-actions"><button class="danger" data-delete="'+esc(u.username)+'">Delete</button></td></tr>'
   ).join('');
   document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>copyLink(b.dataset.copy));
   document.querySelectorAll('[data-rotate]').forEach(b=>b.onclick=()=>rotate(b.dataset.rotate));
@@ -1023,9 +1026,10 @@ $('#add').onclick=async()=>{
   try{
     const data=await request('api/users',{method:'POST',body:JSON.stringify({
       username:$('#username').value.trim(),password:$('#password').value,
-      allow_private_ip:$('#private').checked,allow_loopback_ip:$('#loopback').checked
+      allow_private_ip:$('#private').checked,allow_loopback_ip:$('#loopback').checked,
+      legacy_enabled:$('#newLegacy').checked
     })});
-    $('#username').value='';$('#password').value='';await load();
+    $('#username').value='';$('#password').value='';$('#newLegacy').checked=true;await load();
     message(data.generated_password?'User added. Generated password: '+data.generated_password:'User added');
   }catch(e){alert(e.message)}
 };
@@ -1120,7 +1124,7 @@ class AdminHandler(CommonHandler):
                     "allow_private_ip": bool(body.get("allow_private_ip", False)),
                     "allow_loopback_ip": bool(body.get("allow_loopback_ip", False)),
                     "token": secrets.token_urlsafe(24),
-                    "legacy_enabled": True,
+                    "legacy_enabled": bool(body.get("legacy_enabled", True)),
                     "device_limit": 0,
                     "devices": [],
                 }
@@ -1171,8 +1175,6 @@ class AdminHandler(CommonHandler):
                     if limit < 0 or limit > 100:
                         raise ValueError("device_limit must be between 0 and 100")
                     legacy_enabled = bool(body.get("legacy_enabled", user.get("legacy_enabled", True)))
-                    if not legacy_enabled and not user.get("devices"):
-                        raise ValueError("register at least one HWID device before disabling legacy access")
                     if limit > 0 and len(user.get("devices", [])) > limit:
                         raise ValueError("device_limit is lower than the number of registered devices")
 
