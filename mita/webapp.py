@@ -170,7 +170,7 @@ def get_log_db_status():
 
 
 def parse_log_level(line):
-    match = re.match(r"^(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\\b", line.strip(), re.IGNORECASE)
+    match = re.match(r"^(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\b", line.strip(), re.IGNORECASE)
     if not match:
         return None
     level = match.group(1).upper()
@@ -263,7 +263,7 @@ def log_db_worker():
                     if not raw:
                         break
                     next_offset = f.tell()
-                    line = raw.decode("utf-8", errors="replace").rstrip("\\r\\n")
+                    line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
                     if line:
                         batch.append((parse_log_level(line), line))
 
