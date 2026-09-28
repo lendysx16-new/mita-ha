@@ -526,6 +526,8 @@ proxy-groups:
       - {yaml_q(name)}
 
 rules:
+  - GEOSITE,google-deepmind,PROXY
+  - GEOSITE,anthropic,PROXY
   - GEOSITE,ru-blocked,PROXY
   - GEOIP,ru-blocked,PROXY,no-resolve
   - MATCH,DIRECT
