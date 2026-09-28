@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.38.0.17
+
+- Added explicit `GEOSITE,google-deepmind` routing for Gemini, AI Studio, and the Google Generative Language API.
+- Added explicit `GEOSITE,anthropic` routing for Claude and Anthropic domains.
+- These rules are evaluated before the general `ru-blocked` rules so related API/CDN domains also use Mieru.
+
 ## 3.38.0.16
 
 - Added a first-pass Rule-mode routing test using Runet Freedom `geosite.dat` and `geoip.dat`.
