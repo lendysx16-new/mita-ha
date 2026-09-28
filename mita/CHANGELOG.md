@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.38.0.20
+
+- Legacy credentials can now be disabled before any HWID device has registered; an HWID-capable client can create its device credential on the first subscription refresh.
+- New users can be created with legacy credentials disabled from the start.
+- Reworked the admin UI for mobile-first use with larger tap targets, stacked forms, and responsive user/device tables.
+- Rebuilt the Traffic view as compact mobile cards while preserving the desktop table layout and expandable per-device counters.
+
 ## 3.38.0.19
 
 - Removed the temporary `/sub/rules/ru-blocked-domain.list` endpoint; the Home Assistant server no longer proxies or transforms domain rules.
