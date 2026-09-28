@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.38.0.19
+
+- Removed the temporary `/sub/rules/ru-blocked-domain.list` endpoint; the Home Assistant server no longer proxies or transforms domain rules.
+- Switched `ru-blocked-domain` to the ready-made Mihomo `geosite-ru-blocked.mrs` from `igorkass/mihomo-rule-sets`.
+- Switched `ru-blocked-ip` to the matching `geoip-ru-blocked.mrs` from the same repository.
+- Those MRS files are generated from Runet Freedom's `russia-v2ray-rules-dat` ru-blocked rule sets and updated automatically.
+
 ## 3.38.0.18
 
 - Switched routing from `GEOSITE` / `GEOIP` rules to explicit Mihomo `RULE-SET` providers so Clash Mi no longer rewrites `ru-blocked` to missing MetaCubeX files.
