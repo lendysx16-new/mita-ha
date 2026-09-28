@@ -34,13 +34,6 @@ RELEASE_CACHE_LOCK = threading.RLock()
 RELEASE_CACHE = {}
 RELEASE_CACHE_TTL = 900
 
-RU_BLOCKED_DOMAIN_SOURCE = (
-    "https://raw.githubusercontent.com/runetfreedom/"
-    "russia-blocked-geosite/release/ru-blocked.txt"
-)
-RU_BLOCKED_DOMAIN_CACHE_LOCK = threading.RLock()
-RU_BLOCKED_DOMAIN_CACHE = {"expires_at": 0.0, "data": None}
-RU_BLOCKED_DOMAIN_CACHE_TTL = 3600
 
 GITHUB_DOWNLOADS = {
     "clashmi": {
@@ -483,54 +476,6 @@ def device_display_name(device):
     return "Device " + str(device.get("id", ""))[:6]
 
 
-def get_ru_blocked_domain_rules():
-    now = time.monotonic()
-    with RU_BLOCKED_DOMAIN_CACHE_LOCK:
-        cached = RU_BLOCKED_DOMAIN_CACHE.get("data")
-        if cached is not None and RU_BLOCKED_DOMAIN_CACHE.get("expires_at", 0) > now:
-            return cached
-
-    request = urllib.request.Request(
-        RU_BLOCKED_DOMAIN_SOURCE,
-        headers={"User-Agent": "mita-ha/1"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            source = response.read().decode("utf-8")
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        with RU_BLOCKED_DOMAIN_CACHE_LOCK:
-            cached = RU_BLOCKED_DOMAIN_CACHE.get("data")
-            if cached is not None:
-                return cached
-        raise RuntimeError(f"failed to download ru-blocked domains: {exc}") from exc
-
-    # Runet Freedom's ru-blocked geosite text currently uses V2Ray
-    # "domain:" entries. Mihomo rule-provider behavior=domain + format=text
-    # expects the domain value itself, so strip only that prefix.
-    rules = []
-    for raw_line in source.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("domain:"):
-            line = line[len("domain:"):].strip()
-        elif line.startswith(("full:", "keyword:", "regexp:")):
-            pass
-        elif ":" in line:
-            continue
-        if line:
-            rules.append(line)
-
-    if not rules:
-        raise RuntimeError("ru-blocked domain list is empty after conversion")
-
-    data = ("\n".join(rules) + "\n").encode("utf-8")
-    with RU_BLOCKED_DOMAIN_CACHE_LOCK:
-        RU_BLOCKED_DOMAIN_CACHE["data"] = data
-        RU_BLOCKED_DOMAIN_CACHE["expires_at"] = now + RU_BLOCKED_DOMAIN_CACHE_TTL
-    return data
-
-
 def subscription_yaml(user, credential=None):
     settings = get_settings()
     credential = credential or {
@@ -546,9 +491,6 @@ def subscription_yaml(user, credential=None):
     port = int(settings["public_mieru_port"])
     username = credential["username"]
     password = credential["password"]
-    subscription_base = settings["subscription_base_url"].rstrip("/")
-    ru_blocked_domain_url = subscription_base + "/sub/rules/ru-blocked-domain.list"
-
     return f"""mixed-port: 7890
 allow-lan: false
 mode: rule
@@ -573,8 +515,8 @@ proxy-groups:
       - {yaml_q(name)}
 
 # Use explicit Mihomo rule-providers instead of GEOSITE/GEOIP rules.
-# Clash Mi rewrites GEOSITE/GEOIP to MetaCubeX .mrs providers; the
-# Runet Freedom ru-blocked category does not exist there.
+# Clash Mi rewrites GEOSITE/GEOIP to MetaCubeX .mrs providers; use
+# ready-made Mihomo MRS conversions of Runet Freedom ru-blocked.
 rule-providers:
   google-deepmind:
     type: http
@@ -593,17 +535,17 @@ rule-providers:
   ru-blocked-domain:
     type: http
     behavior: domain
-    format: text
+    format: mrs
     interval: 21600
-    path: ./ruleset/ru-blocked-domain.list
-    url: {yaml_q(ru_blocked_domain_url)}
+    path: ./ruleset/geosite-ru-blocked.mrs
+    url: "https://raw.githubusercontent.com/igorkass/mihomo-rule-sets/release/geosite-ru-blocked.mrs"
   ru-blocked-ip:
     type: http
     behavior: ipcidr
     format: mrs
     interval: 21600
-    path: ./ruleset/ru-blocked-ip.mrs
-    url: "https://raw.githubusercontent.com/runetfreedom/russia-blocked-geoip/release/mrs/ru-blocked.mrs"
+    path: ./ruleset/geoip-ru-blocked.mrs
+    url: "https://raw.githubusercontent.com/igorkass/mihomo-rule-sets/release/geoip-ru-blocked.mrs"
 
 rules:
   - RULE-SET,google-deepmind,PROXY
@@ -1341,19 +1283,6 @@ class SubscriptionHandler(CommonHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-
-        if path == "/sub/rules/ru-blocked-domain.list":
-            try:
-                rules = get_ru_blocked_domain_rules()
-            except RuntimeError as exc:
-                self.send_json(HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
-                return
-            self.send_bytes(
-                HTTPStatus.OK,
-                "text/plain; charset=utf-8",
-                rules,
-            )
-            return
 
         download_match = re.fullmatch(
             r"/sub/([A-Za-z0-9_-]{16,})/download/([a-z0-9-]+)/([a-z0-9-]+)",
