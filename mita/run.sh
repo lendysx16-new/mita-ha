@@ -31,7 +31,8 @@ bashio::log.info "Configured users: ${USER_COUNT}"
 bashio::log.info "Admin UI is available through Home Assistant Ingress"
 bashio::log.info "Subscription server is listening on TCP port 8099"
 
-mita run &
+touch /data/mita.log
+mita run > >(tee -a /data/mita.log) 2>&1 &
 MITA_PID=$!
 
 python3 /app/webapp.py &
