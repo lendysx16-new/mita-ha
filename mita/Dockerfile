@@ -26,7 +26,7 @@ LABEL \
     io.hass.type="app" \
     io.hass.arch="${BUILD_ARCH}"
 
-RUN apk add --no-cache python3
+RUN apk add --no-cache python3 py3-psycopg2
 
 COPY --from=downloader /tmp/mita-root/usr/bin/mita /usr/bin/mita
 COPY run.sh /run.sh
