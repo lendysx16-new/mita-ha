@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.38.0.18
+
+- Switched routing from `GEOSITE` / `GEOIP` rules to explicit Mihomo `RULE-SET` providers so Clash Mi no longer rewrites `ru-blocked` to missing MetaCubeX files.
+- `ru-blocked-domain` is generated from Runet Freedom's current `ru-blocked.txt` geosite category and served as Mihomo text-domain rules.
+- `ru-blocked-ip` uses Runet Freedom's native `mrs/ru-blocked.mrs` provider.
+- Gemini/Google DeepMind and Anthropic/Claude use existing MetaCubeX MRS providers.
+- All provider rules update every 6 hours; unmatched traffic remains `DIRECT`.
+
 ## 3.38.0.17
 
 - Added explicit `GEOSITE,google-deepmind` routing for Gemini, AI Studio, and the Google Generative Language API.
