@@ -58,6 +58,9 @@ GITHUB_DOWNLOADS = {
             "windows": r"^clashmi_.*_windows_x64\.exe$",
             "android-arm64": r"^clashmi_.*_android_arm64-v8a\.apk$",
             "android-armv7": r"^clashmi_.*_android_armeabi-v7a\.apk$",
+            "linux-amd64-appimage": r"^clashmi_.*_linux_amd64\.AppImage$",
+            "linux-amd64-deb": r"^clashmi_.*_linux_amd64\.deb$",
+            "linux-amd64-rpm": r"^clashmi_.*_linux_amd64\.rpm$",
         },
     },
     "karing": {
@@ -67,6 +70,8 @@ GITHUB_DOWNLOADS = {
             "windows": r"^karing_.*_windows_x64\.exe$",
             "android-arm64": r"^karing_.*_android_arm64-v8a\.apk$",
             "android-armv7": r"^karing_.*_android_armeabi-v7a\.apk$",
+            "linux-amd64-appimage": r"^karing_.*_linux_amd64\.AppImage$",
+            "linux-amd64-deb": r"^karing_.*_linux_amd64\.deb$",
         },
     },
     "flclash": {
@@ -78,6 +83,12 @@ GITHUB_DOWNLOADS = {
             "windows-arm64": r"^FlClash-.*-windows-arm64-setup\.exe$",
             "android-arm64": r"^FlClash-.*-android-arm64-v8a\.apk$",
             "android-armv7": r"^FlClash-.*-android-armeabi-v7a\.apk$",
+            "linux-amd64-appimage": r"^FlClash-.*-linux-amd64\.AppImage$",
+            "linux-amd64-deb": r"^FlClash-.*-linux-amd64\.deb$",
+            "linux-amd64-rpm": r"^FlClash-.*-linux-amd64\.rpm$",
+            "linux-arm64-appimage": r"^FlClash-.*-linux-arm64\.AppImage$",
+            "linux-arm64-deb": r"^FlClash-.*-linux-arm64\.deb$",
+            "linux-arm64-rpm": r"^FlClash-.*-linux-arm64\.rpm$",
         },
     },
     "verge": {
@@ -87,6 +98,10 @@ GITHUB_DOWNLOADS = {
             "macos-amd64": r"^Clash\.Verge_.*_x64\.dmg$",
             "windows-amd64": r"^Clash\.Verge_.*_x64-setup\.exe$",
             "windows-arm64": r"^Clash\.Verge_.*_arm64-setup\.exe$",
+            "linux-amd64-deb": r"^Clash Verge_.*_amd64\.deb$",
+            "linux-amd64-rpm": r"^Clash Verge-.*-1\.x86_64\.rpm$",
+            "linux-arm64-deb": r"^Clash Verge_.*_arm64\.deb$",
+            "linux-arm64-rpm": r"^Clash\.Verge-.*-1\.aarch64\.rpm$",
         },
     },
 }
