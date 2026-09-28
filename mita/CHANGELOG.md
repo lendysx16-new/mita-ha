@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.38.0.21
+
+- Fixed broken mobile table layout in Users and Devices by hiding desktop headers and rendering rows as full-width stacked cards.
+- Added distinct card surfaces across the admin UI so sections stand out from the page background.
+- Added dedicated mobile backgrounds for Traffic parent and device cards while keeping the desktop table layout unchanged.
+
 ## 3.38.0.20
 
 - Legacy credentials can now be disabled before any HWID device has registered; an HWID-capable client can create its device credential on the first subscription refresh.
