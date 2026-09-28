@@ -13,6 +13,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+
+try:
+    import psycopg2
+except ImportError:
+    psycopg2 = None
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -23,6 +28,8 @@ USERS_PATH = DATA_DIR / "users.json"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 MITA_CONFIG_PATH = DATA_DIR / "mita-server.json"
 SUBSCRIPTION_PAGE_PATH = Path("/app/subscription.html")
+MITA_LOG_PATH = DATA_DIR / "mita.log"
+LOG_FORWARD_STATE_PATH = DATA_DIR / "log-forwarder-state.json"
 
 ADMIN_PORT = 8098
 SUB_PORT = 8099
@@ -33,6 +40,14 @@ LOCK = threading.RLock()
 RELEASE_CACHE_LOCK = threading.RLock()
 RELEASE_CACHE = {}
 RELEASE_CACHE_TTL = 900
+LOG_DB_STATUS_LOCK = threading.RLock()
+LOG_DB_STATUS = {
+    "enabled": False,
+    "connected": False,
+    "last_error": "",
+    "last_write": None,
+    "rows_written": 0,
+}
 
 
 GITHUB_DOWNLOADS = {
@@ -144,6 +159,146 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def set_log_db_status(**values):
+    with LOG_DB_STATUS_LOCK:
+        LOG_DB_STATUS.update(values)
+
+
+def get_log_db_status():
+    with LOG_DB_STATUS_LOCK:
+        return dict(LOG_DB_STATUS)
+
+
+def parse_log_level(line):
+    match = re.match(r"^(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\\b", line.strip(), re.IGNORECASE)
+    if not match:
+        return None
+    level = match.group(1).upper()
+    return "WARN" if level == "WARNING" else level
+
+
+def ensure_log_table(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mita_logs (
+                id BIGSERIAL PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                level TEXT,
+                message TEXT NOT NULL
+            )
+            """
+        )
+    conn.commit()
+
+
+def read_log_forward_state():
+    state = load_json(LOG_FORWARD_STATE_PATH, {})
+    try:
+        return max(0, int(state.get("offset", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def write_log_forward_state(offset):
+    write_json(LOG_FORWARD_STATE_PATH, {"offset": int(offset)})
+
+
+def log_db_worker():
+    if psycopg2 is None:
+        set_log_db_status(last_error="psycopg2 is not installed")
+        return
+
+    offset = read_log_forward_state()
+    conn = None
+    active_dsn = None
+
+    while True:
+        settings = get_settings()
+        dsn = str(settings.get("postgres_dsn", "") or "").strip()
+        set_log_db_status(enabled=bool(dsn))
+
+        if not dsn:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
+            active_dsn = None
+            set_log_db_status(connected=False, last_error="")
+            time.sleep(2)
+            continue
+
+        if active_dsn != dsn:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            conn = None
+            active_dsn = dsn
+
+        try:
+            if conn is None or conn.closed:
+                conn = psycopg2.connect(dsn, connect_timeout=8)
+                conn.autocommit = False
+                ensure_log_table(conn)
+                set_log_db_status(connected=True, last_error="")
+
+            if not MITA_LOG_PATH.exists():
+                time.sleep(1)
+                continue
+
+            size = MITA_LOG_PATH.stat().st_size
+            if offset > size:
+                offset = 0
+
+            batch = []
+            next_offset = offset
+            with MITA_LOG_PATH.open("rb") as f:
+                f.seek(offset)
+                while len(batch) < 200:
+                    raw = f.readline()
+                    if not raw:
+                        break
+                    next_offset = f.tell()
+                    line = raw.decode("utf-8", errors="replace").rstrip("\\r\\n")
+                    if line:
+                        batch.append((parse_log_level(line), line))
+
+            if not batch:
+                time.sleep(1)
+                continue
+
+            with conn.cursor() as cur:
+                cur.executemany(
+                    "INSERT INTO mita_logs (level, message) VALUES (%s, %s)",
+                    batch,
+                )
+            conn.commit()
+            offset = next_offset
+            write_log_forward_state(offset)
+
+            status = get_log_db_status()
+            set_log_db_status(
+                connected=True,
+                last_error="",
+                last_write=utc_now(),
+                rows_written=int(status.get("rows_written", 0)) + len(batch),
+            )
+        except Exception as exc:
+            set_log_db_status(connected=False, last_error=str(exc))
+            if conn is not None:
+                try:
+                    conn.rollback()
+                    conn.close()
+                except Exception:
+                    pass
+            conn = None
+            time.sleep(5)
+
+
 def migrate_users():
     users = get_users()
     changed = False
@@ -223,6 +378,7 @@ def initialize():
             "prefer_ipv4": bool(options.get("prefer_ipv4", True)),
             "default_allow_private_ip": bool(options.get("allow_private_ip", False)),
             "default_allow_loopback_ip": bool(options.get("allow_loopback_ip", False)),
+            "postgres_dsn": str(options.get("postgres_dsn", "")).strip(),
         }
         write_json(SETTINGS_PATH, settings)
 
@@ -742,7 +898,7 @@ PAGE = r"""<!doctype html>
 h1{font-size:24px;margin:0 0 6px}h2{margin-top:0}.muted{opacity:.65}.card{background:var(--surface);border:1px solid color-mix(in srgb,CanvasText 18%,transparent);border-radius:14px;padding:14px;margin:12px 0}
 .tabs{display:flex;gap:8px;margin:16px 0 4px;overflow-x:auto}.tab{flex:1;min-height:44px;white-space:nowrap;background:color-mix(in srgb,CanvasText 10%,Canvas);color:CanvasText}.tab.active{background:#03a9f4;color:white}.tab-panel{display:none}.tab-panel.active{display:block}
 .grid{display:grid;grid-template-columns:1fr;gap:12px}label{display:flex;flex-direction:column;gap:6px;font-size:13px}
-input{width:100%;font:inherit;padding:11px 12px;border:1px solid color-mix(in srgb,CanvasText 22%,transparent);border-radius:9px;background:Canvas}
+input,select{width:100%;font:inherit;padding:11px 12px;border:1px solid color-mix(in srgb,CanvasText 22%,transparent);border-radius:9px;background:Canvas;color:CanvasText}
 .check{display:flex;flex-direction:row;align-items:center;gap:8px;min-height:40px}.check input{width:auto}button{font:inherit;min-height:40px;padding:9px 12px;border:0;border-radius:9px;cursor:pointer;background:#03a9f4;color:white}
 button:disabled{opacity:.55;cursor:default}button.secondary{background:color-mix(in srgb,CanvasText 12%,Canvas)}button.danger{background:#d64b4b}.actions{display:flex;gap:8px;flex-wrap:wrap}
 .section-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.section-head h2{margin-right:auto;margin-bottom:0}.traffic-pair{white-space:nowrap;font-variant-numeric:tabular-nums}.traffic-pair span{display:block}
@@ -762,6 +918,7 @@ tbody:not(#traffic) tr{display:block;width:100%;margin:10px 0;padding:12px;backg
 <button class="tab active" data-tab="usersTab">Users</button>
 <button class="tab" data-tab="devicesTab">Devices</button>
 <button class="tab" data-tab="trafficTab">Traffic</button>
+<button class="tab" data-tab="confTab">Conf</button>
 </nav>
 
 <div id="usersTab" class="tab-panel active">
@@ -804,6 +961,30 @@ tbody:not(#traffic) tr{display:block;width:100%;margin:10px 0;padding:12px;backg
 </section>
 </div>
 
+<div id="confTab" class="tab-panel">
+<section class="card">
+<h2>Conf</h2>
+<div class="grid">
+<label>Log level
+<select id="logLevel">
+<option>FATAL</option>
+<option>ERROR</option>
+<option>WARN</option>
+<option>INFO</option>
+<option>DEBUG</option>
+<option>TRACE</option>
+</select>
+</label>
+<label style="grid-column:1/-1">PostgreSQL connection
+<input id="postgresDsn" type="password" autocomplete="off" placeholder="postgresql://user:password@host:5432/database">
+<span class="muted">Empty = database logging disabled. Mita logs are buffered in /data/mita.log and uploaded when a connection is configured.</span>
+</label>
+</div>
+<p class="actions"><button id="saveConf">Save conf</button><button id="showDsn" class="secondary" type="button">Show connection</button></p>
+<div id="logDbStatus" class="muted">Database logging status is loading…</div>
+</section>
+</div>
+
 <div id="msg" class="muted"></div>
 </main>
 <script>
@@ -829,6 +1010,7 @@ function setTab(id){
     loadTraffic();
     trafficTimer=setInterval(loadTraffic,30000);
   }
+  if(id==='confTab') loadLogDbStatus();
 }
 
 function trafficPair(down,up){
@@ -1004,6 +1186,8 @@ async function load(){
   $('#host').value=data.settings.public_mieru_host||'';
   $('#port').value=data.settings.public_mieru_port||8443;
   $('#base').value=data.settings.subscription_base_url||'';
+  $('#logLevel').value=data.settings.log_level||'INFO';
+  $('#postgresDsn').value=data.settings.postgres_dsn||'';
   $('#private').checked=!!data.settings.default_allow_private_ip;
   $('#loopback').checked=!!data.settings.default_allow_loopback_ip;
   $('#users').innerHTML=data.users.map(u=>'<tr>'+
@@ -1036,6 +1220,32 @@ $('#add').onclick=async()=>{
 };
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
 $('#refreshTraffic').onclick=loadTraffic;
+
+async function loadLogDbStatus(){
+  try{
+    const data=await request('api/log-db-status');
+    const s=data.status||{};
+    if(!s.enabled) $('#logDbStatus').textContent='PostgreSQL logging disabled.';
+    else if(s.connected) $('#logDbStatus').textContent='Connected · '+(s.rows_written||0)+' rows written'+(s.last_write?' · last write '+displayTime(s.last_write):'');
+    else $('#logDbStatus').textContent='Disconnected'+(s.last_error?' · '+s.last_error:'');
+  }catch(e){
+    $('#logDbStatus').textContent='Unable to read PostgreSQL status: '+e.message;
+  }
+}
+$('#showDsn').onclick=()=>{
+  const input=$('#postgresDsn');
+  input.type=input.type==='password'?'text':'password';
+  $('#showDsn').textContent=input.type==='password'?'Show connection':'Hide connection';
+};
+$('#saveConf').onclick=async()=>{
+  try{
+    await request('api/settings',{method:'PUT',body:JSON.stringify({
+      log_level:$('#logLevel').value,
+      postgres_dsn:$('#postgresDsn').value.trim()
+    })});
+    await load();await loadLogDbStatus();message('Conf saved');
+  }catch(e){alert(e.message)}
+};
 
 $('#saveSettings').onclick=async()=>{
   try{
@@ -1100,6 +1310,9 @@ class AdminHandler(CommonHandler):
                 self.send_json(HTTPStatus.OK, {"users": get_traffic_view()})
             except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
                 self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+            return
+        if path == "/api/log-db-status":
+            self.send_json(HTTPStatus.OK, {"status": get_log_db_status()})
             return
         self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -1216,11 +1429,33 @@ class AdminHandler(CommonHandler):
             if port < 1 or port > 65535:
                 raise ValueError("invalid public_mieru_port")
             base = normalize_base_url(body.get("subscription_base_url", settings.get("subscription_base_url", "")))
+            old_log_level = str(settings.get("log_level", "INFO"))
+            if "log_level" in body:
+                log_level = str(body.get("log_level", old_log_level)).upper().strip()
+                if log_level not in {"FATAL", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"}:
+                    raise ValueError("invalid log_level")
+                settings["log_level"] = log_level
+            if "postgres_dsn" in body:
+                postgres_dsn = str(body.get("postgres_dsn", "") or "").strip()
+                if len(postgres_dsn) > 4096:
+                    raise ValueError("postgres_dsn is too long")
+                settings["postgres_dsn"] = postgres_dsn
+
             settings["public_mieru_host"] = host
             settings["public_mieru_port"] = port
             settings["subscription_base_url"] = base
             write_json(SETTINGS_PATH, settings)
-            self.send_json(HTTPStatus.OK, {"settings": settings})
+
+            mita_reloaded = True
+            mita_output = ""
+            if str(settings.get("log_level", "INFO")) != old_log_level:
+                mita_reloaded, mita_output = reload_mita()
+
+            self.send_json(HTTPStatus.OK, {
+                "settings": settings,
+                "mita_reloaded": mita_reloaded,
+                "mita_output": mita_output,
+            })
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
@@ -1379,6 +1614,7 @@ def serve():
     signal.signal(signal.SIGINT, shutdown_handler)
 
     threading.Thread(target=sub.serve_forever, name="subscription-server", daemon=True).start()
+    threading.Thread(target=log_db_worker, name="postgres-log-forwarder", daemon=True).start()
     print("[web] admin UI listening on 8098 (Ingress only)", flush=True)
     print("[web] subscription server listening on 8099", flush=True)
     admin.serve_forever()
