@@ -664,7 +664,7 @@ def subscription_yaml(user, credential=None):
     password = credential["password"]
     return f"""mixed-port: 7890
 allow-lan: false
-mode: rule
+mode: global
 log-level: info
 ipv6: true
 
@@ -684,46 +684,6 @@ proxy-groups:
     type: select
     proxies:
       - {yaml_q(name)}
-
-# Use explicit Mihomo rule-providers instead of GEOSITE/GEOIP rules.
-# Clash Mi rewrites GEOSITE/GEOIP to MetaCubeX .mrs providers; use
-# ready-made Mihomo MRS conversions of Runet Freedom ru-blocked.
-rule-providers:
-  google-deepmind:
-    type: http
-    behavior: domain
-    format: mrs
-    interval: 21600
-    path: ./ruleset/google-deepmind.mrs
-    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geosite/google-deepmind.mrs"
-  anthropic:
-    type: http
-    behavior: domain
-    format: mrs
-    interval: 21600
-    path: ./ruleset/anthropic.mrs
-    url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo/geosite/anthropic.mrs"
-  ru-blocked-domain:
-    type: http
-    behavior: domain
-    format: mrs
-    interval: 21600
-    path: ./ruleset/geosite-ru-blocked.mrs
-    url: "https://raw.githubusercontent.com/igorkass/mihomo-rule-sets/release/geosite-ru-blocked.mrs"
-  ru-blocked-ip:
-    type: http
-    behavior: ipcidr
-    format: mrs
-    interval: 21600
-    path: ./ruleset/geoip-ru-blocked.mrs
-    url: "https://raw.githubusercontent.com/igorkass/mihomo-rule-sets/release/geoip-ru-blocked.mrs"
-
-rules:
-  - RULE-SET,google-deepmind,PROXY
-  - RULE-SET,anthropic,PROXY
-  - RULE-SET,ru-blocked-domain,PROXY
-  - RULE-SET,ru-blocked-ip,PROXY,no-resolve
-  - MATCH,DIRECT
 """
 
 
