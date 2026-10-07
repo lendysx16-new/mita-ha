@@ -1,3 +1,8 @@
+## 3.38.0.25
+
+- Subscription configs now use global proxy mode for every client.
+- Removed per-domain/IP routing rule providers and routing rules from generated configs.
+
 # Changelog
 
 ## 3.38.0.21
