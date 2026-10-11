@@ -324,6 +324,7 @@ code { font-size: 11px; overflow-wrap: anywhere; }
               <label class="span-2">PostgreSQL connection<input id="postgresDsn" type="password" autocomplete="off" placeholder="postgresql://user:password@host:5432/database"><span class="field-help">Leave empty to disable database logging. Logs are buffered in /data/mita.log until a connection is configured.</span></label>
             </div>
             <div id="logDbStatus" class="muted" role="status">Checking database logging…</div>
+            <div id="backupStatus" class="muted" role="status">Checking PostgreSQL backups…</div>
           </div>
           <div class="card-actions"><button id="showDsn" class="secondary" type="button">Show connection</button><button id="saveConf" type="button">Save settings</button></div>
         </section>
@@ -633,6 +634,17 @@ async function loadLogDbStatus(){
     $('#logDbStatus').textContent='Unable to read PostgreSQL status: '+e.message;
   }
 }
+async function loadBackupStatus(){
+  try {
+    const data=await request('api/backup-status');
+    const s=data.status||{};
+    if(!s.enabled) $('#backupStatus').textContent='Backups disabled (PostgreSQL not configured).';
+    else if(s.connected) $('#backupStatus').textContent='Backups · '+(s.backup_count||0)+' saved · last '+(s.last_backup?displayTime(s.last_backup):'pending')+' · '+(s.last_reason||'');
+    else $('#backupStatus').textContent='Backup pending'+(s.last_error?' · '+s.last_error:'')+' · retry automatically';
+  }catch(e){
+    $('#backupStatus').textContent='Unable to read backup status: '+e.message;
+  }
+}
 $('#showDsn').onclick=()=>{
   const input=$('#postgresDsn');
   input.type=input.type==='password'?'text':'password';
@@ -644,7 +656,7 @@ $('#saveConf').onclick=async()=>{
       log_level:$('#logLevel').value,
       postgres_dsn:$('#postgresDsn').value.trim()
     })});
-    await load();await loadLogDbStatus();message('Conf saved');
+    await load();await loadLogDbStatus();await loadBackupStatus();message('Conf saved');
   }catch(e){alert(e.message)}
 };
 
@@ -658,7 +670,7 @@ $('#saveSettings').onclick=async()=>{
     await load();message('Settings saved');
   }catch(e){alert(e.message)}
 };
-load().catch(e=>alert(e.message));
+load().then(()=>loadBackupStatus()).catch(e=>alert(e.message));
 </script>
 </body>
 </html>
