@@ -109,6 +109,33 @@ class AdminAPITests(unittest.TestCase):
         self.assertIn("reload rejected", data["error"])
         self.assertEqual(app.get_settings()["log_level"], "INFO")
 
+    def test_contact_email_is_optional_and_persisted_without_reloading_mita(self):
+        status, data = self.call("PUT", "/api/settings", {"contact_email": "  support@example.com "})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["settings"]["contact_email"], "support@example.com")
+        self.assertEqual(app.get_settings()["contact_email"], "support@example.com")
+        self.reload_mock.assert_not_called()
+
+        status, data = self.call("GET", "/api/state")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["settings"]["contact_email"], "support@example.com")
+
+        status, data = self.call("PUT", "/api/settings", {"contact_email": ""})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["settings"]["contact_email"], "")
+        self.reload_mock.assert_not_called()
+
+    def test_invalid_contact_email_does_not_change_settings(self):
+        for address in ("bad-address", "user@localhost", "bad\\n@mail.com",
+                        "bad@@example.com", "a" * 65 + "@example.com", 42,
+                        "<img src=x onerror=alert(1)>@example.com"):
+            with self.subTest(address=address):
+                status, data = self.call("PUT", "/api/settings", {"contact_email": address})
+                self.assertEqual(status, 400)
+                self.assertIn("contact_email", data["error"])
+                self.assertEqual(app.get_settings().get("contact_email", ""), "")
+        self.reload_mock.assert_not_called()
+
     def test_settings_without_log_change_does_not_reload(self):
         status, _ = self.call("PUT", "/api/settings", {"public_mieru_port": 443})
         self.assertEqual(status, 200)
@@ -171,6 +198,20 @@ class SubscriptionTests(unittest.TestCase):
 
     def restore_paths(self):
         app.DATA_DIR, app.USERS_PATH, app.SETTINGS_PATH, app.MITA_CONFIG_PATH = self.original_paths
+
+    def test_contact_email_appears_only_when_configured(self):
+        template_path = Path(__file__).resolve().parents[1] / "mita" / "subscription.html"
+        with mock.patch.object(app, "SUBSCRIPTION_PAGE_PATH", template_path):
+            empty_page = app.render_subscription_page(app.get_users()[0])
+            self.assertNotIn('class="contact-info"', empty_page)
+            self.assertNotIn("@@CONTACT_LINK_HTML@@", empty_page)
+            settings = app.get_settings()
+            settings["contact_email"] = "support+vpn@example.com"
+            app.write_json(app.SETTINGS_PATH, settings)
+            page = app.render_subscription_page(app.get_users()[0])
+            self.assertIn('href="mailto:support+vpn@example.com"', page)
+            self.assertIn("support+vpn@example.com</a>", page)
+            self.assertNotIn("@@CONTACT_LINK_HTML@@", page)
 
     def test_device_creation_and_limit(self):
         with mock.patch.object(app, "reload_mita", return_value=(True, "")) as reload_mock:
