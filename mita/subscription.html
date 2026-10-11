@@ -253,6 +253,14 @@
       overflow-wrap: anywhere;
     }
     .footer { margin-top: 48px; text-align: center; font-size: 10px; letter-spacing: .035em; color: var(--muted); }
+    .contact-info {
+      margin-top: 15px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .contact-info a { color: var(--pink); text-decoration: underline; text-underline-offset: 3px; }
     @keyframes reveal {
       from { opacity: 0; transform: translate3d(0, 8px, 0); }
       to { opacity: 1; transform: translate3d(0, 0, 0); }
@@ -463,6 +471,7 @@
       </div>
     </details>
   </div>
+  @@CONTACT_LINK_HTML@@
   <p class="footer">Mita · Приватная подписка Mieru</p>
 </main>
 <script>window.__SUBSCRIPTION__=@@BOOTSTRAP_JSON@@;</script>
