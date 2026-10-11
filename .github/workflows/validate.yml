@@ -18,7 +18,8 @@ jobs:
         run: python3 -m unittest discover -s tests -v
       - name: Shell syntax and offline Linux installer checks
         run: |
-          bash -n mita/run.sh mita/install-linux.sh
+          bash -n mita/run.sh
+          bash -n mita/install-linux.sh
           bash mita/install-linux.sh clashmi deb --dry-run | grep -F 'KaringX/clashmi|'
           bash mita/install-linux.sh karing rpm --dry-run | grep -F 'KaringX/karing|'
           bash mita/install-linux.sh flclashx appimage --dry-run | grep -F 'pluralplay/FlClashX|'
