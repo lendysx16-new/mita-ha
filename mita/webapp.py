@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 import argparse
+import contextlib
 import copy
 import html
+import hashlib
+import io
 import json
 import os
 import re
 import secrets
 import signal
 import subprocess
+import tarfile
 import threading
 import time
 import urllib.error
@@ -37,6 +41,7 @@ SUB_PORT = 8099
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 HWID_RE = re.compile(r"^[A-Za-z0-9=-]{10,64}$")
 DEVICE_ID_RE = re.compile(r"^[A-Fa-f0-9]{16}$")
+CONTACT_EMAIL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9.-]+$")
 LOCK = threading.RLock()
 RELEASE_CACHE_LOCK = threading.RLock()
 RELEASE_CACHE = {}
@@ -48,6 +53,19 @@ LOG_DB_STATUS = {
     "last_error": "",
     "last_write": None,
     "rows_written": 0,
+}
+BACKUP_INTERVAL_SECONDS = 24 * 60 * 60
+BACKUP_RETRY_SECONDS = 5 * 60
+BACKUP_KEEP_COUNT = 30
+BACKUP_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
+BACKUP_STATUS_LOCK = threading.RLock()
+BACKUP_STATUS = {
+    "enabled": False,
+    "connected": False,
+    "last_error": "",
+    "last_backup": None,
+    "last_reason": None,
+    "backup_count": 0,
 }
 
 
@@ -343,6 +361,152 @@ def log_db_worker():
             time.sleep(5)
 
 
+def set_backup_status(**values):
+    with BACKUP_STATUS_LOCK:
+        BACKUP_STATUS.update(values)
+
+
+def get_backup_status():
+    with BACKUP_STATUS_LOCK:
+        return dict(BACKUP_STATUS)
+
+
+def build_backup_archive():
+    """Snapshot persistent operational data, excluding logs and Unix sockets.
+
+    The archive stores credentials and must be treated as confidential.
+    """
+    names = ("users.json", "settings.json", "mita-server.json", "options.json")
+    files = []
+    total = 0
+    with LOCK:
+        for name in names:
+            path = DATA_DIR / name
+            if not path.exists():
+                if name in ("users.json", "settings.json"):
+                    raise RuntimeError(f"backup required file missing: {name}")
+                continue
+            if not path.is_file() or path.is_symlink():
+                raise RuntimeError(f"unsafe backup path: {name}")
+            data = path.read_bytes()
+            total += len(data)
+            if total > BACKUP_MAX_UNCOMPRESSED_BYTES:
+                raise RuntimeError("backup exceeds maximum uncompressed size")
+            files.append((name, data))
+
+        metrics_root = DATA_DIR / "mita-state"
+        if metrics_root.is_symlink():
+            raise RuntimeError("backup cannot include symlinked metrics")
+        if metrics_root.is_dir():
+            for path in sorted(metrics_root.rglob("*")):
+                if path.is_symlink():
+                    raise RuntimeError("backup cannot include symlinks")
+                if path.is_dir():
+                    continue
+                if not path.is_file():
+                    raise RuntimeError("backup contains unsupported file")
+                name = path.relative_to(DATA_DIR).as_posix()
+                data = path.read_bytes()
+                total += len(data)
+                if total > BACKUP_MAX_UNCOMPRESSED_BYTES:
+                    raise RuntimeError("backup exceeds maximum uncompressed size")
+                files.append((name, data))
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for name, data in files:
+            info = tarfile.TarInfo(name=name)
+            info.mode = 0o600
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    payload = buffer.getvalue()
+    return payload, [name for name, _ in files], hashlib.sha256(payload).hexdigest()
+
+
+def save_postgres_backup(dsn, reason="scheduled"):
+    """Persist an atomic compressed snapshot and enforce bounded retention."""
+    if psycopg2 is None:
+        raise RuntimeError("psycopg2 is not installed")
+    payload, names, digest = build_backup_archive()
+    with contextlib.closing(psycopg2.connect(dsn, connect_timeout=8)) as connection:
+        with connection:
+            with connection.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS mita_backups (
+                        id BIGSERIAL PRIMARY KEY,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        reason TEXT NOT NULL,
+                        file_names JSONB NOT NULL,
+                        checksum_sha256 TEXT NOT NULL,
+                        payload BYTEA NOT NULL
+                    )
+                """)
+                cur.execute(
+                    """
+                    INSERT INTO mita_backups (reason, file_names, checksum_sha256, payload)
+                    VALUES (%s, %s::jsonb, %s, %s)
+                    """,
+                    (reason, json.dumps(names), digest, psycopg2.Binary(payload)),
+                )
+                cur.execute(
+                    """
+                    DELETE FROM mita_backups
+                    WHERE id NOT IN (
+                        SELECT id FROM mita_backups ORDER BY created_at DESC, id DESC LIMIT %s
+                    )
+                    """,
+                    (BACKUP_KEEP_COUNT,),
+                )
+                cur.execute("SELECT COUNT(*) FROM mita_backups")
+                count = int(cur.fetchone()[0])
+    return {"reason": reason, "file_names": names, "sha256": digest, "count": count}
+
+
+def backup_db_worker():
+    """Back up on every server start, then every 24h; retry failed jobs."""
+    if psycopg2 is None:
+        set_backup_status(last_error="psycopg2 is not installed")
+        return
+    active_dsn = None
+    next_backup_at = 0.0
+    reason = "startup"
+    while True:
+        dsn = str(get_settings().get("postgres_dsn", "") or "").strip()
+        set_backup_status(enabled=bool(dsn))
+        if not dsn:
+            active_dsn = None
+            next_backup_at = 0.0
+            reason = "startup"
+            set_backup_status(connected=False, last_error="")
+            time.sleep(30)
+            continue
+        if dsn != active_dsn:
+            active_dsn = dsn
+            next_backup_at = 0.0
+            reason = "startup"
+            set_backup_status(connected=False, last_error="")
+        remaining = next_backup_at - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(60.0, remaining))
+            continue
+        try:
+            result = save_postgres_backup(dsn, reason)
+            set_backup_status(
+                connected=True,
+                last_error="",
+                last_backup=utc_now(),
+                last_reason=result["reason"],
+                backup_count=result["count"],
+            )
+            next_backup_at = time.monotonic() + BACKUP_INTERVAL_SECONDS
+            reason = "scheduled"
+        except Exception as exc:
+            # Do not print exception details or the DSN: backup contains secrets.
+            set_backup_status(connected=False, last_error=type(exc).__name__)
+            next_backup_at = time.monotonic() + BACKUP_RETRY_SECONDS
+        time.sleep(1)
+
+
 def migrate_users():
     users = get_users()
     changed = False
@@ -385,6 +549,33 @@ def normalize_base_url(value):
     except ValueError as exc:
         raise ValueError("invalid subscription_base_url port") from exc
     return value
+
+
+def normalize_contact_email(value):
+    """Validate the optional public contact address before saving or displaying it."""
+    if not isinstance(value, str):
+        raise ValueError("invalid contact_email")
+    address = value.strip()
+    if not address:
+        return ""
+    if len(address) > 254 or not CONTACT_EMAIL_RE.fullmatch(address):
+        raise ValueError("invalid contact_email")
+    local, domain = address.rsplit("@", 1)
+    if (
+        len(local) > 64
+        or local.startswith(".")
+        or local.endswith(".")
+        or ".." in local
+        or len(domain) > 253
+    ):
+        raise ValueError("invalid contact_email")
+    labels = domain.split(".")
+    if len(labels) < 2 or any(
+        not label or len(label) > 63 or label.startswith("-") or label.endswith("-")
+        for label in labels
+    ) or not labels[-1].isalpha() or len(labels[-1]) < 2:
+        raise ValueError("invalid contact_email")
+    return address
 
 
 def initialize():
@@ -435,6 +626,7 @@ def initialize():
             "default_allow_private_ip": bool(options.get("allow_private_ip", False)),
             "default_allow_loopback_ip": bool(options.get("allow_loopback_ip", False)),
             "postgres_dsn": str(options.get("postgres_dsn", "")).strip(),
+            "contact_email": "",
         }
         write_json(SETTINGS_PATH, settings)
 
@@ -784,6 +976,20 @@ def detect_platform_from_user_agent(user_agent):
 def render_subscription_page(user, request_headers=None):
     template = SUBSCRIPTION_PAGE_PATH.read_text(encoding="utf-8")
     subscription_url = public_user(user)["subscription_url"]
+    try:
+        contact_email = normalize_contact_email(get_settings().get("contact_email", ""))
+    except ValueError:
+        contact_email = ""
+    contact_link = ""
+    if contact_email:
+        escaped_email = html.escape(contact_email, quote=True)
+        mailto_url = html.escape(
+            "mailto:" + urllib.parse.quote(contact_email, safe="@._+-"), quote=True
+        )
+        contact_link = (
+            '<p class="contact-info">Связаться: '
+            f'<a href="{mailto_url}">{escaped_email}</a></p>'
+        )
     user_agent = ""
     if request_headers is not None:
         user_agent = str(request_headers.get("User-Agent", "") or "")
@@ -801,6 +1007,7 @@ def render_subscription_page(user, request_headers=None):
         .replace("@@PAGE_TITLE@@", html.escape("Mieru · " + user["username"]))
         .replace("@@USERNAME_HTML@@", html.escape(user["username"]))
         .replace("@@SUBSCRIPTION_URL_HTML@@", html.escape(subscription_url))
+        .replace("@@CONTACT_LINK_HTML@@", contact_link)
         .replace("@@BOOTSTRAP_JSON@@", bootstrap)
     )
 
@@ -992,6 +1199,9 @@ class AdminHandler(CommonHandler):
         if path == "/api/log-db-status":
             self.send_json(HTTPStatus.OK, {"status": get_log_db_status()})
             return
+        if path == "/api/backup-status":
+            self.send_json(HTTPStatus.OK, {"status": get_backup_status()})
+            return
         self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self):
@@ -1118,6 +1328,8 @@ class AdminHandler(CommonHandler):
                     if len(postgres_dsn) > 4096:
                         raise ValueError("postgres_dsn is too long")
                     settings["postgres_dsn"] = postgres_dsn
+                if "contact_email" in body:
+                    settings["contact_email"] = normalize_contact_email(body["contact_email"])
 
                 settings["public_mieru_host"] = host
                 settings["public_mieru_port"] = port
@@ -1293,6 +1505,7 @@ def serve():
 
     threading.Thread(target=sub.serve_forever, name="subscription-server", daemon=True).start()
     threading.Thread(target=log_db_worker, name="postgres-log-forwarder", daemon=True).start()
+    threading.Thread(target=backup_db_worker, name="postgres-backup-worker", daemon=True).start()
     print("[web] admin UI listening on 8098 (Ingress only)", flush=True)
     print("[web] subscription server listening on 8099", flush=True)
     admin.serve_forever()

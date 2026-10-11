@@ -6,6 +6,8 @@ This app runs `mita`, provides a Home Assistant Ingress admin UI, and serves per
 
 Open the app and click **Open Web UI**.
 
+The **Users** tab is a compact directory. Select an account to open its dedicated profile with its subscription URL, copy/rotate actions, delete control, HWID devices and limits. The add-user form is collapsed until **+ Add user** is selected, and public connection settings have moved to **Settings**. **Devices** now shows a searchable-sized compact table of registered devices with direct links to the owning account. This keeps secrets and destructive actions off the main list.
+
 The admin UI is not published as a normal host port. It is served through Home Assistant Ingress and lets you:
 
 - add users;
@@ -132,3 +134,37 @@ The script is versioned in this repository (`mita/install-linux.sh`). Inspect th
 To override package detection, run `bash ./mita-install-linux.sh koala rpm`, `... deb`, or `... appimage`. Some clients publish only AMD64 packages or do not publish AppImages; unsupported architecture/format combinations fail with an explicit message. Test compatibility without downloading or installing using `bash ./mita-install-linux.sh koala deb --dry-run`.
 
 **Privacy:** the Linux terminal command references only the public installation script and client ID; it never includes the user's subscription URL or token. After installing the application, use step 2 on the page to add the private subscription in the app.
+
+## Public support email
+
+Under **Public connection** in the admin UI, set **Contact email (optional)**. It is validated and stored in `/data/settings.json`. When non-empty, the public subscription setup page displays a tappable `mailto:` address beneath the connection steps. Clearing the field removes it. Updating this metadata does not restart Mita.
+
+## Automatic PostgreSQL backups
+
+If the **PostgreSQL connection** field in the admin UI is configured, a background worker stores compressed snapshots in the PostgreSQL table `mita_backups`:
+
+- **After every startup of the admin backend**, then **every 24 hours** after a successful snapshot. This includes app restarts and reboots; changing the DSN also triggers a new snapshot.
+- On errors or temporary PostgreSQL outages, the worker retries every **5 minutes**, without stopping the VPN.
+- Includes `users.json` (user credentials, HWIDs and subscription tokens), `settings.json`, `mita-server.json`, `options.json` if present, and the files under `mita-state/` (including rolling traffic metrics).
+- Excludes `mita.log`, log-forwarder offsets, Unix sockets, other temporary data and the database itself. Logging to the `mita_logs` table is configured separately.
+- Uses a gzip-compressed tar archive inside PostgreSQL `BYTEA`, a SHA-256 digest, the archive's file list, the backup reason and creation timestamp. The newest **30 snapshots** are retained; older records are deleted in the same transaction.
+- Rejects symbolic links and snapshots larger than **64 MiB uncompressed**. Backup errors appear in the **Config** section; the worker retries automatically.
+
+**Security:** these backups contain plaintext credentials, subscription tokens, and potentially the PostgreSQL connection string. Protect database accounts, backups and transfers. Use a dedicated PostgreSQL account with restricted access; backups are not a substitute for an independent encrypted off-site backup.
+
+To inspect available backups using `psql`:
+
+```sql
+SELECT id, created_at, reason, file_names, checksum_sha256, octet_length(payload) AS bytes
+FROM mita_backups ORDER BY created_at DESC, id DESC;
+```
+
+To **export** a particular snapshot (for example id 12) from a trusted host with `psql` and `base64` available:
+
+```bash
+psql "$DATABASE_URL" -Atc "SELECT encode(payload, 'base64') FROM mita_backups WHERE id = 12" | base64 -d > mita-backup.tar.gz
+sha256sum mita-backup.tar.gz
+tar -tzf mita-backup.tar.gz
+```
+
+Compare the SHA-256 value with the corresponding database record before restoring. Extract only into a trusted, **stopped** add-on's data directory after making a backup of its current contents. Never run a restore over a running add-on, and never expose the backup archive to the public subscription site.

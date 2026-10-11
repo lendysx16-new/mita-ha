@@ -120,8 +120,8 @@ input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var
 .check { display: flex; flex-direction: row; align-items: center; gap: 9px; min-height: 30px; font-size: 12px; font-weight: 500; cursor: pointer; }
 .check-stack { display: grid; gap: 9px; padding: 12px 0 0; }
 .field-help, .legacy-note { font-size: 11px; color: var(--muted-foreground); line-height: 1.5; font-weight: 400; }
-button:not(.tab):not(.timestamp-toggle):not(.traffic-toggle) { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; gap: 7px; padding: 8px 13px; border: 1px solid var(--primary); border-radius: 7px; background: var(--primary); color: var(--primary-foreground); font-size: 12px; font-weight: 590; white-space: nowrap; transition: background .15s,opacity .15s; }
-button:not(.tab):not(.timestamp-toggle):not(.traffic-toggle):hover { opacity: .82; }
+button:not(.tab):not(.timestamp-toggle):not(.traffic-toggle):not(.user-open):not(.directory-link) { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; gap: 7px; padding: 8px 13px; border: 1px solid var(--primary); border-radius: 7px; background: var(--primary); color: var(--primary-foreground); font-size: 12px; font-weight: 590; white-space: nowrap; transition: background .15s,opacity .15s; }
+button:not(.tab):not(.timestamp-toggle):not(.traffic-toggle):not(.user-open):not(.directory-link):hover { opacity: .82; }
 button.secondary { background: var(--card)!important; border-color: var(--border)!important; color: var(--foreground)!important; }
 button.danger { background: var(--destructive-muted)!important; border-color: color-mix(in srgb,var(--destructive) 30%,transparent)!important; color: var(--destructive)!important; }
 .actions { display: flex; flex-wrap: wrap; gap: 7px; }
@@ -235,6 +235,66 @@ code { font-size: 11px; overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto!important; transition: none!important; animation: none!important; }
 }
+
+/* Directory-first admin layout: lightweight overview, details on demand. */
+.stat-grid { gap: 10px; margin-bottom: 17px; }
+.stat-card { padding: 11px 15px; }
+.stat-label { margin-bottom: 1px; }
+.stat-number { font-size: 22px; }
+.stat-note { display: none; }
+.list-tools { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
+.list-tools .search-box { width: 240px; }
+.user-open, .directory-link {
+  display: inline-flex; align-items: center; gap: 10px;
+  border: 0; background: transparent; color: var(--foreground);
+  font: inherit; font-weight: 650; text-align: left; padding: 2px 0;
+  min-width: 0; cursor: pointer;
+}
+.user-open:hover, .directory-link:hover { color: var(--muted-foreground); }
+.user-open:focus-visible, .directory-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+.user-table td, .device-directory-table td { padding: 11px 14px; }
+.user-table td:last-child { text-align: right; }
+.user-table .row-chevron { color: var(--muted-foreground); font-size: 21px; }
+.user-table .badge { font-size: 11px; }
+#emptyUsers { border-top: 1px solid var(--border); }
+#addUserPanel .card { max-width: 780px; }
+.detail-navigation { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
+.detail-title { display: flex; align-items: center; gap: 13px; min-width: 0; }
+.detail-title h2 { font-size: 20px; overflow-wrap: anywhere; }
+.detail-avatar { width: 44px; height: 44px; font-size: 18px; flex: none; }
+.detail-label { font-size: 12px; font-weight: 600; margin-bottom: 10px; }
+.detail-link-row { display: flex; gap: 10px; align-items: center; }
+.detail-subscription {
+  flex: 1; min-width: 0; padding: 11px; color: var(--foreground);
+  border: 1px solid var(--border); background: var(--secondary);
+  border-radius: 6px; font-size: 12px; overflow-wrap: anywhere;
+}
+.detail-link-row button { flex: none; }
+.detail-link-row + .field-help { margin-top: 10px; }
+.device-directory-table code { max-width: 220px; }
+#detailDeviceUsers .device-user { border-bottom: 0; }
+#detailDeviceUsers .device-user > .section-head { display: none; }
+#detailDeviceUsers .device-list { width: 100%; }
+@media (max-width: 700px) {
+  .stat-grid { gap: 7px; margin-bottom: 14px; }
+  .stat-card { padding: 10px 12px; }
+  .stat-number { font-size: 20px; }
+  .list-tools { width: 100%; }
+  .list-tools .search-box { width: auto; max-width: none; flex: 1; min-width: 120px; }
+  .user-table tr { display: grid!important; grid-template-columns: minmax(0,1fr) auto; gap: 8px 12px; padding: 12px; }
+  .user-table td { display: block!important; padding: 0!important; border: 0!important; }
+  .user-table td[data-label]::before { display: none!important; }
+  .user-table td:nth-child(1) { grid-column: 1; grid-row: 1; }
+  .user-table td:nth-child(2) { grid-column: 1; grid-row: 2; }
+  .user-table td:nth-child(3) { grid-column: 2; grid-row: 1; text-align: right; }
+  .user-table td:nth-child(4) { grid-column: 2; grid-row: 2; }
+  .user-table .avatar { width: 28px; height: 28px; }
+  .user-table .row-chevron { font-size: 17px; }
+  .detail-link-row { align-items: stretch; flex-wrap: wrap; }
+  .detail-link-row button { width: 100%; }
+  .detail-title h2 { font-size: 17px; }
+  .device-directory-table td code { max-width: 100%; }
+}
 </style>
 </head>
 <body>
@@ -259,17 +319,25 @@ code { font-size: 11px; overflow-wrap: anywhere; }
         <div class="stat-card"><div class="stat-label">Registered devices</div><div class="stat-number" id="statDevices">—</div><div class="stat-note">HWID credentials</div></div>
         <div class="stat-card"><div class="stat-label">Legacy enabled</div><div class="stat-number" id="statLegacy">—</div><div class="stat-note">Password credentials</div></div>
       </div>
+
       <div id="usersTab" class="tab-panel active" role="tabpanel">
         <section class="card">
-          <div class="card-header"><div><h2>Accounts</h2><p class="card-subtitle">Manage subscriptions and access tokens.</p></div><label class="search-box"><span class="field-help">Search users</span><input id="userSearch" type="search" placeholder="Filter by username…" autocomplete="off"></label></div>
+          <div class="card-header">
+            <div><h2>Accounts</h2><p class="card-subtitle">Select a user to manage subscriptions, devices and access.</p></div>
+            <div class="list-tools">
+              <label class="search-box"><span class="field-help">Search users</span><input id="userSearch" type="search" placeholder="Filter by username…" autocomplete="off"></label>
+              <button id="toggleAddUser" type="button">+ Add user</button>
+            </div>
+          </div>
           <div class="table-scroll"><table class="user-table">
-            <thead><tr><th>User</th><th>Access</th><th>Devices</th><th>Subscription</th><th></th></tr></thead>
+            <thead><tr><th>User</th><th>Access</th><th>Devices</th><th></th></tr></thead>
             <tbody id="users"></tbody>
           </table></div>
+          <p id="emptyUsers" class="table-empty" hidden>No matching users.</p>
         </section>
-        <div class="layout-two">
+        <div id="addUserPanel" hidden>
           <section class="card">
-            <div class="card-header"><div><h2>Add user</h2><p class="card-subtitle">Create credentials for a new client.</p></div></div>
+            <div class="card-header"><div><h2>Add user</h2><p class="card-subtitle">Create credentials for a new client.</p></div><button id="cancelAddUser" class="secondary" type="button">Cancel</button></div>
             <div class="card-body"><div class="form-grid">
               <label>Username<input id="username" autocomplete="off" placeholder="e.g. mobile-user" maxlength="64"></label>
               <label>Password<input id="password" type="password" autocomplete="new-password" placeholder="Automatically generated"></label>
@@ -286,22 +354,43 @@ code { font-size: 11px; overflow-wrap: anywhere; }
               <div class="actions"><button id="copyGenerated" class="secondary" type="button">Copy password</button><button id="dismissGenerated" class="secondary" type="button">Dismiss</button></div>
             </div>
           </section>
-          <section class="card">
-            <div class="card-header"><div><h2>Public connection</h2><p class="card-subtitle">Host and subscription URL shared with clients.</p></div></div>
-            <div class="card-body"><div class="form-grid">
-              <label>Hostname<input id="host" placeholder="vpn.example.com" spellcheck="false"></label>
-              <label>TCP port<input id="port" type="number" min="1" max="65535" inputmode="numeric"></label>
-              <label class="span-2">Subscription base URL<input id="base" type="url" placeholder="https://vpn.example.com" spellcheck="false"></label>
-            </div></div>
-            <div class="card-actions"><button id="saveSettings" type="button">Save settings</button></div>
-          </section>
         </div>
+      </div>
+      <div id="userDetailTab" class="tab-panel" role="tabpanel" aria-label="User details">
+        <div class="detail-navigation">
+          <button id="backToUsers" class="secondary" type="button">← Back to users</button>
+          <span class="muted">User details</span>
+        </div>
+        <section class="card">
+          <div class="card-header">
+            <div class="detail-title">
+              <span class="avatar detail-avatar" id="detailAvatar" aria-hidden="true">U</span>
+              <div><h2 id="detailUsername"></h2><p class="card-subtitle" id="detailAccess"></p></div>
+            </div>
+            <button id="detailDelete" class="danger" type="button">Delete user</button>
+          </div>
+          <div class="card-body">
+            <div class="detail-label">Subscription link</div>
+            <div class="detail-link-row">
+              <code id="detailSubscription" class="detail-subscription"></code>
+              <button id="detailCopy" class="secondary" type="button">Copy link</button>
+            </div>
+            <p class="field-help">The link contains a private access token. Share it only with this user.</p>
+          </div>
+          <div class="card-actions"><button id="detailRotate" class="secondary" type="button">Rotate token</button></div>
+        </section>
+        <section class="card">
+          <div class="card-header"><div><h2>Devices and access</h2><p class="card-subtitle">Manage HWID credentials and legacy access for this user.</p></div></div>
+          <div id="detailDeviceUsers"></div>
+        </section>
       </div>
       <div id="devicesTab" class="tab-panel" role="tabpanel">
         <section class="card">
-          <div class="card-header"><div><h2>Devices</h2><p class="card-subtitle">Manage per-user device limits and registered HWIDs.</p></div></div>
-          <div class="card-body"><p class="muted">The same subscription link can register separate devices. Supported clients register an HWID on the first subscription refresh, even when legacy access is disabled.</p></div>
-          <div id="deviceUsers"></div>
+          <div class="card-header"><div><h2>Registered devices</h2><p class="card-subtitle">Devices grouped by owner. Open a user to edit limits or remove devices.</p></div></div>
+          <div class="table-scroll"><table class="device-directory-table">
+            <thead><tr><th>Device</th><th>Owner</th><th>HWID</th><th>Last refresh</th><th></th></tr></thead>
+            <tbody id="deviceUsers"></tbody>
+          </table></div>
         </section>
       </div>
       <div id="trafficTab" class="tab-panel" role="tabpanel">
@@ -316,6 +405,16 @@ code { font-size: 11px; overflow-wrap: anywhere; }
       </div>
       <div id="confTab" class="tab-panel" role="tabpanel">
         <section class="card">
+            <div class="card-header"><div><h2>Public connection</h2><p class="card-subtitle">Host and subscription URL shared with clients.</p></div></div>
+            <div class="card-body"><div class="form-grid">
+              <label>Hostname<input id="host" placeholder="vpn.example.com" spellcheck="false"></label>
+              <label>TCP port<input id="port" type="number" min="1" max="65535" inputmode="numeric"></label>
+              <label class="span-2">Subscription base URL<input id="base" type="url" placeholder="https://vpn.example.com" spellcheck="false"></label>
+              <label class="span-2">Contact email (optional)<input id="contactEmail" type="email" maxlength="254" placeholder="support@example.com" autocomplete="email" spellcheck="false"><span class="field-help">Shown on the public subscription page only when set. Leave blank to hide it.</span></label>
+            </div></div>
+            <div class="card-actions"><button id="saveSettings" type="button">Save settings</button></div>
+          </section>
+        <section class="card">
           <div class="card-header"><div><h2>Server settings</h2><p class="card-subtitle">Log verbosity and optional PostgreSQL log forwarding.</p></div></div>
           <div class="card-body">
             <div class="form-grid">
@@ -323,6 +422,8 @@ code { font-size: 11px; overflow-wrap: anywhere; }
               <label class="span-2">PostgreSQL connection<input id="postgresDsn" type="password" autocomplete="off" placeholder="postgresql://user:password@host:5432/database"><span class="field-help">Leave empty to disable database logging. Logs are buffered in /data/mita.log until a connection is configured.</span></label>
             </div>
             <div id="logDbStatus" class="muted" role="status">Checking database logging…</div>
+            <p class="field-help">When PostgreSQL is configured, Mita saves up to 30 compressed backups: on startup and every 24 hours. Backups contain user passwords and subscription tokens; protect database access.</p>
+            <div id="backupStatus" class="muted" role="status">Checking PostgreSQL backups…</div>
           </div>
           <div class="card-actions"><button id="showDsn" class="secondary" type="button">Show connection</button><button id="saveConf" type="button">Save settings</button></div>
         </section>
@@ -346,25 +447,60 @@ function message(s){const el=$('#msg');el.textContent=s;clearTimeout(messageTime
 let trafficTimer=null;
 const openTrafficUsers=new Set();
 const absoluteTimeKeys=new Set();
+let usersCache=[];
+let currentUserName=null;
+let returnToTab='usersTab';
+
+function currentUser(){ return usersCache.find(u=>u.username===currentUserName)||null; }
+function openUser(username){
+  if(!usersCache.some(u=>u.username===username))return;
+  const active=document.querySelector('.tab-panel.active');
+  if(active?.id==='usersTab'||active?.id==='devicesTab')returnToTab=active.id;
+  currentUserName=username;
+  renderUserDetail();
+  setTab('userDetailTab');
+}
+function renderUserDetail(){
+  const u=currentUser();
+  if(!u)return;
+  $('#detailUsername').textContent=u.username;
+  $('#detailAvatar').textContent=u.username.slice(0,1).toUpperCase();
+  $('#detailAccess').textContent=[
+    u.allow_private_ip?'LAN':'',
+    u.allow_loopback_ip?'Loopback':'',
+    !u.allow_private_ip&&!u.allow_loopback_ip?'Public only':'',
+    u.legacy_enabled?'Legacy enabled':'HWID only'
+  ].filter(Boolean).join(' · ');
+  $('#detailSubscription').textContent=u.subscription_url;
+  renderDevices(u);
+}
+function bindUserLinks(root){
+  root.querySelectorAll('[data-open-user]').forEach(button=>{
+    button.onclick=()=>openUser(button.dataset.openUser);
+  });
+}
 
 function setTab(id){
   const sections={
-    usersTab:['Users','Manage access, credentials, and subscriptions.'],
-    devicesTab:['Devices','Control registered HWIDs and device access.'],
+    usersTab:['Users','Select an account to view credentials and device settings.'],
+    userDetailTab:['User details','Manage this account and its registered devices.'],
+    devicesTab:['Devices','Browse registered HWIDs and open their owners.'],
     trafficTab:['Traffic','Review per-user and per-device traffic statistics.'],
     confTab:['Settings','Configure logging and database forwarding.']
   };
-  const [title,description]=sections[id]||sections.usersTab;
+  const [defaultTitle,description]=sections[id]||sections.usersTab;
+  const title=id==='userDetailTab'&&currentUserName?currentUserName:defaultTitle;
   $('#pageTitle').textContent=title;
   $('#pageDescription').textContent=description;
   $('#breadcrumb').textContent=title;
   document.title='Mita · '+title;
   document.querySelectorAll('.tab').forEach(b=>{
-    const active=b.dataset.tab===id;
+    const active=b.dataset.tab===(id==='userDetailTab'?'usersTab':id);
     b.classList.toggle('active',active);
     b.setAttribute('aria-selected',String(active));
   });
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.toggle('active',p.id===id));
+  document.querySelector('.stat-grid').hidden=id!=='usersTab';
   if(trafficTimer){clearInterval(trafficTimer);trafficTimer=null}
   if(id==='trafficTab'){
     loadTraffic();
@@ -442,8 +578,8 @@ function displayClock(value=new Date()){
   return Number.isNaN(d.getTime())?'-':timeFormatter.format(d);
 }
 
-function renderDevices(users){
-  $('#deviceUsers').innerHTML=users.map(u=>{
+function renderDevices(user){
+  $('#detailDeviceUsers').innerHTML=(user?[user]:[]).map(u=>{
     const rows=u.devices.length?'<table class="device-list"><thead><tr><th>Device</th><th>HWID</th><th>Last subscription refresh</th><th></th></tr></thead><tbody>'+
       u.devices.map(d=>'<tr>'+
         '<td data-label="Device"><strong>'+esc(d.name)+'</strong><div class="device-meta">'+esc([d.os,d.os_version].filter(Boolean).join(' '))+'</div></td>'+
@@ -463,6 +599,21 @@ function renderDevices(users){
   }).join('');
   document.querySelectorAll('[data-save-devices]').forEach(b=>b.onclick=()=>saveDeviceSettings(b.dataset.saveDevices));
   document.querySelectorAll('[data-remove-device]').forEach(b=>b.onclick=()=>removeDevice(b.dataset.user,b.dataset.removeDevice));
+  bindTimeToggles($('#detailDeviceUsers'));
+}
+
+function renderDeviceDirectory(users){
+  const devices=users.flatMap(u=>(u.devices||[]).map(d=>({user:u.username,device:d})));
+  $('#deviceUsers').innerHTML=devices.length?devices.map(({user,device:d})=>
+    '<tr>'+
+      '<td data-label="Device"><strong>'+esc(d.name)+'</strong><div class="device-meta">'+esc([d.os,d.os_version].filter(Boolean).join(' '))+'</div></td>'+
+      '<td data-label="Owner"><button class="directory-link" data-open-user="'+esc(user)+'">'+esc(user)+'</button></td>'+
+      '<td data-label="HWID"><code>'+esc(d.hwid)+'</code></td>'+
+      '<td data-label="Last refresh">'+timeControl(d.last_seen,'device:'+user+':'+d.id)+'</td>'+
+      '<td class="row-actions"><button class="secondary" data-open-user="'+esc(user)+'">View user →</button></td>'+
+    '</tr>'
+  ).join(''):'<tr><td colspan="5" class="table-empty">No registered devices yet.</td></tr>';
+  bindUserLinks($('#deviceUsers'));
   bindTimeToggles($('#deviceUsers'));
 }
 
@@ -546,33 +697,45 @@ async function load(){
   $('#host').value=data.settings.public_mieru_host||'';
   $('#port').value=data.settings.public_mieru_port||8443;
   $('#base').value=data.settings.subscription_base_url||'';
+  $('#contactEmail').value=data.settings.contact_email||'';
   $('#logLevel').value=data.settings.log_level||'INFO';
   $('#postgresDsn').value=data.settings.postgres_dsn||'';
   $('#private').checked=!!data.settings.default_allow_private_ip;
   $('#loopback').checked=!!data.settings.default_allow_loopback_ip;
-  $('#users').innerHTML=data.users.map(u=>'<tr>'+
-    '<td data-label="User"><div class="identity"><span class="avatar">'+esc(u.username.slice(0,1))+'</span><strong>'+esc(u.username)+'</strong></div></td>'+
-    '<td data-label="Access"><div class="cell-chips">'+(u.allow_private_ip?'<span class="badge">LAN</span>':'')+(u.allow_loopback_ip?'<span class="badge">Loopback</span>':'')+(!u.allow_private_ip&&!u.allow_loopback_ip?'<span class="badge badge-subtle">Public</span>':'')+'</div></td>'+
-    '<td data-label="Devices">'+u.devices.length+(u.device_limit?' / '+u.device_limit:'')+(u.legacy_enabled?' <span class="badge badge-subtle">Legacy</span>':'')+'</td>'+
-    '<td data-label="Subscription"><code title="'+esc(u.subscription_url)+'">'+esc(u.subscription_url)+'</code><div class="actions" style="margin-top:6px">'+
-    '<button class="secondary" data-copy="'+esc(u.subscription_url)+'">Copy link</button>'+
-    '<button class="secondary" data-rotate="'+esc(u.username)+'">Rotate token</button></div></td>'+
-    '<td class="row-actions"><button class="danger" data-delete="'+esc(u.username)+'">Delete</button></td></tr>'
+  usersCache=data.users;
+  $('#users').innerHTML=data.users.map(u=>'<tr data-username="'+esc(u.username)+'">'+
+    '<td data-label="User"><button class="user-open" data-open-user="'+esc(u.username)+'"><span class="avatar">'+esc(u.username.slice(0,1))+'</span><span>'+esc(u.username)+'</span></button></td>'+
+    '<td data-label="Access"><div class="cell-chips">'+
+      (u.allow_private_ip?'<span class="badge">LAN</span>':'')+
+      (u.allow_loopback_ip?'<span class="badge">Loopback</span>':'')+
+      (!u.allow_private_ip&&!u.allow_loopback_ip?'<span class="badge badge-subtle">Public</span>':'')+
+      (u.legacy_enabled?'<span class="badge badge-subtle">Legacy</span>':'')+
+    '</div></td>'+
+    '<td data-label="Devices">'+u.devices.length+(u.device_limit?' / '+u.device_limit:'')+'</td>'+
+    '<td><button class="user-open row-chevron" aria-label="Open '+esc(u.username)+'" data-open-user="'+esc(u.username)+'">→</button></td></tr>'
   ).join('');
-  document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>copyLink(b.dataset.copy));
-  document.querySelectorAll('[data-rotate]').forEach(b=>b.onclick=()=>rotate(b.dataset.rotate));
-  document.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>removeUser(b.dataset.delete));
+  bindUserLinks($('#users'));
   $('#statUsers').textContent=String(data.users.length);
   $('#statDevices').textContent=String(data.users.reduce((sum,u)=>sum+u.devices.length,0));
   $('#statLegacy').textContent=String(data.users.filter(u=>u.legacy_enabled).length);
   filterUsers();
-  renderDevices(data.users);
+  renderDeviceDirectory(data.users);
+  if(currentUserName){
+    if(currentUser())renderUserDetail();
+    else{
+      currentUserName=null;
+      if(document.querySelector('.tab-panel.active')?.id==='userDetailTab')setTab('usersTab');
+    }
+  }
 }
 function filterUsers(){
   const query=$('#userSearch').value.trim().toLowerCase();
+  let matching=0;
   $('#users').querySelectorAll('tr').forEach(row=>{
-    row.hidden=!row.querySelector('strong')?.textContent.toLowerCase().includes(query);
+    row.hidden=!row.dataset.username.toLowerCase().includes(query);
+    if(!row.hidden)matching++;
   });
+  $('#emptyUsers').hidden=matching>0;
 }
 async function copyLink(v){await navigator.clipboard.writeText(v);message('Subscription link copied')}
 async function rotate(username){
@@ -586,7 +749,9 @@ async function removeUser(username){
   if(!confirm('Delete '+username+'?'))return;
   try{
     await request('api/users/'+encodeURIComponent(username),{method:'DELETE'});
-    await load();message('User deleted');
+    await load();
+    if(currentUserName===username){currentUserName=null;setTab('usersTab')}
+    message('User deleted');
   }catch(e){alert(e.message)}
 }
 $('#copyGenerated').onclick=async()=>{
@@ -617,6 +782,16 @@ $('#add').onclick=async()=>{
   }catch(e){alert(e.message)}
 };
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
+$('#backToUsers').onclick=()=>{currentUserName=null;setTab(returnToTab)};
+$('#detailCopy').onclick=()=>{const u=currentUser();if(u)copyLink(u.subscription_url).catch(e=>alert(e.message))};
+$('#detailRotate').onclick=()=>{if(currentUserName)rotate(currentUserName)};
+$('#detailDelete').onclick=()=>{if(currentUserName)removeUser(currentUserName)};
+$('#toggleAddUser').onclick=()=>{
+  const panel=$('#addUserPanel');
+  panel.hidden=!panel.hidden;
+  if(!panel.hidden){$('#username').focus();panel.scrollIntoView({behavior:'smooth',block:'start'})}
+};
+$('#cancelAddUser').onclick=()=>{$('#addUserPanel').hidden=true};
 $('#userSearch').addEventListener('input',filterUsers);
 $('#refreshTraffic').onclick=loadTraffic;
 
@@ -631,6 +806,17 @@ async function loadLogDbStatus(){
     $('#logDbStatus').textContent='Unable to read PostgreSQL status: '+e.message;
   }
 }
+async function loadBackupStatus(){
+  try {
+    const data=await request('api/backup-status');
+    const s=data.status||{};
+    if(!s.enabled) $('#backupStatus').textContent='Backups disabled (PostgreSQL not configured).';
+    else if(s.connected) $('#backupStatus').textContent='Backups · '+(s.backup_count||0)+' saved · last '+(s.last_backup?displayTime(s.last_backup):'pending')+' · '+(s.last_reason||'');
+    else $('#backupStatus').textContent='Backup pending'+(s.last_error?' · '+s.last_error:'')+' · retry automatically';
+  }catch(e){
+    $('#backupStatus').textContent='Unable to read backup status: '+e.message;
+  }
+}
 $('#showDsn').onclick=()=>{
   const input=$('#postgresDsn');
   input.type=input.type==='password'?'text':'password';
@@ -642,7 +828,7 @@ $('#saveConf').onclick=async()=>{
       log_level:$('#logLevel').value,
       postgres_dsn:$('#postgresDsn').value.trim()
     })});
-    await load();await loadLogDbStatus();message('Conf saved');
+    await load();await loadLogDbStatus();await loadBackupStatus();message('Conf saved');
   }catch(e){alert(e.message)}
 };
 
@@ -650,12 +836,14 @@ $('#saveSettings').onclick=async()=>{
   try{
     await request('api/settings',{method:'PUT',body:JSON.stringify({
       public_mieru_host:$('#host').value.trim(),public_mieru_port:Number($('#port').value),
-      subscription_base_url:$('#base').value.trim()
+      subscription_base_url:$('#base').value.trim(),
+      contact_email:$('#contactEmail').value.trim()
     })});
     await load();message('Settings saved');
   }catch(e){alert(e.message)}
 };
-load().catch(e=>alert(e.message));
+load().then(()=>loadBackupStatus()).catch(e=>alert(e.message));
+setInterval(loadBackupStatus, 30000);
 </script>
 </body>
 </html>

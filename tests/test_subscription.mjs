@@ -44,6 +44,8 @@ test('mobile setup prioritizes two actions within the first viewport', () => {
   assert.match(html, /<details id="advanced">/);
   assert.match(html, /<summary>Другие способы подключения<\/summary>/);
   assert.match(html, /<option value="" disabled hidden>Платформа<\/option>/);
+  assert.match(html, /@@CONTACT_LINK_HTML@@/);
+  assert.match(html, /\.contact-info a\s*\{\s*color:\s*var\(--pink\)/);
 });
 
 test('iPhone typography is larger and cards use available viewport height', () => {
@@ -52,9 +54,17 @@ test('iPhone typography is larger and cards use available viewport height', () =
   assert.match(html, /\.button\s*\{\s*min-height:\s*50px;/);
   assert.match(html, /font-size:\s*15px;/);
   assert.match(html, /main\s*\{\s*display:\s*flex;\s*flex:\s*1;/);
-  assert.match(html, /grid-template-rows:\s*repeat\(2,\s*minmax\(max-content,\s*1fr\)\)/);
+  assert.match(html, /grid-template-rows:\s*max-content\s+minmax\(max-content,\s*1fr\)/);
+  assert.doesNotMatch(html, /grid-template-rows:\s*repeat\(2,\s*minmax\(max-content,\s*1fr\)\)/);
   assert.match(html, /\.step > \.button\s*\{\s*margin-top:\s*auto;/);
   assert.match(html, /@media\s*\(max-width:\s*640px\) and \(max-height:\s*740px\)/);
+  assert.match(html, /\.steps\s*\{\s*flex:\s*none;\s*grid-template-rows:\s*none;/);
+});
+
+test('expanded Linux terminal does not force the second setup card to match its height', () => {
+  assert.match(html, /\.steps:has\(#terminalInstall:not\(\[hidden\]\)\[open\]\)/);
+  assert.match(html, /\.steps:has\(#alternatives:not\(\[hidden\]\)\[open\]\)/);
+  assert.match(html, /\.steps:has\(#terminalInstall[\s\S]*?flex:\s*none;\s*grid-template-rows:\s*max-content\s+max-content;/);
   assert.match(html, /\.steps\s*\{\s*flex:\s*none;\s*grid-template-rows:\s*none;/);
 });
 
