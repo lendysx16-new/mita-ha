@@ -292,6 +292,7 @@ code { font-size: 11px; overflow-wrap: anywhere; }
               <label>Hostname<input id="host" placeholder="vpn.example.com" spellcheck="false"></label>
               <label>TCP port<input id="port" type="number" min="1" max="65535" inputmode="numeric"></label>
               <label class="span-2">Subscription base URL<input id="base" type="url" placeholder="https://vpn.example.com" spellcheck="false"></label>
+              <label class="span-2">Contact email (optional)<input id="contactEmail" type="email" maxlength="254" placeholder="support@example.com" autocomplete="email" spellcheck="false"><span class="field-help">Shown on the public subscription page only when set. Leave blank to hide it.</span></label>
             </div></div>
             <div class="card-actions"><button id="saveSettings" type="button">Save settings</button></div>
           </section>
@@ -546,6 +547,7 @@ async function load(){
   $('#host').value=data.settings.public_mieru_host||'';
   $('#port').value=data.settings.public_mieru_port||8443;
   $('#base').value=data.settings.subscription_base_url||'';
+  $('#contactEmail').value=data.settings.contact_email||'';
   $('#logLevel').value=data.settings.log_level||'INFO';
   $('#postgresDsn').value=data.settings.postgres_dsn||'';
   $('#private').checked=!!data.settings.default_allow_private_ip;
@@ -650,7 +652,8 @@ $('#saveSettings').onclick=async()=>{
   try{
     await request('api/settings',{method:'PUT',body:JSON.stringify({
       public_mieru_host:$('#host').value.trim(),public_mieru_port:Number($('#port').value),
-      subscription_base_url:$('#base').value.trim()
+      subscription_base_url:$('#base').value.trim(),
+      contact_email:$('#contactEmail').value.trim()
     })});
     await load();message('Settings saved');
   }catch(e){alert(e.message)}
