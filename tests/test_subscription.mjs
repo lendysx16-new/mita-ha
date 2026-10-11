@@ -58,7 +58,7 @@ test('iPhone typography is larger and cards use available viewport height', () =
   assert.match(html, /\.steps\s*\{\s*flex:\s*none;\s*grid-template-rows:\s*none;/);
 });
 
-function setup(platform = 'ios') {
+function setup(platform = 'ios', browser = {}) {
   const ids = [
     'clientSelect', 'platformSelect', 'hwidBadge', 'installBtn', 'missingInstall',
     'alternatives', 'alternativeLinks', 'installLabel', 'installSource',
@@ -105,7 +105,12 @@ function setup(platform = 'ios') {
     URL,
     URLSearchParams,
     document,
-    navigator: { clipboard: { async writeText(value) { clipboard = value; } } },
+    navigator: {
+      userAgent: browser.userAgent || '',
+      platform: browser.platform || '',
+      maxTouchPoints: browser.maxTouchPoints || 0,
+      clipboard: { async writeText(value) { clipboard = value; } },
+    },
   };
   vm.runInNewContext(source, context, { filename: 'subscription.html' });
 
@@ -116,6 +121,35 @@ function setup(platform = 'ios') {
     get clipboard() { return clipboard; },
   };
 }
+
+test('Firefox on iPhone remains iOS even when server classified UA as macOS', () => {
+  const view = setup('macos', {
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) FxiOS/143.0 Mobile/15E148 Safari/605.1.15',
+    platform: 'MacIntel',
+    maxTouchPoints: 5,
+  });
+  assert.equal(view.get('platformSelect').value, 'ios');
+  assert.match(view.get('installBtn').href, /^https:\/\/apps\.apple\.com/);
+  assert.equal(view.get('clientSelect').options.find(x => x.value === 'koala').disabled, true);
+});
+
+test('iPad desktop mode is identified from touch support', () => {
+  const view = setup('macos', {
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 Version/17.0 Safari/605.1.15',
+    platform: 'MacIntel',
+    maxTouchPoints: 5,
+  });
+  assert.equal(view.get('platformSelect').value, 'ios');
+});
+
+test('real macOS remains macOS without multi-touch', () => {
+  const view = setup('macos', {
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Firefox/144.0',
+    platform: 'MacIntel',
+    maxTouchPoints: 0,
+  });
+  assert.equal(view.get('platformSelect').value, 'macos');
+});
 
 test('shows download as step one and app import as step two for iPhone', () => {
   const view = setup();
