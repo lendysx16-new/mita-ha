@@ -1,225 +1,188 @@
 <!doctype html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="color-scheme" content="dark light">
-  <title>@@PAGE_TITLE@@</title>
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>@@PAGE_TITLE@@ — подключение</title>
   <style>
-    :root{
-      font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-      color-scheme:light;
-      --bg:#faf7fc;
-      --card:#fff;
-      --soft:#f7f1fa;
-      --line:#e9dfed;
-      --line-strong:#c6aed5;
-      --text:#382d42;
-      --muted:#75667f;
-      --accent:#79539b;
-      --accent-hover:#664284;
+    :root {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+      color-scheme: light;
+      --background: #fafafa;
+      --foreground: #18181b;
+      --surface: #fff;
+      --muted: #71717a;
+      --subtle: #f4f4f5;
+      --border: #e4e4e7;
+      --primary: #18181b;
+      --primary-foreground: #fff;
+      --ring: #a1a1aa;
+      --radius: 14px;
+      -webkit-font-smoothing: antialiased;
     }
-
-    *{box-sizing:border-box}
-    html,body{margin:0;min-height:100%}
-    body{
-      min-height:100vh;
-      color:var(--text);
-      font-size:14px;
-      line-height:1.5;
-      padding:
-        max(24px,env(safe-area-inset-top))
-        max(16px,env(safe-area-inset-right))
-        max(24px,env(safe-area-inset-bottom))
-        max(16px,env(safe-area-inset-left));
-      background:linear-gradient(145deg,#fcf4f8,var(--bg) 65%,#f1ecf9);
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --background: #09090b;
+        --foreground: #fafafa;
+        --surface: #18181b;
+        --muted: #a1a1aa;
+        --subtle: #27272a;
+        --border: #3f3f46;
+        --primary: #fafafa;
+        --primary-foreground: #18181b;
+        --ring: #71717a;
+      }
     }
-
-    button,select,a{font:inherit}
-    main{width:100%;max-width:480px;margin:0 auto}
-    .card{
-      width:100%;
-      padding:24px;
-      border-radius:24px;
-      border:1px solid var(--line);
-      background:var(--card);
-      box-shadow:0 12px 40px rgba(91,58,112,.04);
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body {
+      min-width: 320px;
+      min-height: 100vh;
+      margin: 0;
+      padding: max(32px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right))
+        max(36px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));
+      background: var(--background);
+      color: var(--foreground);
+      font-size: 14px;
+      line-height: 1.5;
     }
-
-    h1{font-size:26px;font-weight:650;letter-spacing:-.7px;line-height:1.2;margin:0 0 6px;overflow-wrap:anywhere}
-    h2{font-size:14px;font-weight:600;line-height:1.4;margin:0 0 10px}
-    .muted{color:var(--muted);font-size:13px}
-    .section{margin-top:28px}
-    .linkbox{padding:14px;border-radius:12px;border:1px solid var(--line);background:var(--soft)}
-    code{
-      display:block;
-      width:100%;
-      color:#685179;
-      font:12px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;
-      overflow-wrap:anywhere;
-    }
-
-    .stack{display:grid;gap:10px}
-    .button{
-      min-height:46px;
-      width:100%;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      padding:12px 16px;
-      border-radius:12px;
-      text-decoration:none;
-      font-weight:600;
-      cursor:pointer;
-      border:1px solid transparent;
-      transition:background .15s ease,border-color .15s ease;
-    }
-    .primary{background:var(--accent);color:#fff}
-    .primary:hover{background:var(--accent-hover)}
-    .secondary{background:#fff;color:var(--accent);border-color:var(--line)}
-    .secondary:hover{background:var(--soft);border-color:var(--line-strong)}
-    :where(button,a,select,summary):focus-visible{outline:3px solid var(--accent);outline-offset:3px}
-
-    select{
-      width:100%;
-      min-height:46px;
-      appearance:auto;
-      padding:0 12px;
-      border-radius:12px;
-      border:1px solid var(--line);
-      color:var(--text);
-      background:#fff;
-      cursor:pointer;
-    }
-    .client-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px}
-    .badge{font-size:10px;white-space:nowrap;padding:4px 8px;border-radius:999px;color:#795776;background:#f9edf5}
-    .hint{margin-top:10px;font-size:12px;line-height:1.65;color:var(--muted)}
-    .downloads{display:grid;gap:8px}
-    .download{
-      min-height:46px;
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      flex-wrap:wrap;
-      gap:4px 12px;
-      padding:12px 14px;
-      border-radius:12px;
-      border:1px solid var(--line);
-      color:var(--text);
-      text-decoration:none;
-      background:#fff;
-      transition:background .15s ease,border-color .15s ease;
-    }
-    .download:hover{background:var(--soft);border-color:var(--line-strong)}
-    .download span{min-width:0;overflow-wrap:anywhere}
-    .download span:last-child{font-size:11px;color:var(--muted)}
-    .empty{padding:14px;border-radius:12px;border:1px dashed var(--line-strong);color:var(--muted);font-size:13px}
-    details{margin-top:16px}
-    summary{cursor:pointer;color:var(--muted);font-size:12px;padding:5px 0}
-    summary:hover{color:var(--accent)}
-    details .downloads{margin-top:10px}
-    ::selection{background:#e8d7f2;color:var(--text)}
-
-    @media(min-width:700px){
-      body{display:grid;place-items:center;padding:40px 24px}
-      .card{padding:32px}
-    }
-    @media(prefers-reduced-motion:reduce){
-      .button,.download{transition:none}
-    }
+    main { max-width: 510px; margin: 0 auto; }
+    button, select, a { font: inherit; }
+    button, a, select { -webkit-tap-highlight-color: transparent; }
+    :where(a,button,select,summary):focus-visible { outline: 3px solid var(--ring); outline-offset: 3px; }
+    .identity { display: flex; align-items: center; gap: 11px; margin-bottom: 26px; }
+    .logo { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: var(--primary); color: var(--primary-foreground); font-weight: 750; font-size: 22px; }
+    .identity strong { display: block; font-size: 15px; line-height: 1.35; }
+    .identity small { display: block; font-size: 12px; color: var(--muted); }
+    h1 { font-size: clamp(27px,5vw,33px); letter-spacing: -.9px; line-height: 1.12; font-weight: 720; margin: 0 0 10px; }
+    h2 { font-size: 16px; line-height: 1.3; letter-spacing: -.3px; font-weight: 670; margin: 0; }
+    p { margin: 0; }
+    .muted { color: var(--muted); }
+    .intro { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 24px; }
+    .choice { border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; background: var(--surface); margin-bottom: 14px; }
+    .field-label { display: block; margin-bottom: 9px; font-size: 12px; font-weight: 650; }
+    select { display: block; width: 100%; min-height: 47px; border: 1px solid var(--border); border-radius: 9px; padding: 11px 12px; color: var(--foreground); background: var(--surface); }
+    .choice-row { display: flex; gap: 10px; justify-content: space-between; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+    .choice-row label { color: var(--muted); font-size: 12px; }
+    .choice-row select { width: auto; min-height: 34px; font-size: 12px; padding: 6px 9px; }
+    .badge { display: inline-flex; gap: 6px; align-items: center; background: var(--subtle); border: 1px solid var(--border); border-radius: 999px; padding: 4px 9px; color: var(--muted); font-size: 11px; font-weight: 540; }
+    .badge-dot { width: 6px; height: 6px; background: #16a34a; border-radius: 50%; }
+    .steps { display: grid; gap: 14px; }
+    .step { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px; }
+    .step-heading { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 19px; }
+    .step-num { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; font-weight: 700; background: var(--subtle); }
+    .step-heading p { color: var(--muted); font-size: 12px; margin-top: 5px; }
+    .button { display: flex; width: 100%; min-height: 48px; align-items: center; justify-content: center; gap: 9px; border-radius: 9px; padding: 12px 15px; border: 1px solid var(--border); font-size: 13px; font-weight: 640; line-height: 1.4; cursor: pointer; text-decoration: none; text-align: center; transition: background .15s,opacity .15s; }
+    .button:hover { opacity: .83; }
+    .button.primary { color: var(--primary-foreground); background: var(--primary); border-color: var(--primary); }
+    .button.secondary { color: var(--foreground); background: var(--surface); }
+    .button svg { width: 17px; height: 17px; flex: none; }
+    .notice { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+    .notice strong { color: var(--foreground); font-weight: 560; }
+    .empty { font-size: 12px; border: 1px dashed var(--border); padding: 12px; border-radius: 9px; color: var(--muted); }
+    .alternatives { margin-top: 14px; }
+    summary { font-size: 12px; color: var(--muted); cursor: pointer; }
+    summary:hover { color: var(--foreground); }
+    .alternatives-list { display: grid; gap: 8px; margin-top: 10px; }
+    .alternative { display: flex; align-items: center; justify-content: space-between; gap: 14px; border: 1px solid var(--border); padding: 11px; border-radius: 9px; color: var(--foreground); font-size: 12px; text-decoration: none; }
+    .alternative:hover { background: var(--subtle); }
+    .alternative small { color: var(--muted); text-align: right; font-size: 11px; }
+    .step-footer { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 15px; }
+    .step-footer .button { min-height: 41px; }
+    .feedback { margin-top: 12px; padding: 10px 12px; border-radius: 8px; color: var(--foreground); background: var(--subtle); font-size: 12px; line-height: 1.55; }
+    .details-footer { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 16px; }
+    .token { display: block; width: 100%; margin-top: 10px; padding: 11px; font: 11px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace; color: var(--foreground); background: var(--subtle); border-radius: 8px; overflow-wrap: anywhere; }
+    .footer { margin-top: 18px; text-align: center; font-size: 11px; color: var(--muted); }
+    @media(min-width:640px) { body { padding-top: 56px; } }
+    @media(max-width:360px) { .step,.choice { padding: 16px; } }
+    @media(prefers-reduced-motion:reduce) { .button { transition: none; } }
   </style>
 </head>
 <body>
 <main id="app">
-  <section class="card">
-    <h1>@@USERNAME_HTML@@</h1>
-    <div class="muted">Mieru subscription</div>
+  <div class="identity">
+    <div class="logo" aria-hidden="true">M</div>
+    <div><strong>Mita</strong><small>Подключение к Mieru</small></div>
+  </div>
 
-    <div class="section">
-      <h2>Subscription link</h2>
-      <div class="linkbox"><code>@@SUBSCRIPTION_URL_HTML@@</code></div>
-      <div class="stack" style="margin-top:10px">
-        <button class="button secondary" @click="copyLink">{{ copied ? 'Copied' : 'Copy link' }}</button>
-      </div>
-    </div>
+  <h1>Настройка VPN</h1>
+  <p class="intro">Для пользователя <strong>@@USERNAME_HTML@@</strong>. Всего два шага: установите приложение и добавьте в него профиль.</p>
 
-    <div class="section">
-      <div class="client-head">
-        <h2 style="margin:0">Client</h2>
-        <span class="badge" v-if="selected.hwid">HWID supported</span>
-      </div>
-
-      <select v-model="selectedId" aria-label="Choose client">
-        <option v-for="client in clients" :key="client.id" :value="client.id">{{ client.name }}</option>
-      </select>
-
-      <div class="stack" style="margin-top:10px">
-        <a v-if="selected.scheme" class="button primary" :href="openUrl">Open in {{ selected.name }}</a>
-        <a v-else class="button primary" :href="genericClashUrl">Open in Clash-compatible client</a>
-      </div>
-
-      <div class="hint" v-if="selected.hwid">
-        The app link enables X-HWID automatically, so this device can get its own Mieru credential.
-      </div>
-      <div class="hint" v-else>
-        This client can use the subscription, but automatic HWID registration is not available here.
-      </div>
-    </div>
-
-    <div class="section">
-      <div class="client-head">
-        <h2 style="margin:0">Download for {{ platformLabel }}</h2>
-        <span class="badge" v-if="detectedPlatform !== 'unknown'">Detected from browser</span>
-      </div>
-
-      <div v-if="deviceDownloads.length" class="downloads">
-        <a
-          v-for="item in deviceDownloads"
-          :key="item.platform"
-          class="download"
-          :href="item.url"
-          target="_blank"
-          rel="noopener"
-        >
-          <span>{{ item.platform }}</span>
-          <span>{{ item.note }}</span>
-        </a>
-      </div>
-      <div v-else class="empty">
-        {{ selected.name }} has no download for {{ platformLabel }}.
-      </div>
-
-      <details v-if="otherDownloads.length">
-        <summary>Other platforms</summary>
-        <div class="downloads">
-          <a
-            v-for="item in otherDownloads"
-            :key="item.platform"
-            class="download"
-            :href="item.url"
-            target="_blank"
-            rel="noopener"
-          >
-            <span>{{ item.platform }}</span>
-            <span>{{ item.note }}</span>
-          </a>
-        </div>
-      </details>
+  <section class="choice" aria-label="Выбор приложения">
+    <label class="field-label" for="clientSelect">Приложение</label>
+    <select id="clientSelect">
+      <option value="clashmi">Clash Mi</option>
+      <option value="karing">Karing</option>
+      <option value="flclash">FlClash</option>
+      <option value="verge">Clash Verge Rev</option>
+      <option value="generic">Другой Clash / Mihomo клиент</option>
+    </select>
+    <div class="choice-row">
+      <span class="badge" id="hwidBadge"><span class="badge-dot"></span>Отдельный профиль для устройства</span>
+      <label for="platformSelect">Устройство
+        <select id="platformSelect">
+          <option value="">Выберите платформу</option>
+          <option value="ios">iPhone / iPad</option>
+          <option value="android">Android</option>
+          <option value="windows">Windows</option>
+          <option value="macos">macOS</option>
+          <option value="linux">Linux</option>
+        </select>
+      </label>
     </div>
   </section>
+
+  <div class="steps">
+    <section class="step" aria-labelledby="installTitle">
+      <div class="step-heading">
+        <span class="step-num" aria-hidden="true">1</span>
+        <div><h2 id="installTitle">Установите приложение</h2><p>Если уже установлено — переходите к шагу 2.</p></div>
+      </div>
+      <a id="installBtn" class="button primary" href="#" target="_blank" rel="noopener noreferrer" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4"/></svg>
+        <span id="installLabel">Установить приложение</span>
+      </a>
+      <div class="empty" id="missingInstall" hidden></div>
+      <div class="notice" id="installSource"></div>
+      <details class="alternatives" id="alternatives" hidden>
+        <summary>Другие версии для этой платформы</summary>
+        <div class="alternatives-list" id="alternativeLinks"></div>
+      </details>
+    </section>
+
+    <section class="step" aria-labelledby="connectTitle">
+      <div class="step-heading">
+        <span class="step-num" aria-hidden="true">2</span>
+        <div><h2 id="connectTitle">Откройте профиль в приложении</h2><p>Профиль добавится по вашей персональной ссылке.</p></div>
+      </div>
+      <a id="openProfile" class="button primary" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/><path d="M5 5h5M5 5v14h14v-5"/></svg>
+        <span id="openLabel">Открыть в приложении</span>
+      </a>
+      <button id="copyPrimary" class="button primary" type="button" hidden>Скопировать ссылку профиля</button>
+      <p class="notice" id="openHint">Если приложение не открылось, убедитесь, что оно установлено.</p>
+      <div class="step-footer">
+        <button id="copySecondary" class="button secondary" type="button">Скопировать ссылку вручную</button>
+      </div>
+      <p id="copyFeedback" class="feedback" role="status" aria-live="polite" hidden></p>
+    </section>
+  </div>
+
+  <div class="details-footer">
+    <details>
+      <summary>Показать ссылку подписки</summary>
+      <code class="token">@@SUBSCRIPTION_URL_HTML@@</code>
+      <p class="notice">Не публикуйте ссылку: она предоставляет доступ к вашему профилю.</p>
+    </details>
+  </div>
+  <p class="footer">Mita · Приватная подписка Mieru</p>
 </main>
-
 <script>window.__SUBSCRIPTION__=@@BOOTSTRAP_JSON@@;</script>
-<script src="https://cdn.jsdelivr.net/npm/vue@3.5.22/dist/vue.global.prod.js"></script>
 <script>
-const { createApp, ref, computed } = Vue;
-
-createApp({
-  setup() {
-    const data = window.__SUBSCRIPTION__;
-    const copied = ref(false);
-
-    const clients = [
+const clients = [
       {
         id: 'clashmi',
         name: 'Clash Mi',
@@ -294,96 +257,141 @@ createApp({
       }
     ];
 
-    const selectedId = ref('clashmi');
-    const selected = computed(() => clients.find(x => x.id === selectedId.value) || clients[0]);
 
-    const detectedPlatform = data.platform || 'unknown';
-    const platformNames = {
-      ios: 'iOS',
-      android: 'Android',
-      macos: 'macOS',
-      windows: 'Windows',
-      linux: 'Linux',
-      unknown: 'this device'
-    };
-    const platformLabel = computed(() => platformNames[detectedPlatform] || 'this device');
+const data = window.__SUBSCRIPTION__;
+const element = id => document.getElementById(id);
+const clientSelect = element('clientSelect');
+const platformSelect = element('platformSelect');
+const selectedClient = () => clients.find(client => client.id === clientSelect.value) || clients[0];
+const platform = String(data.platform || '').toLowerCase();
+platformSelect.value = ['ios','android','windows','macos','linux'].includes(platform) ? platform : '';
 
-    const rawUrl = computed(() => {
-      const url = new URL(data.url);
-      url.searchParams.set('raw', '1');
-      return url.toString();
-    });
+function rawSubscriptionUrl() {
+  const url = new URL(data.url);
+  url.searchParams.set('raw', '1');
+  return url.toString();
+}
 
-    const appUrl = scheme => {
-      const params = new URLSearchParams({
-        url: rawUrl.value,
-        name: 'Mieru ' + data.username
-      });
-      if (selected.value.hwid) params.set('xhwid', 'true');
-      return scheme + '://install-config?' + params.toString();
-    };
+function buildImportUrl(client) {
+  if (!client.scheme) return null;
+  const params = new URLSearchParams({
+    url: rawSubscriptionUrl(),
+    name: 'Mieru ' + data.username
+  });
+  if (client.hwid) params.set('xhwid', 'true');
+  return client.scheme + '://install-config?' + params.toString();
+}
 
-    const openUrl = computed(() => appUrl(selected.value.scheme));
-    const genericClashUrl = computed(() => appUrl('clash'));
+function buildDownloadUrl(client, target) {
+  const url = new URL(data.url);
+  url.search = '';
+  url.hash = '';
+  url.pathname = url.pathname.replace(/\/$/, '') + '/download/' +
+    encodeURIComponent(client.id) + '/' + encodeURIComponent(target);
+  return url.toString();
+}
 
-    const downloadUrl = target => {
-      const url = new URL(data.url);
-      url.search = '';
-      url.hash = '';
-      url.pathname = url.pathname.replace(/\/$/, '') +
-        '/download/' + encodeURIComponent(selected.value.id) + '/' + encodeURIComponent(target);
-      return url.toString();
-    };
+function availableDownloads(client, os) {
+  return client.downloads.filter(item => item.os === os).map(item => ({
+    name: item.platform,
+    note: item.note,
+    url: item.url || buildDownloadUrl(client, item.target)
+  }));
+}
 
-    const downloadEntries = computed(() =>
-      selected.value.downloads.map(item => ({
-        ...item,
-        url: item.url || downloadUrl(item.target)
-      }))
-    );
+function makeAlternative(item) {
+  const anchor = document.createElement('a');
+  const name = document.createElement('span');
+  const note = document.createElement('small');
+  anchor.className = 'alternative';
+  anchor.href = item.url;
+  anchor.target = '_blank';
+  anchor.rel = 'noopener noreferrer';
+  name.textContent = item.name;
+  note.textContent = item.note;
+  anchor.append(name, note);
+  return anchor;
+}
 
-    const deviceDownloads = computed(() => {
-      if (detectedPlatform === 'unknown') return downloadEntries.value;
-      return downloadEntries.value.filter(item => item.os === detectedPlatform);
-    });
+function render() {
+  const client = selectedClient();
+  const os = platformSelect.value;
+  element('hwidBadge').hidden = !client.hwid;
+  const downloads = availableDownloads(client, os);
+  const install = element('installBtn');
+  const missing = element('missingInstall');
+  const alternatives = element('alternatives');
+  const alternateLinks = element('alternativeLinks');
 
-    const otherDownloads = computed(() => {
-      if (detectedPlatform === 'unknown') return [];
-      return downloadEntries.value.filter(item => item.os !== detectedPlatform);
-    });
+  install.hidden = downloads.length === 0;
+  missing.hidden = downloads.length > 0;
+  alternatives.hidden = downloads.length < 2;
+  alternateLinks.replaceChildren(...downloads.slice(1).map(makeAlternative));
 
-    async function copyLink() {
-      try {
-        await navigator.clipboard.writeText(data.url);
-      } catch (_) {
-        const input = document.createElement('textarea');
-        input.value = data.url;
-        input.style.position = 'fixed';
-        input.style.opacity = '0';
-        document.body.appendChild(input);
-        input.select();
-        document.execCommand('copy');
-        input.remove();
-      }
-      copied.value = true;
-      setTimeout(() => copied.value = false, 1600);
+  if (downloads.length) {
+    install.href = downloads[0].url;
+    element('installLabel').textContent = 'Установить ' + client.name;
+    element('installSource').textContent = downloads[0].note;
+  } else {
+    install.removeAttribute('href');
+    element('installSource').textContent = '';
+    if (!os) {
+      missing.textContent = 'Выберите своё устройство выше, чтобы получить ссылку на установку.';
+    } else if (client.id === 'generic') {
+      missing.textContent = 'Используйте уже установленное совместимое приложение либо выберите одно из списка.';
+    } else {
+      missing.textContent = 'Для выбранной платформы нет прямой ссылки. Выберите другое приложение.';
     }
-
-    return {
-      clients,
-      selectedId,
-      selected,
-      copied,
-      openUrl,
-      genericClashUrl,
-      detectedPlatform,
-      platformLabel,
-      deviceDownloads,
-      otherDownloads,
-      copyLink
-    };
   }
-}).mount('#app');
+
+  const importUrl = buildImportUrl(client);
+  const open = element('openProfile');
+  const copyPrimary = element('copyPrimary');
+  open.hidden = !importUrl;
+  copyPrimary.hidden = Boolean(importUrl);
+  if (importUrl) {
+    open.href = importUrl;
+    element('openLabel').textContent = 'Открыть в ' + client.name;
+    element('openHint').textContent = 'Нажмите после установки. Если приложение не открылось, скопируйте ссылку вручную.';
+  } else {
+    open.removeAttribute('href');
+    element('openHint').textContent = 'Откройте в приложении раздел подписок и выберите добавление из URL.';
+  }
+  element('copyFeedback').hidden = true;
+}
+
+async function copySubscription() {
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('Clipboard API unavailable');
+    await navigator.clipboard.writeText(data.url);
+  } catch (_) {
+    const input = document.createElement('textarea');
+    input.value = data.url;
+    input.style.position = 'fixed';
+    input.style.opacity = '0';
+    document.body.appendChild(input);
+    input.select();
+    const copied = document.execCommand('copy');
+    input.remove();
+    if (!copied) {
+      element('copyFeedback').textContent = 'Не удалось скопировать автоматически. Раскройте ссылку подписки ниже и скопируйте вручную.';
+      element('copyFeedback').hidden = false;
+      return;
+    }
+  }
+  element('copyFeedback').textContent = 'Ссылка скопирована. Добавьте её в приложении через импорт подписки из URL.';
+  element('copyFeedback').hidden = false;
+}
+
+clientSelect.addEventListener('change', render);
+platformSelect.addEventListener('change', render);
+element('copyPrimary').addEventListener('click', copySubscription);
+element('copySecondary').addEventListener('click', copySubscription);
+element('openProfile').addEventListener('click', () => {
+  element('copyFeedback').textContent = 'Если приложение не открылось, сначала установите его из шага 1.';
+  element('copyFeedback').hidden = false;
+});
+render();
 </script>
 </body>
 </html>
