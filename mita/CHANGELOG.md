@@ -5,7 +5,7 @@
 - Avoid logging subscription tokens in HTTP access logs.
 - Validate JSON request bodies and Content-Length before processing API mutations.
 - Keep newly generated user passwords visible until explicitly dismissed in the admin UI.
-- Add regression tests for API operations, device registration, concurrency, and rollback behavior.
+- Extract Mita config generation into a pure function and reject malformed public subscription base URLs.\n- Add regression tests for API operations, device registration, concurrency, and rollback behavior.
 
 ## 3.38.0.26
 
