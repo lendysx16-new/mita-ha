@@ -1,3 +1,9 @@
+## 3.38.0.29
+
+- Increased iPhone typography for the pixel-style heading, step titles, inputs, labels and action buttons.
+- Let the two bordered setup steps grow to use available vertical space on taller iPhones, avoiding the compressed half-screen layout.
+- Retained compact spacing on shorter screens, scroll fallback, system theme, animations and reduced-motion support.
+
 ## 3.38.0.28
 
 - Restrict the public app selector to HWID-capable clients only (Clash Mi, Karing, FlClashX, Koala Clash), retaining old download endpoints for compatibility.
