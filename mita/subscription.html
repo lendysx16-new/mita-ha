@@ -27,6 +27,8 @@
       --ring: #b3286b;
       --pink: #b52869;
       --pink-soft: #fff0f6;
+      --gradient-glow: rgba(220, 72, 141, 0.16);
+      --gradient-base: #fff4fa;
       --pink-border: #e7afca;
       --pink-button-text: #ffffff;
       --radius: 5px;
@@ -47,6 +49,8 @@
         --ring: #fa91c0;
         --pink: #fa91c0;
         --pink-soft: #301c29;
+        --gradient-glow: rgba(246, 104, 178, 0.17);
+        --gradient-base: #1a1119;
         --pink-border: #84506b;
         --pink-button-text: #1e0f17;
       }
@@ -62,7 +66,10 @@
         max(20px,env(safe-area-inset-right))
         max(40px,env(safe-area-inset-bottom))
         max(20px,env(safe-area-inset-left));
-      background: var(--background);
+      background-color: var(--background);
+      background-image:
+        radial-gradient(ellipse 95% 52% at 100% 0%, var(--gradient-glow) 0%, transparent 80%),
+        linear-gradient(160deg, var(--background) 22%, var(--gradient-base) 100%);
       color: var(--foreground);
       font-size: 14px;
       line-height: 1.55;
@@ -235,17 +242,25 @@
       from { opacity: 0; transform: translate3d(0, 8px, 0); }
       to { opacity: 1; transform: translate3d(0, 0, 0); }
     }
+    /* Each step fades in from the right, with a perceptible stagger. */
+    @keyframes stepReveal {
+      from { opacity: 0; transform: translate3d(26px, 0, 0); }
+      to { opacity: 1; transform: translate3d(0, 0, 0); }
+    }
     .identity, h1, .intro, .choice, .step, .details-footer, .footer {
       animation: reveal .38s cubic-bezier(.2,.75,.3,1) both;
+    }
+    .steps > .step {
+      animation: stepReveal .68s cubic-bezier(.18,.8,.25,1) both;
     }
     .identity { animation-delay: 0ms; }
     h1 { animation-delay: 35ms; }
     .intro { animation-delay: 70ms; }
     .choice { animation-delay: 105ms; }
-    .step:nth-child(1) { animation-delay: 155ms; }
-    .step:nth-child(2) { animation-delay: 205ms; }
-    .details-footer { animation-delay: 255ms; }
-    .footer { animation-delay: 300ms; }
+    .step:nth-child(1) { animation-delay: 200ms; }
+    .step:nth-child(2) { animation-delay: 380ms; }
+    .details-footer { animation-delay: 450ms; }
+    .footer { animation-delay: 490ms; }
     @media (min-width: 640px) { body { padding-top: 54px; } }
     @media (max-width: 400px) {
       .choice-row { align-items: flex-start; }
@@ -336,7 +351,8 @@
       select { padding-inline: 6px; font-size: 13px; }
     }
     @media (prefers-reduced-motion: reduce) {
-      .identity, h1, .intro, .choice, .step, .details-footer, .footer { animation: none; }
+      .identity, h1, .intro, .choice, .step, .details-footer, .footer,
+      .steps > .step { animation: none; }
       .button { transition: none; }
     }
   </style>
