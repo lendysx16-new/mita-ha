@@ -239,6 +239,23 @@ class ReleaseDownloadsTests(unittest.TestCase):
                     self.assertIsNone(re.fullmatch(pattern, filename + ".sha256"))
 
 
+class PlatformDetectionTests(unittest.TestCase):
+    def test_ios_firefox_user_agents(self):
+        cases = [
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 FxiOS/143.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) FxiOS/143.0 Mobile/15E148",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Mobile/15E148 Safari/604.1",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) CriOS/124.0",
+        ]
+        for user_agent in cases:
+            with self.subTest(user_agent=user_agent):
+                self.assertEqual(app.detect_platform_from_user_agent(user_agent), "ios")
+
+    def test_real_macos_still_detected(self):
+        ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) Gecko/20100101 Firefox/144.0"
+        self.assertEqual(app.detect_platform_from_user_agent(ua), "macos")
+
+
 class PureHelpersTests(unittest.TestCase):
     def test_config_builder_only_includes_active_credentials(self):
         users = [{
