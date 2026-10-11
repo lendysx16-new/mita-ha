@@ -41,7 +41,7 @@ jobs:
                       "logLevel", "postgresDsn", "msg")
           for name in required:
               assert f'id="{name}"' in html, name
-          script = re.search(r"<script>([\\s\\S]*?)</script>", html)
+          script = re.search(r"<script>(.*?)</script>", html, re.S)
           assert script, "admin script missing"
           Path("/tmp/mita-admin.js").write_text(script.group(1), encoding="utf-8")
           PY
