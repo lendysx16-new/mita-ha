@@ -46,7 +46,32 @@ test('mobile setup prioritizes two actions within the first viewport', () => {
   assert.match(html, /<option value="" disabled hidden>Платформа<\/option>/);
 });
 
-function setup(platform = 'ios') {
+test('iPhone typography is larger and cards use available viewport height', () => {
+  assert.match(html, /font-size:\s*clamp\(16px,\s*4\.2vw,\s*20px\)/);
+  assert.match(html, /\.step-heading h2\s*\{\s*font-size:\s*clamp\(11px,\s*3vw,\s*12px\)/);
+  assert.match(html, /\.button\s*\{\s*min-height:\s*50px;/);
+  assert.match(html, /font-size:\s*15px;/);
+  assert.match(html, /main\s*\{\s*display:\s*flex;\s*flex:\s*1;/);
+  assert.match(html, /grid-template-rows:\s*repeat\(2,\s*minmax\(max-content,\s*1fr\)\)/);
+  assert.match(html, /\.step > \.button\s*\{\s*margin-top:\s*auto;/);
+  assert.match(html, /@media\s*\(max-width:\s*640px\) and \(max-height:\s*740px\)/);
+  assert.match(html, /\.steps\s*\{\s*flex:\s*none;\s*grid-template-rows:\s*none;/);
+});
+
+test('background gradient adapts to theme and step motion slides in from the right', () => {
+  assert.match(html, /--gradient-glow:\s*rgba\(/);
+  assert.match(html, /--gradient-base:\s*#fff4fa;/);
+  assert.match(html, /--gradient-base:\s*#1a1119;/);
+  assert.match(html, /background-image:\s*radial-gradient\([\s\S]*?linear-gradient\(/);
+  assert.match(html, /@keyframes stepReveal\s*\{\s*from\s*\{\s*opacity:\s*0;\s*transform:\s*translate3d\(26px,\s*0,\s*0\)/);
+  assert.match(html, /@keyframes stepReveal[\s\S]*?to\s*\{\s*opacity:\s*1;\s*transform:\s*translate3d\(0,\s*0,\s*0\)/);
+  assert.match(html, /\.steps\s*>\s*\.step\s*\{\s*animation:\s*stepReveal\s*\.68s/);
+  assert.match(html, /\.step:nth-child\(1\)\s*\{\s*animation-delay:\s*200ms/);
+  assert.match(html, /\.step:nth-child\(2\)\s*\{\s*animation-delay:\s*380ms/);
+  assert.match(html, /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.steps\s*>\s*\.step\s*\{\s*animation:\s*none;/);
+});
+
+function setup(platform = 'ios', browser = {}) {
   const ids = [
     'clientSelect', 'platformSelect', 'hwidBadge', 'installBtn', 'missingInstall',
     'alternatives', 'alternativeLinks', 'installLabel', 'installSource',
@@ -93,7 +118,12 @@ function setup(platform = 'ios') {
     URL,
     URLSearchParams,
     document,
-    navigator: { clipboard: { async writeText(value) { clipboard = value; } } },
+    navigator: {
+      userAgent: browser.userAgent || '',
+      platform: browser.platform || '',
+      maxTouchPoints: browser.maxTouchPoints || 0,
+      clipboard: { async writeText(value) { clipboard = value; } },
+    },
   };
   vm.runInNewContext(source, context, { filename: 'subscription.html' });
 
@@ -104,6 +134,35 @@ function setup(platform = 'ios') {
     get clipboard() { return clipboard; },
   };
 }
+
+test('Firefox on iPhone remains iOS even when server classified UA as macOS', () => {
+  const view = setup('macos', {
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) FxiOS/143.0 Mobile/15E148 Safari/605.1.15',
+    platform: 'MacIntel',
+    maxTouchPoints: 5,
+  });
+  assert.equal(view.get('platformSelect').value, 'ios');
+  assert.match(view.get('installBtn').href, /^https:\/\/apps\.apple\.com/);
+  assert.equal(view.get('clientSelect').options.find(x => x.value === 'koala').disabled, true);
+});
+
+test('iPad desktop mode is identified from touch support', () => {
+  const view = setup('macos', {
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 Version/17.0 Safari/605.1.15',
+    platform: 'MacIntel',
+    maxTouchPoints: 5,
+  });
+  assert.equal(view.get('platformSelect').value, 'ios');
+});
+
+test('real macOS remains macOS without multi-touch', () => {
+  const view = setup('macos', {
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Firefox/144.0',
+    platform: 'MacIntel',
+    maxTouchPoints: 0,
+  });
+  assert.equal(view.get('platformSelect').value, 'macos');
+});
 
 test('shows download as step one and app import as step two for iPhone', () => {
   const view = setup();

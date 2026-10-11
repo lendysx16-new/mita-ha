@@ -765,7 +765,12 @@ def detect_platform_from_user_agent(user_agent):
     ua = str(user_agent or "").lower()
     if "android" in ua:
         return "android"
-    if any(token in ua for token in ("iphone", "ipad", "ipod")):
+    # iOS browsers may request a desktop site and report Macintosh/Mac OS X.
+    # Firefox (FxiOS) and other iOS-specific tokens must win over the Mac hint.
+    if (
+        any(token in ua for token in ("iphone", "ipad", "ipod", "fxios/", "crios/", "edgios/", "opios/"))
+        or ("macintosh" in ua and "mobile/" in ua)
+    ):
         return "ios"
     if "windows" in ua:
         return "windows"

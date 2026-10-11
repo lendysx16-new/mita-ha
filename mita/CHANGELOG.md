@@ -1,3 +1,12 @@
+## 3.38.0.29
+
+- Added subtle system-theme-aware pink gradients to the entire subscription page background.
+- Made step entrance animations more noticeable: opacity fade with 26px right-to-left slide, staggered timing and reduced-motion support.
+- Increased iPhone typography for the pixel-style heading, step titles, inputs, labels and action buttons.
+- Let the two bordered setup steps grow to use available vertical space on taller iPhones, avoiding the compressed half-screen layout.
+- Retained compact spacing on shorter screens, scroll fallback, system theme, animations and reduced-motion support.
+- Fixed platform auto-detection for Firefox iOS/iPad desktop-mode User-Agents in Python and in-browser, with regression tests.
+
 ## 3.38.0.28
 
 - Restrict the public app selector to HWID-capable clients only (Clash Mi, Karing, FlClashX, Koala Clash), retaining old download endpoints for compatibility.
