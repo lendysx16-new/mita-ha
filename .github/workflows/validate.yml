@@ -56,6 +56,7 @@ jobs:
           Path("/tmp/mita-admin.js").write_text(script.group(1), encoding="utf-8")
           PY
           node --check /tmp/mita-admin.js
+          node --test tests/test_admin.mjs
       - name: Validate subscription page
         run: |
           python3 - <<'PY'
