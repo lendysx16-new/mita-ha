@@ -118,3 +118,17 @@ Tests use temporary files and mock the Mita reload command. GitHub Actions also 
 The public app picker lists **only these four HWID-capable clients**. Previously supported FlClash and Clash Verge Rev download routes remain available for existing links, but they are not advertised as HWID-compatible.
 
 HWID support refers to the subscription request headers. The generated YAML remains standard Mihomo/Mieru; clients must also use a Mihomo core capable of the Mieru protocol.
+
+## Linux terminal installation
+
+When **Linux** is selected on the subscription page, step 1 includes an optional **Install via terminal** disclosure. It shows a copyable command for the currently selected client:
+
+```bash
+curl -fsSLo ./mita-install-linux.sh https://raw.githubusercontent.com/lendysx16-new/mita-ha/main/mita/install-linux.sh && bash ./mita-install-linux.sh clashmi
+```
+
+The script is versioned in this repository (`mita/install-linux.sh`). Inspect the downloaded file before running `bash` if desired. It uses Python 3 and curl to look up the latest GitHub Release from the client's **official** repository and download an exact matching installer; it does not run remotely downloaded scripts from that release. On Debian/Ubuntu it invokes `sudo apt-get install` on the DEB, and on Fedora/openSUSE it uses DNF/Zypper to install an RPM. If neither manager exists, it installs an AppImage into `~/.local/bin` when the client publishes one. Root access is only needed for package installation, not the AppImage.
+
+To override package detection, run `bash ./mita-install-linux.sh koala rpm`, `... deb`, or `... appimage`. Some clients publish only AMD64 packages or do not publish AppImages; unsupported architecture/format combinations fail with an explicit message. Test compatibility without downloading or installing using `bash ./mita-install-linux.sh koala deb --dry-run`.
+
+**Privacy:** the Linux terminal command references only the public installation script and client ID; it never includes the user's subscription URL or token. After installing the application, use step 2 on the page to add the private subscription in the app.

@@ -16,8 +16,16 @@ jobs:
         run: python3 -m py_compile mita/webapp.py
       - name: Backend regression tests
         run: python3 -m unittest discover -s tests -v
-      - name: Shell syntax
-        run: bash -n mita/run.sh
+      - name: Shell syntax and offline Linux installer checks
+        run: |
+          bash -n mita/run.sh
+          bash -n mita/install-linux.sh
+          bash mita/install-linux.sh clashmi deb --dry-run | grep -F 'KaringX/clashmi|'
+          bash mita/install-linux.sh karing rpm --dry-run | grep -F 'KaringX/karing|'
+          bash mita/install-linux.sh flclashx appimage --dry-run | grep -F 'pluralplay/FlClashX|'
+          bash mita/install-linux.sh koala deb --dry-run | grep -F 'coolcoala/koala-clash|'
+          if bash mita/install-linux.sh unknown deb --dry-run; then exit 1; fi
+          if bash mita/install-linux.sh koala appimage --dry-run; then exit 1; fi
       - name: Parse YAML
         run: |
           python3 - <<'PY'

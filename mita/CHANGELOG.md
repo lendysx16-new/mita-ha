@@ -1,3 +1,10 @@
+## 3.38.0.30
+
+- Added a collapsed "Install via terminal" option on the Linux subscription setup page, with a copyable command for the selected HWID-capable client.
+- Added a standalone Linux Bash installer that detects package manager and CPU architecture, resolves the latest official GitHub Release, and installs DEB/RPM or a user-local AppImage.
+- Terminal command downloads a public repository script and never contains the private subscription token; the user can inspect the script before execution.
+- Extended Node UI tests and CI with offline Bash installation-target checks.
+
 ## 3.38.0.29
 
 - Added subtle system-theme-aware pink gradients to the entire subscription page background.
