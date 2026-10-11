@@ -259,17 +259,25 @@ code { font-size: 11px; overflow-wrap: anywhere; }
         <div class="stat-card"><div class="stat-label">Registered devices</div><div class="stat-number" id="statDevices">—</div><div class="stat-note">HWID credentials</div></div>
         <div class="stat-card"><div class="stat-label">Legacy enabled</div><div class="stat-number" id="statLegacy">—</div><div class="stat-note">Password credentials</div></div>
       </div>
+
       <div id="usersTab" class="tab-panel active" role="tabpanel">
         <section class="card">
-          <div class="card-header"><div><h2>Accounts</h2><p class="card-subtitle">Manage subscriptions and access tokens.</p></div><label class="search-box"><span class="field-help">Search users</span><input id="userSearch" type="search" placeholder="Filter by username…" autocomplete="off"></label></div>
+          <div class="card-header">
+            <div><h2>Accounts</h2><p class="card-subtitle">Select a user to manage subscriptions, devices and access.</p></div>
+            <div class="list-tools">
+              <label class="search-box"><span class="field-help">Search users</span><input id="userSearch" type="search" placeholder="Filter by username…" autocomplete="off"></label>
+              <button id="toggleAddUser" type="button">+ Add user</button>
+            </div>
+          </div>
           <div class="table-scroll"><table class="user-table">
-            <thead><tr><th>User</th><th>Access</th><th>Devices</th><th>Subscription</th><th></th></tr></thead>
+            <thead><tr><th>User</th><th>Access</th><th>Devices</th><th></th></tr></thead>
             <tbody id="users"></tbody>
           </table></div>
+          <p id="emptyUsers" class="table-empty" hidden>No matching users.</p>
         </section>
-        <div class="layout-two">
+        <div id="addUserPanel" hidden>
           <section class="card">
-            <div class="card-header"><div><h2>Add user</h2><p class="card-subtitle">Create credentials for a new client.</p></div></div>
+            <div class="card-header"><div><h2>Add user</h2><p class="card-subtitle">Create credentials for a new client.</p></div><button id="cancelAddUser" class="secondary" type="button">Cancel</button></div>
             <div class="card-body"><div class="form-grid">
               <label>Username<input id="username" autocomplete="off" placeholder="e.g. mobile-user" maxlength="64"></label>
               <label>Password<input id="password" type="password" autocomplete="new-password" placeholder="Automatically generated"></label>
@@ -286,23 +294,43 @@ code { font-size: 11px; overflow-wrap: anywhere; }
               <div class="actions"><button id="copyGenerated" class="secondary" type="button">Copy password</button><button id="dismissGenerated" class="secondary" type="button">Dismiss</button></div>
             </div>
           </section>
-          <section class="card">
-            <div class="card-header"><div><h2>Public connection</h2><p class="card-subtitle">Host and subscription URL shared with clients.</p></div></div>
-            <div class="card-body"><div class="form-grid">
-              <label>Hostname<input id="host" placeholder="vpn.example.com" spellcheck="false"></label>
-              <label>TCP port<input id="port" type="number" min="1" max="65535" inputmode="numeric"></label>
-              <label class="span-2">Subscription base URL<input id="base" type="url" placeholder="https://vpn.example.com" spellcheck="false"></label>
-              <label class="span-2">Contact email (optional)<input id="contactEmail" type="email" maxlength="254" placeholder="support@example.com" autocomplete="email" spellcheck="false"><span class="field-help">Shown on the public subscription page only when set. Leave blank to hide it.</span></label>
-            </div></div>
-            <div class="card-actions"><button id="saveSettings" type="button">Save settings</button></div>
-          </section>
         </div>
+      </div>
+      <div id="userDetailTab" class="tab-panel" role="tabpanel" aria-label="User details">
+        <div class="detail-navigation">
+          <button id="backToUsers" class="secondary" type="button">← Back to users</button>
+          <span class="muted">User details</span>
+        </div>
+        <section class="card">
+          <div class="card-header">
+            <div class="detail-title">
+              <span class="avatar detail-avatar" id="detailAvatar" aria-hidden="true">U</span>
+              <div><h2 id="detailUsername"></h2><p class="card-subtitle" id="detailAccess"></p></div>
+            </div>
+            <button id="detailDelete" class="danger" type="button">Delete user</button>
+          </div>
+          <div class="card-body">
+            <div class="detail-label">Subscription link</div>
+            <div class="detail-link-row">
+              <code id="detailSubscription" class="detail-subscription"></code>
+              <button id="detailCopy" class="secondary" type="button">Copy link</button>
+            </div>
+            <p class="field-help">The link contains a private access token. Share it only with this user.</p>
+          </div>
+          <div class="card-actions"><button id="detailRotate" class="secondary" type="button">Rotate token</button></div>
+        </section>
+        <section class="card">
+          <div class="card-header"><div><h2>Devices and access</h2><p class="card-subtitle">Manage HWID credentials and legacy access for this user.</p></div></div>
+          <div id="detailDeviceUsers"></div>
+        </section>
       </div>
       <div id="devicesTab" class="tab-panel" role="tabpanel">
         <section class="card">
-          <div class="card-header"><div><h2>Devices</h2><p class="card-subtitle">Manage per-user device limits and registered HWIDs.</p></div></div>
-          <div class="card-body"><p class="muted">The same subscription link can register separate devices. Supported clients register an HWID on the first subscription refresh, even when legacy access is disabled.</p></div>
-          <div id="deviceUsers"></div>
+          <div class="card-header"><div><h2>Registered devices</h2><p class="card-subtitle">Devices grouped by owner. Open a user to edit limits or remove devices.</p></div></div>
+          <div class="table-scroll"><table class="device-directory-table">
+            <thead><tr><th>Device</th><th>Owner</th><th>HWID</th><th>Last refresh</th><th></th></tr></thead>
+            <tbody id="deviceUsers"></tbody>
+          </table></div>
         </section>
       </div>
       <div id="trafficTab" class="tab-panel" role="tabpanel">
@@ -316,6 +344,16 @@ code { font-size: 11px; overflow-wrap: anywhere; }
         </section>
       </div>
       <div id="confTab" class="tab-panel" role="tabpanel">
+        <section class="card">
+            <div class="card-header"><div><h2>Public connection</h2><p class="card-subtitle">Host and subscription URL shared with clients.</p></div></div>
+            <div class="card-body"><div class="form-grid">
+              <label>Hostname<input id="host" placeholder="vpn.example.com" spellcheck="false"></label>
+              <label>TCP port<input id="port" type="number" min="1" max="65535" inputmode="numeric"></label>
+              <label class="span-2">Subscription base URL<input id="base" type="url" placeholder="https://vpn.example.com" spellcheck="false"></label>
+              <label class="span-2">Contact email (optional)<input id="contactEmail" type="email" maxlength="254" placeholder="support@example.com" autocomplete="email" spellcheck="false"><span class="field-help">Shown on the public subscription page only when set. Leave blank to hide it.</span></label>
+            </div></div>
+            <div class="card-actions"><button id="saveSettings" type="button">Save settings</button></div>
+          </section>
         <section class="card">
           <div class="card-header"><div><h2>Server settings</h2><p class="card-subtitle">Log verbosity and optional PostgreSQL log forwarding.</p></div></div>
           <div class="card-body">
