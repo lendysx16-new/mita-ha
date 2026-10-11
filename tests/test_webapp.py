@@ -213,5 +213,36 @@ class SubscriptionTests(unittest.TestCase):
         self.assertEqual(rows[0]["username"], "user")
 
 
+class PureHelpersTests(unittest.TestCase):
+    def test_config_builder_only_includes_active_credentials(self):
+        users = [{
+            "username": "first", "password": "old",
+            "allow_private_ip": True, "allow_loopback_ip": False,
+            "legacy_enabled": False,
+            "devices": [{"mita_username": "dev_one", "password": "new"}],
+        }]
+        settings = {"prefer_ipv4": False, "log_level": "WARN"}
+        config = app.build_mita_config(users, settings)
+        self.assertEqual([u["name"] for u in config["users"]], ["dev_one"])
+        self.assertEqual(config["users"][0]["password"], "new")
+        self.assertTrue(config["users"][0]["allowPrivateIP"])
+        self.assertEqual(config["dns"]["dualStack"], "USE_FIRST_IP")
+        self.assertEqual(config["loggingLevel"], "WARN")
+
+    def test_subscription_base_url_validation(self):
+        self.assertEqual(app.normalize_base_url("https://example.com/vpn/"), "https://example.com/vpn")
+        for value in (
+            "https://user:secret@example.com",
+            "https://example.com?mode=test",
+            "https://example.com/#fragment",
+            "ftp://example.com",
+            "https://example.com:badport",
+            "https://example.com/with space",
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    app.normalize_base_url(value)
+
+
 if __name__ == "__main__":
     unittest.main()
