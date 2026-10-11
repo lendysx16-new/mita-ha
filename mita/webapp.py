@@ -37,6 +37,7 @@ SUB_PORT = 8099
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 HWID_RE = re.compile(r"^[A-Za-z0-9=-]{10,64}$")
 DEVICE_ID_RE = re.compile(r"^[A-Fa-f0-9]{16}$")
+CONTACT_EMAIL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9.-]+$")
 LOCK = threading.RLock()
 RELEASE_CACHE_LOCK = threading.RLock()
 RELEASE_CACHE = {}
@@ -387,6 +388,33 @@ def normalize_base_url(value):
     return value
 
 
+def normalize_contact_email(value):
+    """Validate the optional public contact address before saving or displaying it."""
+    if not isinstance(value, str):
+        raise ValueError("invalid contact_email")
+    address = value.strip()
+    if not address:
+        return ""
+    if len(address) > 254 or not CONTACT_EMAIL_RE.fullmatch(address):
+        raise ValueError("invalid contact_email")
+    local, domain = address.rsplit("@", 1)
+    if (
+        len(local) > 64
+        or local.startswith(".")
+        or local.endswith(".")
+        or ".." in local
+        or len(domain) > 253
+    ):
+        raise ValueError("invalid contact_email")
+    labels = domain.split(".")
+    if len(labels) < 2 or any(
+        not label or len(label) > 63 or label.startswith("-") or label.endswith("-")
+        for label in labels
+    ) or not labels[-1].isalpha() or len(labels[-1]) < 2:
+        raise ValueError("invalid contact_email")
+    return address
+
+
 def initialize():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     options = load_options()
@@ -435,6 +463,7 @@ def initialize():
             "default_allow_private_ip": bool(options.get("allow_private_ip", False)),
             "default_allow_loopback_ip": bool(options.get("allow_loopback_ip", False)),
             "postgres_dsn": str(options.get("postgres_dsn", "")).strip(),
+            "contact_email": "",
         }
         write_json(SETTINGS_PATH, settings)
 
@@ -784,6 +813,20 @@ def detect_platform_from_user_agent(user_agent):
 def render_subscription_page(user, request_headers=None):
     template = SUBSCRIPTION_PAGE_PATH.read_text(encoding="utf-8")
     subscription_url = public_user(user)["subscription_url"]
+    try:
+        contact_email = normalize_contact_email(get_settings().get("contact_email", ""))
+    except ValueError:
+        contact_email = ""
+    contact_link = ""
+    if contact_email:
+        escaped_email = html.escape(contact_email, quote=True)
+        mailto_url = html.escape(
+            "mailto:" + urllib.parse.quote(contact_email, safe="@._+-"), quote=True
+        )
+        contact_link = (
+            '<p class="contact-info">Связаться: '
+            f'<a href="{mailto_url}">{escaped_email}</a></p>'
+        )
     user_agent = ""
     if request_headers is not None:
         user_agent = str(request_headers.get("User-Agent", "") or "")
@@ -801,6 +844,7 @@ def render_subscription_page(user, request_headers=None):
         .replace("@@PAGE_TITLE@@", html.escape("Mieru · " + user["username"]))
         .replace("@@USERNAME_HTML@@", html.escape(user["username"]))
         .replace("@@SUBSCRIPTION_URL_HTML@@", html.escape(subscription_url))
+        .replace("@@CONTACT_LINK_HTML@@", contact_link)
         .replace("@@BOOTSTRAP_JSON@@", bootstrap)
     )
 
@@ -1118,6 +1162,8 @@ class AdminHandler(CommonHandler):
                     if len(postgres_dsn) > 4096:
                         raise ValueError("postgres_dsn is too long")
                     settings["postgres_dsn"] = postgres_dsn
+                if "contact_email" in body:
+                    settings["contact_email"] = normalize_contact_email(body["contact_email"])
 
                 settings["public_mieru_host"] = host
                 settings["public_mieru_port"] = port
