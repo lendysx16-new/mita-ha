@@ -58,6 +58,19 @@ test('iPhone typography is larger and cards use available viewport height', () =
   assert.match(html, /\.steps\s*\{\s*flex:\s*none;\s*grid-template-rows:\s*none;/);
 });
 
+test('background gradient adapts to theme and step motion slides in from the right', () => {
+  assert.match(html, /--gradient-glow:\s*rgba\(/);
+  assert.match(html, /--gradient-base:\s*#fff4fa;/);
+  assert.match(html, /--gradient-base:\s*#1a1119;/);
+  assert.match(html, /background-image:\s*radial-gradient\([\s\S]*?linear-gradient\(/);
+  assert.match(html, /@keyframes stepReveal\s*\{\s*from\s*\{\s*opacity:\s*0;\s*transform:\s*translate3d\(26px,\s*0,\s*0\)/);
+  assert.match(html, /@keyframes stepReveal[\s\S]*?to\s*\{\s*opacity:\s*1;\s*transform:\s*translate3d\(0,\s*0,\s*0\)/);
+  assert.match(html, /\.steps\s*>\s*\.step\s*\{\s*animation:\s*stepReveal\s*\.68s/);
+  assert.match(html, /\.step:nth-child\(1\)\s*\{\s*animation-delay:\s*200ms/);
+  assert.match(html, /\.step:nth-child\(2\)\s*\{\s*animation-delay:\s*380ms/);
+  assert.match(html, /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.steps\s*>\s*\.step\s*\{\s*animation:\s*none;/);
+});
+
 function setup(platform = 'ios', browser = {}) {
   const ids = [
     'clientSelect', 'platformSelect', 'hwidBadge', 'installBtn', 'missingInstall',
