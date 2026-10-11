@@ -320,8 +320,16 @@
       select { min-height: 48px; padding: 10px 10px; font-size: 14px; }
       .steps {
         flex: 1;
-        grid-template-rows: repeat(2, minmax(max-content, 1fr));
+        /* The first step follows its content; only the second fills spare height. */
+        grid-template-rows: max-content minmax(max-content, 1fr);
         gap: 14px;
+      }
+      /* When installers or alternate downloads are expanded, both cards take
+         their own content height instead of mirroring the tallest card. */
+      .steps:has(#terminalInstall:not([hidden])[open]),
+      .steps:has(#alternatives:not([hidden])[open]) {
+        flex: none;
+        grid-template-rows: max-content max-content;
       }
       .step {
         display: flex;
