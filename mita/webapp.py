@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import copy
 import html
 import json
 import os
@@ -339,10 +340,22 @@ def migrate_users():
 
 
 def normalize_base_url(value):
-    value = (value or "").strip().rstrip("/")
-    parsed = urllib.parse.urlparse(value)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ValueError("subscription_base_url must be an http(s) URL")
+    value = str(value or "").strip().rstrip("/")
+    parsed = urllib.parse.urlsplit(value)
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or any(character.isspace() for character in value)
+    ):
+        raise ValueError("subscription_base_url must be an http(s) URL without credentials, query or fragment")
+    try:
+        _ = parsed.port  # Reject malformed port values before persisting.
+    except ValueError as exc:
+        raise ValueError("invalid subscription_base_url port") from exc
     return value
 
 
@@ -400,6 +413,25 @@ def initialize():
     rebuild_mita_config()
 
 
+class MitaReloadError(RuntimeError):
+    """Raised when a configuration change could not be applied to mita."""
+
+
+def persist_and_reload(path, updated, previous):
+    """Commit state only if mita accepts the corresponding configuration.
+
+    Caller must hold LOCK through the full read/modify/write/reload sequence.
+    """
+    write_json(path, updated)
+    ok, output = reload_mita()
+    if ok:
+        return output
+    write_json(path, previous)
+    # Restore the on-disk mita configuration and retry applying the old state.
+    reload_mita()
+    raise MitaReloadError(output or "mita reload failed")
+
+
 def get_users():
     return load_json(USERS_PATH, [])
 
@@ -408,36 +440,39 @@ def get_settings():
     return load_json(SETTINGS_PATH, {})
 
 
+def build_mita_config(users, settings):
+    """Construct the Mita config without filesystem or subprocess side effects."""
+    dns_policy = "PREFER_IPv4" if settings.get("prefer_ipv4", True) else "USE_FIRST_IP"
+    mita_users = []
+    for user in users:
+        access = {
+            "allowPrivateIP": bool(user.get("allow_private_ip", False)),
+            "allowLoopbackIP": bool(user.get("allow_loopback_ip", False)),
+        }
+        if user.get("legacy_enabled", True):
+            mita_users.append({
+                "name": user["username"],
+                "password": user["password"],
+                **access,
+            })
+        for device in user.get("devices", []):
+            mita_users.append({
+                "name": device["mita_username"],
+                "password": device["password"],
+                **access,
+            })
+
+    return {
+        "portBindings": [{"port": 2022, "protocol": "TCP"}],
+        "users": mita_users,
+        "loggingLevel": settings.get("log_level", "INFO"),
+        "dns": {"dualStack": dns_policy},
+    }
+
+
 def rebuild_mita_config():
     with LOCK:
-        users = get_users()
-        settings = get_settings()
-        dns_policy = "PREFER_IPv4" if settings.get("prefer_ipv4", True) else "USE_FIRST_IP"
-        mita_users = []
-        for user in users:
-            access = {
-                "allowPrivateIP": bool(user.get("allow_private_ip", False)),
-                "allowLoopbackIP": bool(user.get("allow_loopback_ip", False)),
-            }
-            if user.get("legacy_enabled", True):
-                mita_users.append({
-                    "name": user["username"],
-                    "password": user["password"],
-                    **access,
-                })
-            for device in user.get("devices", []):
-                mita_users.append({
-                    "name": device["mita_username"],
-                    "password": device["password"],
-                    **access,
-                })
-
-        config = {
-            "portBindings": [{"port": 2022, "protocol": "TCP"}],
-            "users": mita_users,
-            "loggingLevel": settings.get("log_level", "INFO"),
-            "dns": {"dualStack": dns_policy},
-        }
+        config = build_mita_config(get_users(), get_settings())
         write_json(MITA_CONFIG_PATH, config)
 
 
@@ -843,15 +878,13 @@ def resolve_subscription(token, headers):
             response_headers["x-hwid-limit"] = "true"
             return None, None, response_headers, HTTPStatus.NOT_FOUND, "device limit reached"
 
+        previous = copy.deepcopy(users)
         device = _new_device(user, hwid, headers)
         devices.append(device)
-        write_json(USERS_PATH, users)
-        ok, output = reload_mita()
-        if not ok:
-            devices[:] = [d for d in devices if d.get("id") != device["id"]]
-            write_json(USERS_PATH, users)
-            rebuild_mita_config()
-            return None, None, response_headers, HTTPStatus.SERVICE_UNAVAILABLE, output or "failed to register device"
+        try:
+            persist_and_reload(USERS_PATH, users, previous)
+        except MitaReloadError as exc:
+            return None, None, response_headers, HTTPStatus.SERVICE_UNAVAILABLE, str(exc)
 
         credential = {
             "username": device["mita_username"],
@@ -867,7 +900,9 @@ class CommonHandler(BaseHTTPRequestHandler):
     server_version = "mita-ha/1"
 
     def log_message(self, fmt, *args):
-        print("[web] %s - %s" % (self.address_string(), fmt % args), flush=True)
+        # Subscription tokens are credentials; never persist them in HTTP logs.
+        message = re.sub(r"(/sub/)[A-Za-z0-9_-]{16,}", r"\1[redacted]", fmt % args)
+        print("[web] %s - %s" % (self.address_string(), message), flush=True)
 
     def send_bytes(self, status, content_type, data, headers=None):
         if isinstance(data, str):
@@ -890,11 +925,20 @@ class CommonHandler(BaseHTTPRequestHandler):
         )
 
     def read_json(self):
-        length = int(self.headers.get("Content-Length", "0"))
-        if length > 65536:
-            raise ValueError("request too large")
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid Content-Length") from exc
+        if length < 0 or length > 65536:
+            raise ValueError("request size is invalid")
         raw = self.rfile.read(length) if length else b"{}"
-        return json.loads(raw.decode("utf-8"))
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid JSON body") from exc
+        if not isinstance(body, dict):
+            raise ValueError("JSON body must be an object")
+        return body
 
 
 class AdminHandler(CommonHandler):
@@ -925,48 +969,53 @@ class AdminHandler(CommonHandler):
                 username = str(body.get("username", "")).strip()
                 if not USERNAME_RE.fullmatch(username):
                     raise ValueError("username must contain only A-Z, a-z, 0-9, _, . or -")
-                users = get_users()
-                if any(u["username"] == username for u in users):
-                    raise ValueError("user already exists")
-                password = str(body.get("password", ""))
-                generated = ""
-                if not password:
-                    password = secrets.token_urlsafe(24)
-                    generated = password
-                user = {
-                    "username": username,
-                    "password": password,
-                    "allow_private_ip": bool(body.get("allow_private_ip", False)),
-                    "allow_loopback_ip": bool(body.get("allow_loopback_ip", False)),
-                    "token": secrets.token_urlsafe(24),
-                    "legacy_enabled": bool(body.get("legacy_enabled", True)),
-                    "device_limit": 0,
-                    "devices": [],
-                }
-                users.append(user)
-                write_json(USERS_PATH, users)
-                ok, output = reload_mita()
+                password = str(body.get("password", "")) or secrets.token_urlsafe(24)
+                generated = password if not body.get("password") else ""
+                with LOCK:
+                    users = get_users()
+                    if any(u["username"] == username for u in users):
+                        raise ValueError("user already exists")
+                    previous = copy.deepcopy(users)
+                    user = {
+                        "username": username,
+                        "password": password,
+                        "allow_private_ip": bool(body.get("allow_private_ip", False)),
+                        "allow_loopback_ip": bool(body.get("allow_loopback_ip", False)),
+                        "token": secrets.token_urlsafe(24),
+                        "legacy_enabled": bool(body.get("legacy_enabled", True)),
+                        "device_limit": 0,
+                        "devices": [],
+                    }
+                    users.append(user)
+                    reload_output = persist_and_reload(USERS_PATH, users, previous)
+                    result = public_user(user)
                 self.send_json(HTTPStatus.CREATED, {
-                    "user": public_user(user),
+                    "user": result,
                     "generated_password": generated or None,
-                    "mita_reloaded": ok,
-                    "mita_output": output,
+                    "mita_reloaded": True,
+                    "mita_output": reload_output,
                 })
-            except (ValueError, json.JSONDecodeError) as exc:
+            except ValueError as exc:
                 self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            except MitaReloadError as exc:
+                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
             return
 
         m = re.fullmatch(r"/api/users/([^/]+)/rotate-token", path)
         if m:
             username = urllib.parse.unquote(m.group(1))
-            users = get_users()
-            for user in users:
-                if user["username"] == username:
-                    user["token"] = secrets.token_urlsafe(24)
-                    write_json(USERS_PATH, users)
-                    self.send_json(HTTPStatus.OK, {"user": public_user(user)})
+            with LOCK:
+                users = get_users()
+                for user in users:
+                    if user["username"] == username:
+                        user["token"] = secrets.token_urlsafe(24)
+                        write_json(USERS_PATH, users)
+                        result = public_user(user)
+                        break
+                else:
+                    self.send_json(HTTPStatus.NOT_FOUND, {"error": "user not found"})
                     return
-            self.send_json(HTTPStatus.NOT_FOUND, {"error": "user not found"})
+            self.send_json(HTTPStatus.OK, {"user": result})
             return
 
         self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -993,28 +1042,21 @@ class AdminHandler(CommonHandler):
                     if limit > 0 and len(user.get("devices", [])) > limit:
                         raise ValueError("device_limit is lower than the number of registered devices")
 
+                    previous = copy.deepcopy(users)
                     old_legacy = bool(user.get("legacy_enabled", True))
-                    old_limit = int(user.get("device_limit", 0) or 0)
                     user["legacy_enabled"] = legacy_enabled
                     user["device_limit"] = limit
-                    write_json(USERS_PATH, users)
-
                     if old_legacy != legacy_enabled:
-                        ok, output = reload_mita()
-                        if not ok:
-                            user["legacy_enabled"] = old_legacy
-                            user["device_limit"] = old_limit
-                            write_json(USERS_PATH, users)
-                            rebuild_mita_config()
-                            self.send_json(
-                                HTTPStatus.SERVICE_UNAVAILABLE,
-                                {"error": output or "mita reload failed"},
-                            )
-                            return
+                        persist_and_reload(USERS_PATH, users, previous)
+                    else:
+                        write_json(USERS_PATH, users)
+                    result = public_user(user)
 
-                    self.send_json(HTTPStatus.OK, {"user": public_user(user)})
-            except (ValueError, json.JSONDecodeError) as exc:
+                self.send_json(HTTPStatus.OK, {"user": result})
+            except ValueError as exc:
                 self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            except MitaReloadError as exc:
+                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
             return
 
         if path != "/api/settings":
@@ -1022,43 +1064,46 @@ class AdminHandler(CommonHandler):
             return
         try:
             body = self.read_json()
-            settings = get_settings()
-            host = str(body.get("public_mieru_host", settings.get("public_mieru_host", ""))).strip()
-            if not host or "/" in host or " " in host:
-                raise ValueError("invalid public_mieru_host")
-            port = int(body.get("public_mieru_port", settings.get("public_mieru_port", 8443)))
-            if port < 1 or port > 65535:
-                raise ValueError("invalid public_mieru_port")
-            base = normalize_base_url(body.get("subscription_base_url", settings.get("subscription_base_url", "")))
-            old_log_level = str(settings.get("log_level", "INFO"))
-            if "log_level" in body:
-                log_level = str(body.get("log_level", old_log_level)).upper().strip()
-                if log_level not in {"FATAL", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"}:
-                    raise ValueError("invalid log_level")
-                settings["log_level"] = log_level
-            if "postgres_dsn" in body:
-                postgres_dsn = str(body.get("postgres_dsn", "") or "").strip()
-                if len(postgres_dsn) > 4096:
-                    raise ValueError("postgres_dsn is too long")
-                settings["postgres_dsn"] = postgres_dsn
+            with LOCK:
+                settings = get_settings()
+                previous = copy.deepcopy(settings)
+                host = str(body.get("public_mieru_host", settings.get("public_mieru_host", ""))).strip()
+                if not host or "/" in host or " " in host:
+                    raise ValueError("invalid public_mieru_host")
+                port = int(body.get("public_mieru_port", settings.get("public_mieru_port", 8443)))
+                if port < 1 or port > 65535:
+                    raise ValueError("invalid public_mieru_port")
+                base = normalize_base_url(body.get("subscription_base_url", settings.get("subscription_base_url", "")))
+                old_log_level = str(settings.get("log_level", "INFO"))
+                if "log_level" in body:
+                    log_level = str(body["log_level"]).upper().strip()
+                    if log_level not in {"FATAL", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"}:
+                        raise ValueError("invalid log_level")
+                    settings["log_level"] = log_level
+                if "postgres_dsn" in body:
+                    postgres_dsn = str(body.get("postgres_dsn", "") or "").strip()
+                    if len(postgres_dsn) > 4096:
+                        raise ValueError("postgres_dsn is too long")
+                    settings["postgres_dsn"] = postgres_dsn
 
-            settings["public_mieru_host"] = host
-            settings["public_mieru_port"] = port
-            settings["subscription_base_url"] = base
-            write_json(SETTINGS_PATH, settings)
-
-            mita_reloaded = True
-            mita_output = ""
-            if str(settings.get("log_level", "INFO")) != old_log_level:
-                mita_reloaded, mita_output = reload_mita()
+                settings["public_mieru_host"] = host
+                settings["public_mieru_port"] = port
+                settings["subscription_base_url"] = base
+                reload_output = ""
+                if settings.get("log_level", "INFO") != old_log_level:
+                    reload_output = persist_and_reload(SETTINGS_PATH, settings, previous)
+                else:
+                    write_json(SETTINGS_PATH, settings)
 
             self.send_json(HTTPStatus.OK, {
                 "settings": settings,
-                "mita_reloaded": mita_reloaded,
-                "mita_output": mita_output,
+                "mita_reloaded": True,
+                "mita_output": reload_output,
             })
-        except (ValueError, json.JSONDecodeError) as exc:
+        except ValueError as exc:
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except MitaReloadError as exc:
+            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
 
     def do_DELETE(self):
         path = urllib.parse.urlparse(self.path).path
@@ -1078,26 +1123,21 @@ class AdminHandler(CommonHandler):
                 if not device:
                     self.send_json(HTTPStatus.NOT_FOUND, {"error": "device not found"})
                     return
-                original_devices = list(devices)
-                user["devices"] = [d for d in devices if d.get("id") != device_id]
-                if not user.get("legacy_enabled", True) and not user["devices"]:
+                if not user.get("legacy_enabled", True) and len(devices) == 1:
                     self.send_json(
                         HTTPStatus.BAD_REQUEST,
                         {"error": "enable legacy access before removing the last device"},
                     )
                     return
-                write_json(USERS_PATH, users)
-                ok, output = reload_mita()
-                if not ok:
-                    user["devices"] = original_devices
-                    write_json(USERS_PATH, users)
-                    rebuild_mita_config()
-                    self.send_json(
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        {"error": output or "mita reload failed"},
-                    )
+                previous = copy.deepcopy(users)
+                user["devices"] = [d for d in devices if d.get("id") != device_id]
+                try:
+                    persist_and_reload(USERS_PATH, users, previous)
+                except MitaReloadError as exc:
+                    self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
                     return
-                self.send_json(HTTPStatus.OK, {"deleted": device_id, "user": public_user(user)})
+                result = public_user(user)
+            self.send_json(HTTPStatus.OK, {"deleted": device_id, "user": result})
             return
 
         m = re.fullmatch(r"/api/users/([^/]+)", path)
@@ -1105,17 +1145,21 @@ class AdminHandler(CommonHandler):
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         username = urllib.parse.unquote(m.group(1))
-        users = get_users()
-        new_users = [u for u in users if u["username"] != username]
-        if len(new_users) == len(users):
-            self.send_json(HTTPStatus.NOT_FOUND, {"error": "user not found"})
-            return
-        if not new_users:
-            self.send_json(HTTPStatus.BAD_REQUEST, {"error": "at least one user must remain"})
-            return
-        write_json(USERS_PATH, new_users)
-        ok, output = reload_mita()
-        self.send_json(HTTPStatus.OK, {"deleted": username, "mita_reloaded": ok, "mita_output": output})
+        with LOCK:
+            users = get_users()
+            new_users = [u for u in users if u["username"] != username]
+            if len(new_users) == len(users):
+                self.send_json(HTTPStatus.NOT_FOUND, {"error": "user not found"})
+                return
+            if not new_users:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": "at least one user must remain"})
+                return
+            try:
+                reload_output = persist_and_reload(USERS_PATH, new_users, users)
+            except MitaReloadError as exc:
+                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+                return
+        self.send_json(HTTPStatus.OK, {"deleted": username, "mita_reloaded": True, "mita_output": reload_output})
 
 
 class SubscriptionHandler(CommonHandler):

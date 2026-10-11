@@ -1,3 +1,19 @@
+## 3.38.0.27
+
+- Rebuilt the public subscription landing page as a simple two-step setup: install the selected client, then open the personalized profile.
+- Preserved existing client download URLs and xhwid-aware deep links, with manual copy for clients without import links.
+- Removed Vue/CDN dependency from the public subscription page and added browser-behavior regression tests.
+- Added Manrope typography (with local font fallback), automatic system dark/light colors, and staggered CSS entrance animations with reduced-motion support.
+- Simplified the subscription design with flat, shadow-free sections, 5px controls, thin dividers and unobtrusive step numbers.
+
+- Serialize user, token, device and settings mutations to prevent lost updates under concurrent API requests.
+- Roll back persistent state and retry the previous configuration when Mita rejects a reload; report HTTP 503 rather than false success.
+- Avoid logging subscription tokens in HTTP access logs.
+- Validate JSON request bodies and Content-Length before processing API mutations.
+- Keep newly generated user passwords visible until explicitly dismissed in the admin UI.
+- Extract Mita config generation into a pure function and reject malformed public subscription base URLs.
+- Add regression tests for API operations, device registration, concurrency, and rollback behavior.
+
 ## 3.38.0.26
 
 - Redesigned Home Assistant Ingress admin panel with shadcn-inspired colors, layout, cards, forms, badges, and responsive navigation.

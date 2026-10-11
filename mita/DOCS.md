@@ -61,19 +61,18 @@ Then each user gets a URL like:
 https://me.lendysx16.ru/sub/<random-token>
 ```
 
-Opening the subscription URL in a browser shows a mobile-first landing page. It has:
+Opening the subscription URL in a browser shows a guided, mobile-first **two-step setup page**:
 
-- a client picker for Clash Mi, Karing, FlClash, Clash Verge Rev, and a generic Clash/Mihomo client;
-- **Open in client** deep links where the client exposes a verified URL scheme;
-- automatic `xhwid=true` for Clash Mi and Karing, which support HWID subscription headers;
-- a **Copy link** button;
-- download links that change with the selected client and only show the platforms that client publishes;
-- direct latest GitHub Release installers for desktop/Android where there is no App Store link. The add-on resolves the latest matching release asset at click time and redirects to GitHub;
-- browser User-Agent platform detection, so the landing page shows downloads for the visitor's current OS first and hides the other platforms behind an **Other platforms** disclosure.
+1. **Install the app:** choose Clash Mi, Karing, FlClash or another client; choose the target OS if needed. The page displays the direct App Store or current GitHub Release installer for that platform.
+2. **Open the profile in the app:** use the client's import deep link, preserving `xhwid=true` for Clash Mi and Karing. If a client does not have an import URL scheme, copy the subscription URL and import it manually.
+
+Additional release variants, manual copy, and the raw subscription token URL are placed in optional controls so first-time users only see the two steps. The page detects the visitor's OS from User-Agent, but allows manual platform selection. The landing page now uses bundled HTML/CSS/JavaScript with **no Vue or CDN dependency**, so it works independently of third-party script hosting.
+
+The public `/sub/<token>/download/<client>/<target>` URLs still resolve current GitHub Release installers through the server, and the private subscription URL remains hidden until the visitor chooses to reveal it.
 
 The same `/sub/<token>` URL still returns YAML to ClashMi and other clients because they request it as a subscription instead of HTML. Add `?raw=1` to force the YAML response in a browser.
 
-The landing page is a single server-rendered HTML file bundled with the add-on. Vue 3 is loaded from jsDelivr; there is no frontend build step.
+The landing page is served from the bundled `subscription.html` template; it requires no frontend build step or external JavaScript dependencies.
 
 ClashMi can also use the URL directly in **Add Profile Link**.
 
@@ -100,3 +99,13 @@ The public subscription endpoint serves only `/sub/<token>`; it has no admin API
 ## Existing installations
 
 On first start after upgrading, existing users from the Home Assistant app configuration are migrated to `/data/users.json`. After that, the Web UI becomes the user database.
+
+## Development and regression tests
+
+The add-on uses Python's standard library for API tests. Run from the repository root:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Tests use temporary files and mock the Mita reload command. GitHub Actions also checks Python syntax, shell syntax, YAML, and the admin page JavaScript. No live Home Assistant or Mita process is required for the regression suite.

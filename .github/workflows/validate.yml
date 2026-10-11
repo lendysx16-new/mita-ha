@@ -14,6 +14,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Python syntax
         run: python3 -m py_compile mita/webapp.py
+      - name: Backend regression tests
+        run: python3 -m unittest discover -s tests -v
       - name: Shell syntax
         run: bash -n mita/run.sh
       - name: Parse YAML
@@ -46,3 +48,22 @@ jobs:
           Path("/tmp/mita-admin.js").write_text(script.group(1), encoding="utf-8")
           PY
           node --check /tmp/mita-admin.js
+      - name: Validate subscription page
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          source = Path("mita/subscription.html").read_text(encoding="utf-8")
+          assert "@@BOOTSTRAP_JSON@@" in source
+          assert "@@USERNAME_HTML@@" in source
+          assert "@@SUBSCRIPTION_URL_HTML@@" in source
+          assert 'id="installTitle"' in source
+          assert 'id="connectTitle"' in source
+          assert "cdn.jsdelivr.net" not in source
+          scripts = re.findall(r"<script>(.*?)</script>", source, re.S)
+          assert len(scripts) == 2
+          Path("/tmp/mita-subscription.js").write_text(scripts[-1], encoding="utf-8")
+          PY
+          node --check /tmp/mita-subscription.js
+          node --test tests/test_subscription.mjs

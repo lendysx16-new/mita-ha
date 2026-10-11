@@ -172,6 +172,10 @@ code { font-size: 11px; overflow-wrap: anywhere; }
 #trafficUpdated { padding: 10px 22px; border-bottom: 1px solid var(--border); }
 #logDbStatus { margin-top: 18px; padding: 12px 14px; border-radius: 7px; background: var(--secondary); overflow-wrap: anywhere; }
 #msg { position: fixed; z-index: 20; bottom: 24px; right: 24px; max-width: min(420px,calc(100vw - 32px)); padding: 13px 17px; border: 1px solid var(--border); background: var(--popover); color: var(--foreground); border-radius: 9px; box-shadow: 0 10px 36px #0002; font-size: 12px; font-weight: 550; }
+.generated-credential { padding: 18px 22px; border-top: 1px solid var(--border); background: var(--secondary); display: grid; gap: 10px; }
+.generated-credential[hidden] { display: none!important; }
+.generated-credential input { font-family: ui-monospace,SFMono-Regular,Consolas,monospace; background: var(--card); }
+.generated-credential .actions { justify-content: flex-start; }
 #msg:empty { display: none; }
 @media (max-width: 1100px) {
   .layout-two { grid-template-columns: 1fr; gap: 0; }
@@ -276,6 +280,11 @@ code { font-size: 11px; overflow-wrap: anywhere; }
               </div>
             </div></div>
             <div class="card-actions"><button id="add" type="button">Add user</button></div>
+            <div class="generated-credential" id="generatedCredential" hidden>
+              <div><strong>Save the generated password</strong><p class="field-help">This password is only shown after creation. Copy it before dismissing.</p></div>
+              <label>Generated password<input id="generatedPassword" type="text" readonly autocomplete="off" spellcheck="false"></label>
+              <div class="actions"><button id="copyGenerated" class="secondary" type="button">Copy password</button><button id="dismissGenerated" class="secondary" type="button">Dismiss</button></div>
+            </div>
           </section>
           <section class="card">
             <div class="card-header"><div><h2>Public connection</h2><p class="card-subtitle">Host and subscription URL shared with clients.</p></div></div>
@@ -566,8 +575,30 @@ function filterUsers(){
   });
 }
 async function copyLink(v){await navigator.clipboard.writeText(v);message('Subscription link copied')}
-async function rotate(username){await request('api/users/'+encodeURIComponent(username)+'/rotate-token',{method:'POST',body:'{}'});await load();message('Token rotated')}
-async function removeUser(username){if(!confirm('Delete '+username+'?'))return;await request('api/users/'+encodeURIComponent(username),{method:'DELETE'});await load();message('User deleted')}
+async function rotate(username){
+  if(!confirm('Rotate the subscription link for '+username+'? The old link will stop working.'))return;
+  try{
+    await request('api/users/'+encodeURIComponent(username)+'/rotate-token',{method:'POST',body:'{}'});
+    await load();message('Token rotated');
+  }catch(e){alert(e.message)}
+}
+async function removeUser(username){
+  if(!confirm('Delete '+username+'?'))return;
+  try{
+    await request('api/users/'+encodeURIComponent(username),{method:'DELETE'});
+    await load();message('User deleted');
+  }catch(e){alert(e.message)}
+}
+$('#copyGenerated').onclick=async()=>{
+  try{
+    await navigator.clipboard.writeText($('#generatedPassword').value);
+    message('Password copied');
+  }catch(e){alert('Unable to copy password: '+e.message)}
+};
+$('#dismissGenerated').onclick=()=>{
+  $('#generatedPassword').value='';
+  $('#generatedCredential').hidden=true;
+};
 $('#add').onclick=async()=>{
   try{
     const data=await request('api/users',{method:'POST',body:JSON.stringify({
@@ -576,7 +607,13 @@ $('#add').onclick=async()=>{
       legacy_enabled:$('#newLegacy').checked
     })});
     $('#username').value='';$('#password').value='';$('#newLegacy').checked=true;await load();
-    message(data.generated_password?'User added. Generated password: '+data.generated_password:'User added');
+    if(data.generated_password){
+      $('#generatedPassword').value=data.generated_password;
+      $('#generatedCredential').hidden=false;
+      message('User added. Save the generated password.');
+    }else{
+      message('User added');
+    }
   }catch(e){alert(e.message)}
 };
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
