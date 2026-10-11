@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import contextlib
 import copy
 import html
 import hashlib
@@ -425,36 +426,37 @@ def save_postgres_backup(dsn, reason="scheduled"):
     if psycopg2 is None:
         raise RuntimeError("psycopg2 is not installed")
     payload, names, digest = build_backup_archive()
-    with psycopg2.connect(dsn, connect_timeout=8) as connection:
-        with connection.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS mita_backups (
-                    id BIGSERIAL PRIMARY KEY,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    reason TEXT NOT NULL,
-                    file_names JSONB NOT NULL,
-                    checksum_sha256 TEXT NOT NULL,
-                    payload BYTEA NOT NULL
+    with contextlib.closing(psycopg2.connect(dsn, connect_timeout=8)) as connection:
+        with connection:
+            with connection.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS mita_backups (
+                        id BIGSERIAL PRIMARY KEY,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        reason TEXT NOT NULL,
+                        file_names JSONB NOT NULL,
+                        checksum_sha256 TEXT NOT NULL,
+                        payload BYTEA NOT NULL
+                    )
+                """)
+                cur.execute(
+                    """
+                    INSERT INTO mita_backups (reason, file_names, checksum_sha256, payload)
+                    VALUES (%s, %s::jsonb, %s, %s)
+                    """,
+                    (reason, json.dumps(names), digest, psycopg2.Binary(payload)),
                 )
-            """)
-            cur.execute(
-                """
-                INSERT INTO mita_backups (reason, file_names, checksum_sha256, payload)
-                VALUES (%s, %s::jsonb, %s, %s)
-                """,
-                (reason, json.dumps(names), digest, psycopg2.Binary(payload)),
-            )
-            cur.execute(
-                """
-                DELETE FROM mita_backups
-                WHERE id NOT IN (
-                    SELECT id FROM mita_backups ORDER BY created_at DESC, id DESC LIMIT %s
+                cur.execute(
+                    """
+                    DELETE FROM mita_backups
+                    WHERE id NOT IN (
+                        SELECT id FROM mita_backups ORDER BY created_at DESC, id DESC LIMIT %s
+                    )
+                    """,
+                    (BACKUP_KEEP_COUNT,),
                 )
-                """,
-                (BACKUP_KEEP_COUNT,),
-            )
-            cur.execute("SELECT COUNT(*) FROM mita_backups")
-            count = int(cur.fetchone()[0])
+                cur.execute("SELECT COUNT(*) FROM mita_backups")
+                count = int(cur.fetchone()[0])
     return {"reason": reason, "file_names": names, "sha256": digest, "count": count}
 
 
