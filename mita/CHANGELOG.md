@@ -1,3 +1,10 @@
+## 3.38.0.32
+
+- Added a configurable optional contact email in the admin's Public connection settings. Public subscription pages show a safe mailto link only when the field is set.
+- Added PostgreSQL backups when a log-database DSN is configured: snapshot immediately after starting the backend and every 24 hours, retrying failed writes automatically.
+- Each snapshot includes users, settings, generated Mita config and persistent Mita traffic metrics. Logs and sockets are excluded.
+- Backup archives are gzip-compressed, SHA-256 checked for export, and retained as the latest 30 snapshots in PostgreSQL. Admin UI shows status and last successful backup.
+
 ## 3.38.0.31
 
 - Fixed oversized second setup step when expanding the Linux terminal install command or alternative downloads on mobile.
