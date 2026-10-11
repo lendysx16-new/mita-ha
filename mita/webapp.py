@@ -395,7 +395,9 @@ def build_backup_archive():
             files.append((name, data))
 
         metrics_root = DATA_DIR / "mita-state"
-        if metrics_root.is_dir() and not metrics_root.is_symlink():
+        if metrics_root.is_symlink():
+            raise RuntimeError("backup cannot include symlinked metrics")
+        if metrics_root.is_dir():
             for path in sorted(metrics_root.rglob("*")):
                 if path.is_symlink():
                     raise RuntimeError("backup cannot include symlinks")
@@ -482,6 +484,7 @@ def backup_db_worker():
             active_dsn = dsn
             next_backup_at = 0.0
             reason = "startup"
+            set_backup_status(connected=False, last_error="")
         remaining = next_backup_at - time.monotonic()
         if remaining > 0:
             time.sleep(min(60.0, remaining))
