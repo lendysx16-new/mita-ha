@@ -109,6 +109,16 @@ class AdminAPITests(unittest.TestCase):
         self.assertIn("reload rejected", data["error"])
         self.assertEqual(app.get_settings()["log_level"], "INFO")
 
+    def test_backup_status_is_admin_only_and_contains_no_dsn(self):
+        with mock.patch.object(app, "get_backup_status", return_value={
+            "enabled": True, "connected": True, "last_backup": "2026-10-11T02:00:00Z",
+            "last_reason": "startup", "backup_count": 1, "last_error": ""
+        }):
+            status, data = self.call("GET", "/api/backup-status")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["status"]["backup_count"], 1)
+        self.assertNotIn("postgresql://", json.dumps(data))
+
     def test_contact_email_is_optional_and_persisted_without_reloading_mita(self):
         status, data = self.call("PUT", "/api/settings", {"contact_email": "  support@example.com "})
         self.assertEqual(status, 200)
