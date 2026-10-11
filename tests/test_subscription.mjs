@@ -30,6 +30,16 @@ test('minimal design uses flat sections with restrained corners', () => {
   assert.match(html, /class="step-num" aria-hidden="true">02</);
 });
 
+test('mobile setup prioritizes two actions within the first viewport', () => {
+  assert.match(html, /@media\s*\(max-width:\s*640px\)/);
+  assert.match(html, /min-height:\s*100dvh/);
+  assert.match(html, /\.choice-grid\s*\{[^}]*grid-template-columns:/);
+  assert.match(html, /\.step-heading p\s*\{\s*display:\s*none;/);
+  assert.match(html, /\.footer\s*\{\s*display:\s*none;/);
+  assert.match(html, /<details id="advanced">/);
+  assert.match(html, /<summary>Другие способы подключения<\/summary>/);
+});
+
 function setup(platform = 'ios') {
   const ids = [
     'clientSelect', 'platformSelect', 'hwidBadge', 'installBtn', 'missingInstall',
@@ -53,7 +63,13 @@ function setup(platform = 'ios') {
     remove() {},
   });
   for (const id of ids) nodes.set(id, makeNode());
-  nodes.get('clientSelect').value = 'clashmi';
+  const clientNode = nodes.get('clientSelect');
+  clientNode.value = 'clashmi';
+  clientNode.options = [...html.matchAll(/<option value="(clashmi|karing|flclashx|koala|flclash|verge|generic)">/g)]
+    .map(([, value]) => ({ value, disabled: false, hidden: false }));
+  Object.defineProperty(clientNode, 'selectedOptions', {
+    get() { return clientNode.options.filter(option => option.value === clientNode.value); },
+  });
 
   let clipboard = '';
   const document = {
@@ -124,6 +140,35 @@ test('shows manual import when a client has no supported URL scheme', async () =
   await view.get('copyPrimary').events.click();
   assert.equal(view.clipboard, 'https://vpn.example.com/sub/' + 'T'.repeat(32));
   assert.equal(view.get('copyFeedback').hidden, false);
+});
+
+test('FlClashX supports HWID on Android and uses its registered deep link', () => {
+  const view = setup('android');
+  view.change('clientSelect', 'flclashx');
+  assert.match(view.get('installBtn').href, /\/download\/flclashx\/android-arm64$/);
+  assert.match(view.get('openProfile').href, /^flclashx:\/\/install-config\?/);
+  assert.equal(view.get('hwidBadge').hidden, false);
+  const url = new URL(view.get('openProfile').href);
+  assert.equal(url.searchParams.get('xhwid'), null, 'FlClashX sends HWID natively');
+});
+
+test('Koala Clash supports HWID and has a verified scheme on desktop', () => {
+  const view = setup('windows');
+  view.change('clientSelect', 'koala');
+  assert.match(view.get('installBtn').href, /\/download\/koala\/windows-amd64$/);
+  assert.match(view.get('openProfile').href, /^koala-clash:\/\/install-config\?/);
+  assert.equal(view.get('hwidBadge').hidden, false);
+});
+
+test('iOS hides clients that have no iOS installation option', () => {
+  const view = setup('ios');
+  const clients = view.get('clientSelect').options;
+  assert.equal(clients.find(item => item.value === 'koala').disabled, true);
+  assert.equal(clients.find(item => item.value === 'flclashx').hidden, true);
+  assert.equal(clients.find(item => item.value === 'karing').disabled, false);
+  view.change('platformSelect', 'windows');
+  assert.equal(clients.find(item => item.value === 'koala').hidden, false);
+  assert.equal(clients.find(item => item.value === 'flclashx').disabled, false);
 });
 
 test('requires device selection when OS is unknown', () => {
