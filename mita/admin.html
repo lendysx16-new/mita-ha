@@ -447,21 +447,55 @@ function message(s){const el=$('#msg');el.textContent=s;clearTimeout(messageTime
 let trafficTimer=null;
 const openTrafficUsers=new Set();
 const absoluteTimeKeys=new Set();
+let usersCache=[];
+let currentUserName=null;
+let returnToTab='usersTab';
+
+function currentUser(){ return usersCache.find(u=>u.username===currentUserName)||null; }
+function openUser(username){
+  if(!usersCache.some(u=>u.username===username))return;
+  const active=document.querySelector('.tab-panel.active');
+  if(active?.id==='usersTab'||active?.id==='devicesTab')returnToTab=active.id;
+  currentUserName=username;
+  renderUserDetail();
+  setTab('userDetailTab');
+}
+function renderUserDetail(){
+  const u=currentUser();
+  if(!u)return;
+  $('#detailUsername').textContent=u.username;
+  $('#detailAvatar').textContent=u.username.slice(0,1).toUpperCase();
+  $('#detailAccess').textContent=[
+    u.allow_private_ip?'LAN':'',
+    u.allow_loopback_ip?'Loopback':'',
+    !u.allow_private_ip&&!u.allow_loopback_ip?'Public only':'',
+    u.legacy_enabled?'Legacy enabled':'HWID only'
+  ].filter(Boolean).join(' · ');
+  $('#detailSubscription').textContent=u.subscription_url;
+  renderDevices(u);
+}
+function bindUserLinks(root){
+  root.querySelectorAll('[data-open-user]').forEach(button=>{
+    button.onclick=()=>openUser(button.dataset.openUser);
+  });
+}
 
 function setTab(id){
   const sections={
-    usersTab:['Users','Manage access, credentials, and subscriptions.'],
-    devicesTab:['Devices','Control registered HWIDs and device access.'],
+    usersTab:['Users','Select an account to view credentials and device settings.'],
+    userDetailTab:['User details','Manage this account and its registered devices.'],
+    devicesTab:['Devices','Browse registered HWIDs and open their owners.'],
     trafficTab:['Traffic','Review per-user and per-device traffic statistics.'],
     confTab:['Settings','Configure logging and database forwarding.']
   };
-  const [title,description]=sections[id]||sections.usersTab;
+  const [defaultTitle,description]=sections[id]||sections.usersTab;
+  const title=id==='userDetailTab'&&currentUserName?currentUserName:defaultTitle;
   $('#pageTitle').textContent=title;
   $('#pageDescription').textContent=description;
   $('#breadcrumb').textContent=title;
   document.title='Mita · '+title;
   document.querySelectorAll('.tab').forEach(b=>{
-    const active=b.dataset.tab===id;
+    const active=b.dataset.tab===(id==='userDetailTab'?'usersTab':id);
     b.classList.toggle('active',active);
     b.setAttribute('aria-selected',String(active));
   });
@@ -543,8 +577,8 @@ function displayClock(value=new Date()){
   return Number.isNaN(d.getTime())?'-':timeFormatter.format(d);
 }
 
-function renderDevices(users){
-  $('#deviceUsers').innerHTML=users.map(u=>{
+function renderDevices(user){
+  $('#detailDeviceUsers').innerHTML=(user?[user]:[]).map(u=>{
     const rows=u.devices.length?'<table class="device-list"><thead><tr><th>Device</th><th>HWID</th><th>Last subscription refresh</th><th></th></tr></thead><tbody>'+
       u.devices.map(d=>'<tr>'+
         '<td data-label="Device"><strong>'+esc(d.name)+'</strong><div class="device-meta">'+esc([d.os,d.os_version].filter(Boolean).join(' '))+'</div></td>'+
@@ -564,6 +598,21 @@ function renderDevices(users){
   }).join('');
   document.querySelectorAll('[data-save-devices]').forEach(b=>b.onclick=()=>saveDeviceSettings(b.dataset.saveDevices));
   document.querySelectorAll('[data-remove-device]').forEach(b=>b.onclick=()=>removeDevice(b.dataset.user,b.dataset.removeDevice));
+  bindTimeToggles($('#detailDeviceUsers'));
+}
+
+function renderDeviceDirectory(users){
+  const devices=users.flatMap(u=>(u.devices||[]).map(d=>({user:u.username,device:d})));
+  $('#deviceUsers').innerHTML=devices.length?devices.map(({user,device:d})=>
+    '<tr>'+
+      '<td data-label="Device"><strong>'+esc(d.name)+'</strong><div class="device-meta">'+esc([d.os,d.os_version].filter(Boolean).join(' '))+'</div></td>'+
+      '<td data-label="Owner"><button class="directory-link" data-open-user="'+esc(user)+'">'+esc(user)+'</button></td>'+
+      '<td data-label="HWID"><code>'+esc(d.hwid)+'</code></td>'+
+      '<td data-label="Last refresh">'+timeControl(d.last_seen,'device:'+user+':'+d.id)+'</td>'+
+      '<td class="row-actions"><button class="secondary" data-open-user="'+esc(user)+'">View user →</button></td>'+
+    '</tr>'
+  ).join(''):'<tr><td colspan="5" class="table-empty">No registered devices yet.</td></tr>';
+  bindUserLinks($('#deviceUsers'));
   bindTimeToggles($('#deviceUsers'));
 }
 
@@ -652,29 +701,40 @@ async function load(){
   $('#postgresDsn').value=data.settings.postgres_dsn||'';
   $('#private').checked=!!data.settings.default_allow_private_ip;
   $('#loopback').checked=!!data.settings.default_allow_loopback_ip;
-  $('#users').innerHTML=data.users.map(u=>'<tr>'+
-    '<td data-label="User"><div class="identity"><span class="avatar">'+esc(u.username.slice(0,1))+'</span><strong>'+esc(u.username)+'</strong></div></td>'+
-    '<td data-label="Access"><div class="cell-chips">'+(u.allow_private_ip?'<span class="badge">LAN</span>':'')+(u.allow_loopback_ip?'<span class="badge">Loopback</span>':'')+(!u.allow_private_ip&&!u.allow_loopback_ip?'<span class="badge badge-subtle">Public</span>':'')+'</div></td>'+
-    '<td data-label="Devices">'+u.devices.length+(u.device_limit?' / '+u.device_limit:'')+(u.legacy_enabled?' <span class="badge badge-subtle">Legacy</span>':'')+'</td>'+
-    '<td data-label="Subscription"><code title="'+esc(u.subscription_url)+'">'+esc(u.subscription_url)+'</code><div class="actions" style="margin-top:6px">'+
-    '<button class="secondary" data-copy="'+esc(u.subscription_url)+'">Copy link</button>'+
-    '<button class="secondary" data-rotate="'+esc(u.username)+'">Rotate token</button></div></td>'+
-    '<td class="row-actions"><button class="danger" data-delete="'+esc(u.username)+'">Delete</button></td></tr>'
+  usersCache=data.users;
+  $('#users').innerHTML=data.users.map(u=>'<tr data-username="'+esc(u.username)+'">'+
+    '<td data-label="User"><button class="user-open" data-open-user="'+esc(u.username)+'"><span class="avatar">'+esc(u.username.slice(0,1))+'</span><span>'+esc(u.username)+'</span></button></td>'+
+    '<td data-label="Access"><div class="cell-chips">'+
+      (u.allow_private_ip?'<span class="badge">LAN</span>':'')+
+      (u.allow_loopback_ip?'<span class="badge">Loopback</span>':'')+
+      (!u.allow_private_ip&&!u.allow_loopback_ip?'<span class="badge badge-subtle">Public</span>':'')+
+      (u.legacy_enabled?'<span class="badge badge-subtle">Legacy</span>':'')+
+    '</div></td>'+
+    '<td data-label="Devices">'+u.devices.length+(u.device_limit?' / '+u.device_limit:'')+'</td>'+
+    '<td><button class="user-open row-chevron" aria-label="Open '+esc(u.username)+'" data-open-user="'+esc(u.username)+'">→</button></td></tr>'
   ).join('');
-  document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>copyLink(b.dataset.copy));
-  document.querySelectorAll('[data-rotate]').forEach(b=>b.onclick=()=>rotate(b.dataset.rotate));
-  document.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>removeUser(b.dataset.delete));
+  bindUserLinks($('#users'));
   $('#statUsers').textContent=String(data.users.length);
   $('#statDevices').textContent=String(data.users.reduce((sum,u)=>sum+u.devices.length,0));
   $('#statLegacy').textContent=String(data.users.filter(u=>u.legacy_enabled).length);
   filterUsers();
-  renderDevices(data.users);
+  renderDeviceDirectory(data.users);
+  if(currentUserName){
+    if(currentUser())renderUserDetail();
+    else{
+      currentUserName=null;
+      if(document.querySelector('.tab-panel.active')?.id==='userDetailTab')setTab('usersTab');
+    }
+  }
 }
 function filterUsers(){
   const query=$('#userSearch').value.trim().toLowerCase();
+  let matching=0;
   $('#users').querySelectorAll('tr').forEach(row=>{
-    row.hidden=!row.querySelector('strong')?.textContent.toLowerCase().includes(query);
+    row.hidden=!row.dataset.username.toLowerCase().includes(query);
+    if(!row.hidden)matching++;
   });
+  $('#emptyUsers').hidden=matching>0;
 }
 async function copyLink(v){await navigator.clipboard.writeText(v);message('Subscription link copied')}
 async function rotate(username){
@@ -688,7 +748,9 @@ async function removeUser(username){
   if(!confirm('Delete '+username+'?'))return;
   try{
     await request('api/users/'+encodeURIComponent(username),{method:'DELETE'});
-    await load();message('User deleted');
+    await load();
+    if(currentUserName===username){currentUserName=null;setTab('usersTab')}
+    message('User deleted');
   }catch(e){alert(e.message)}
 }
 $('#copyGenerated').onclick=async()=>{
@@ -719,6 +781,16 @@ $('#add').onclick=async()=>{
   }catch(e){alert(e.message)}
 };
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
+$('#backToUsers').onclick=()=>{currentUserName=null;setTab(returnToTab)};
+$('#detailCopy').onclick=()=>{const u=currentUser();if(u)copyLink(u.subscription_url).catch(e=>alert(e.message))};
+$('#detailRotate').onclick=()=>{if(currentUserName)rotate(currentUserName)};
+$('#detailDelete').onclick=()=>{if(currentUserName)removeUser(currentUserName)};
+$('#toggleAddUser').onclick=()=>{
+  const panel=$('#addUserPanel');
+  panel.hidden=!panel.hidden;
+  if(!panel.hidden){$('#username').focus();panel.scrollIntoView({behavior:'smooth',block:'start'})}
+};
+$('#cancelAddUser').onclick=()=>{$('#addUserPanel').hidden=true};
 $('#userSearch').addEventListener('input',filterUsers);
 $('#refreshTraffic').onclick=loadTraffic;
 
