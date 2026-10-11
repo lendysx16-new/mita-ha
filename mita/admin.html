@@ -592,9 +592,11 @@ function renderDevices(user){
       '<div class="device-settings">'+
         '<label>Device limit<input data-device-limit type="number" min="0" max="100" value="'+esc(u.device_limit)+'"><span class="legacy-note">0 = unlimited</span></label>'+
         '<label class="check"><input data-legacy type="checkbox" '+(u.legacy_enabled?'checked':'')+'>Legacy credential enabled</label>'+
+        '<label class="check"><input data-private type="checkbox" '+(u.allow_private_ip?'checked':'')+'>Allow private / LAN IP destinations</label>'+
+        '<label class="check"><input data-loopback type="checkbox" '+(u.allow_loopback_ip?'checked':'')+'>Allow loopback (127.0.0.1) destinations</label>'+
         '<button data-save-devices="'+esc(u.username)+'">Save</button>'+
       '</div>'+
-      '<div class="legacy-note">With legacy disabled, clients without X-HWID cannot fetch the subscription. Supported clients can still register a new HWID on their first refresh.</div>'+
+      '<div class="legacy-note">LAN and loopback permissions control which IPs this Mita server can proxy to. They apply to this user and all registered HWID devices. They do not enable access to the client\'s own LAN. With legacy disabled, clients without X-HWID cannot fetch the subscription.</div>'+
       rows+'</div>';
   }).join('');
   document.querySelectorAll('[data-save-devices]').forEach(b=>b.onclick=()=>saveDeviceSettings(b.dataset.saveDevices));
@@ -623,7 +625,9 @@ async function saveDeviceSettings(username){
   try{
     await request('api/users/'+encodeURIComponent(username)+'/device-settings',{method:'PUT',body:JSON.stringify({
       device_limit:Number(card.querySelector('[data-device-limit]').value||0),
-      legacy_enabled:card.querySelector('[data-legacy]').checked
+      legacy_enabled:card.querySelector('[data-legacy]').checked,
+      allow_private_ip:card.querySelector('[data-private]').checked,
+      allow_loopback_ip:card.querySelector('[data-loopback]').checked
     })});
     await load();message('Device settings saved');
   }catch(e){alert(e.message)}
