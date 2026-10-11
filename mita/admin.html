@@ -120,8 +120,8 @@ input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var
 .check { display: flex; flex-direction: row; align-items: center; gap: 9px; min-height: 30px; font-size: 12px; font-weight: 500; cursor: pointer; }
 .check-stack { display: grid; gap: 9px; padding: 12px 0 0; }
 .field-help, .legacy-note { font-size: 11px; color: var(--muted-foreground); line-height: 1.5; font-weight: 400; }
-button:not(.tab):not(.timestamp-toggle):not(.traffic-toggle) { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; gap: 7px; padding: 8px 13px; border: 1px solid var(--primary); border-radius: 7px; background: var(--primary); color: var(--primary-foreground); font-size: 12px; font-weight: 590; white-space: nowrap; transition: background .15s,opacity .15s; }
-button:not(.tab):not(.timestamp-toggle):not(.traffic-toggle):hover { opacity: .82; }
+button:not(.tab):not(.timestamp-toggle):not(.traffic-toggle):not(.user-open):not(.directory-link) { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; gap: 7px; padding: 8px 13px; border: 1px solid var(--primary); border-radius: 7px; background: var(--primary); color: var(--primary-foreground); font-size: 12px; font-weight: 590; white-space: nowrap; transition: background .15s,opacity .15s; }
+button:not(.tab):not(.timestamp-toggle):not(.traffic-toggle):not(.user-open):not(.directory-link):hover { opacity: .82; }
 button.secondary { background: var(--card)!important; border-color: var(--border)!important; color: var(--foreground)!important; }
 button.danger { background: var(--destructive-muted)!important; border-color: color-mix(in srgb,var(--destructive) 30%,transparent)!important; color: var(--destructive)!important; }
 .actions { display: flex; flex-wrap: wrap; gap: 7px; }
@@ -500,6 +500,7 @@ function setTab(id){
     b.setAttribute('aria-selected',String(active));
   });
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.toggle('active',p.id===id));
+  document.querySelector('.stat-grid').hidden=id!=='usersTab';
   if(trafficTimer){clearInterval(trafficTimer);trafficTimer=null}
   if(id==='trafficTab'){
     loadTraffic();
