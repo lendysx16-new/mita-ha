@@ -1281,15 +1281,37 @@ class AdminHandler(CommonHandler):
                     limit = int(body.get("device_limit", user.get("device_limit", 0) or 0))
                     if limit < 0 or limit > 100:
                         raise ValueError("device_limit must be between 0 and 100")
-                    legacy_enabled = bool(body.get("legacy_enabled", user.get("legacy_enabled", True)))
+                    def boolean_option(name, fallback):
+                        value = body.get(name, fallback)
+                        if not isinstance(value, bool):
+                            raise ValueError(f"{name} must be a boolean")
+                        return value
+
+                    legacy_enabled = boolean_option(
+                        "legacy_enabled", bool(user.get("legacy_enabled", True))
+                    )
+                    allow_private_ip = boolean_option(
+                        "allow_private_ip", bool(user.get("allow_private_ip", False))
+                    )
+                    allow_loopback_ip = boolean_option(
+                        "allow_loopback_ip", bool(user.get("allow_loopback_ip", False))
+                    )
                     if limit > 0 and len(user.get("devices", [])) > limit:
                         raise ValueError("device_limit is lower than the number of registered devices")
 
                     previous = copy.deepcopy(users)
-                    old_legacy = bool(user.get("legacy_enabled", True))
+                    needs_reload = any((
+                        bool(user.get("legacy_enabled", True)) != legacy_enabled,
+                        bool(user.get("allow_private_ip", False)) != allow_private_ip,
+                        bool(user.get("allow_loopback_ip", False)) != allow_loopback_ip,
+                    ))
                     user["legacy_enabled"] = legacy_enabled
                     user["device_limit"] = limit
-                    if old_legacy != legacy_enabled:
+                    user["allow_private_ip"] = allow_private_ip
+                    user["allow_loopback_ip"] = allow_loopback_ip
+                    # Changing access affects both the legacy credential and
+                    # every HWID credential, so apply the new Mita config.
+                    if needs_reload:
                         persist_and_reload(USERS_PATH, users, previous)
                     else:
                         write_json(USERS_PATH, users)
