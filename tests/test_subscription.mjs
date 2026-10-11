@@ -46,6 +46,18 @@ test('mobile setup prioritizes two actions within the first viewport', () => {
   assert.match(html, /<option value="" disabled hidden>Платформа<\/option>/);
 });
 
+test('iPhone typography is larger and cards use available viewport height', () => {
+  assert.match(html, /font-size:\s*clamp\(16px,\s*4\.2vw,\s*20px\)/);
+  assert.match(html, /\.step-heading h2\s*\{\s*font-size:\s*clamp\(11px,\s*3vw,\s*12px\)/);
+  assert.match(html, /\.button\s*\{\s*min-height:\s*50px;/);
+  assert.match(html, /font-size:\s*15px;/);
+  assert.match(html, /main\s*\{\s*display:\s*flex;\s*flex:\s*1;/);
+  assert.match(html, /grid-template-rows:\s*repeat\(2,\s*minmax\(max-content,\s*1fr\)\)/);
+  assert.match(html, /\.step > \.button\s*\{\s*margin-top:\s*auto;/);
+  assert.match(html, /@media\s*\(max-width:\s*640px\) and \(max-height:\s*740px\)/);
+  assert.match(html, /\.steps\s*\{\s*flex:\s*none;\s*grid-template-rows:\s*none;/);
+});
+
 function setup(platform = 'ios') {
   const ids = [
     'clientSelect', 'platformSelect', 'hwidBadge', 'installBtn', 'missingInstall',
