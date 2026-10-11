@@ -8,6 +8,18 @@ const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
 assert.equal(scripts.length, 2, 'bootstrap and application scripts must remain inline');
 const source = scripts[1][1];
 
+test('loads minimalist font with system fallback and respects device appearance', () => {
+  assert.match(html, /family=Manrope/);
+  assert.match(html, /font-family: "Manrope".*system-ui, sans-serif;/);
+  assert.match(html, /@media\s*\(prefers-color-scheme:\s*dark\)/);
+  assert.match(html, /name="theme-color".*prefers-color-scheme: light/);
+  assert.match(html, /name="theme-color".*prefers-color-scheme: dark/);
+  assert.match(html, /@keyframes reveal/);
+  assert.match(html, /\.step:nth-child\(2\).*animation-delay/);
+  assert.match(html, /@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+  assert.match(html, /animation:\s*none;/);
+});
+
 function setup(platform = 'ios') {
   const ids = [
     'clientSelect', 'platformSelect', 'hwidBadge', 'installBtn', 'missingInstall',
