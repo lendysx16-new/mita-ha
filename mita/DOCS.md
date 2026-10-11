@@ -6,6 +6,8 @@ This app runs `mita`, provides a Home Assistant Ingress admin UI, and serves per
 
 Open the app and click **Open Web UI**.
 
+The **Users** tab is a compact directory. Select an account to open its dedicated profile with its subscription URL, copy/rotate actions, delete control, HWID devices and limits. The add-user form is collapsed until **+ Add user** is selected, and public connection settings have moved to **Settings**. **Devices** now shows a searchable-sized compact table of registered devices with direct links to the owning account. This keeps secrets and destructive actions off the main list.
+
 The admin UI is not published as a normal host port. It is served through Home Assistant Ingress and lets you:
 
 - add users;
