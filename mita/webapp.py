@@ -92,6 +92,34 @@ GITHUB_DOWNLOADS = {
             "linux-arm64-rpm": r"^FlClash-.*-linux-arm64\.rpm$",
         },
     },
+    "flclashx": {
+        "repo": "pluralplay/FlClashX",
+        "targets": {
+            "android-arm64": r"^FlClashX-android-arm64-v8a\.apk$",
+            "android-armv7": r"^FlClashX-android-armeabi-v7a\.apk$",
+            "windows-amd64": r"^FlClashX-windows-amd64-setup\.exe$",
+            "windows-arm64": r"^FlClashX-windows-arm64-setup\.exe$",
+            "macos-arm64": r"^FlClashX-macos-arm64\.dmg$",
+            "macos-amd64": r"^FlClashX-macos-amd64\.dmg$",
+            "linux-amd64-appimage": r"^FlClashX-linux-amd64\.AppImage$",
+            "linux-amd64-deb": r"^FlClashX-linux-amd64\.deb$",
+            "linux-amd64-rpm": r"^FlClashX-linux-amd64\.rpm$",
+            "linux-arm64-deb": r"^FlClashX-linux-arm64\.deb$",
+        },
+    },
+    "koala": {
+        "repo": "coolcoala/koala-clash",
+        "targets": {
+            "windows-amd64": r"^Koala\.Clash_x64-setup\.exe$",
+            "windows-arm64": r"^Koala\.Clash_arm64-setup\.exe$",
+            "macos-amd64": r"^Koala\.Clash_x64\.pkg$",
+            "macos-arm64": r"^Koala\.Clash_arm64\.pkg$",
+            "linux-amd64-deb": r"^Koala\.Clash_amd64\.deb$",
+            "linux-arm64-deb": r"^Koala\.Clash_arm64\.deb$",
+            "linux-amd64-rpm": r"^Koala\.Clash_x86_64\.rpm$",
+            "linux-arm64-rpm": r"^Koala\.Clash_aarch64\.rpm$",
+        },
+    },
     "verge": {
         "repo": "clash-verge-rev/clash-verge-rev",
         "targets": {

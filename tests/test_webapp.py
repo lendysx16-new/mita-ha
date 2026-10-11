@@ -213,6 +213,32 @@ class SubscriptionTests(unittest.TestCase):
         self.assertEqual(rows[0]["username"], "user")
 
 
+class ReleaseDownloadsTests(unittest.TestCase):
+    def test_new_client_release_patterns_match_real_assets(self):
+        import re
+        cases = {
+            "flclashx": {
+                "android-arm64": "FlClashX-android-arm64-v8a.apk",
+                "windows-amd64": "FlClashX-windows-amd64-setup.exe",
+                "macos-arm64": "FlClashX-macos-arm64.dmg",
+                "linux-amd64-appimage": "FlClashX-linux-amd64.AppImage",
+            },
+            "koala": {
+                "windows-amd64": "Koala.Clash_x64-setup.exe",
+                "macos-arm64": "Koala.Clash_arm64.pkg",
+                "linux-amd64-deb": "Koala.Clash_amd64.deb",
+                "linux-amd64-rpm": "Koala.Clash_x86_64.rpm",
+            },
+        }
+        for client, targets in cases.items():
+            self.assertIn("repo", app.GITHUB_DOWNLOADS[client])
+            for target, filename in targets.items():
+                with self.subTest(client=client, target=target):
+                    pattern = app.GITHUB_DOWNLOADS[client]["targets"][target]
+                    self.assertIsNotNone(re.fullmatch(pattern, filename))
+                    self.assertIsNone(re.fullmatch(pattern, filename + ".sha256"))
+
+
 class PureHelpersTests(unittest.TestCase):
     def test_config_builder_only_includes_active_credentials(self):
         users = [{

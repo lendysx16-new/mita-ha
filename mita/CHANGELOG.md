@@ -1,3 +1,16 @@
+## 3.38.0.28
+
+- Restrict the public app selector to HWID-capable clients only (Clash Mi, Karing, FlClashX, Koala Clash), retaining old download endpoints for compatibility.
+- Distinguish the two setup steps with separate compact rectangular borders and pink accent markers/buttons in light and dark modes.
+- Add Cyrillic-capable Press Start 2P pixel titles with Manrope body text and monospace fallback.
+- Make the unselected "Платформа" placeholder disabled and hidden from the selection list.
+
+- Condensed the public onboarding page for iPhone: two steps and device/client selectors fit in the first screen on typical Safari viewport sizes, with advanced copy and token controls collapsed.
+- Show device-compatible clients first and hide unsupported apps on the selected platform, while allowing manual device switching.
+- Added verified HWID-capable Mihomo clients: FlClashX (Android/Windows/macOS/Linux) and Koala Clash (Windows/macOS/Linux).
+- Added deep links for `flclashx://install-config` and `koala-clash://install-config`, preserving automatic native HWID headers.
+- Extended protected GitHub Release downloads and UI/backend regression coverage for both clients.
+
 ## 3.38.0.27
 
 - Rebuilt the public subscription landing page as a simple two-step setup: install the selected client, then open the personalized profile.

@@ -63,10 +63,10 @@ https://me.lendysx16.ru/sub/<random-token>
 
 Opening the subscription URL in a browser shows a guided, mobile-first **two-step setup page**:
 
-1. **Install the app:** choose Clash Mi, Karing, FlClash or another client; choose the target OS if needed. The page displays the direct App Store or current GitHub Release installer for that platform.
+1. **Install the app:** choose an available client for the detected platform (Clash Mi and Karing on iOS, plus FlClashX, Koala Clash and other Mihomo clients on supported platforms). The page displays direct App Store or GitHub Release installers.
 2. **Open the profile in the app:** use the client's import deep link, preserving `xhwid=true` for Clash Mi and Karing. If a client does not have an import URL scheme, copy the subscription URL and import it manually.
 
-Additional release variants, manual copy, and the raw subscription token URL are placed in optional controls so first-time users only see the two steps. The page detects the visitor's OS from User-Agent, but allows manual platform selection. The landing page now uses bundled HTML/CSS/JavaScript with **no Vue or CDN dependency**, so it works independently of third-party script hosting.
+The iPhone layout prioritizes the selector and both buttons within a typical Safari viewport. Steps are separated by thin rectangular borders and pink accents. Section titles use the Cyrillic-capable pixel-style Press Start 2P font with a local monospace fallback; body copy remains in Manrope. Both light and dark themes follow the device setting. The disabled, hidden `Платформа` option is a placeholder rather than a selectable device. Manual copy, HWID information, and the raw subscription URL are hidden under **Other connection methods**; alternate release variants stay in a separate collapsed disclosure. The page detects the visitor's OS from User-Agent, but allows manual platform selection. The landing page now uses bundled HTML/CSS/JavaScript with **no Vue or CDN dependency**, so it works independently of third-party script hosting.
 
 The public `/sub/<token>/download/<client>/<target>` URLs still resolve current GitHub Release installers through the server, and the private subscription URL remains hidden until the visitor chooses to reveal it.
 
@@ -109,3 +109,12 @@ python3 -m unittest discover -s tests -v
 ```
 
 Tests use temporary files and mock the Mita reload command. GitHub Actions also checks Python syntax, shell syntax, YAML, and the admin page JavaScript. No live Home Assistant or Mita process is required for the regression suite.
+
+### HWID client compatibility
+
+- **Clash Mi**, **Karing**: support `x-hwid` when the `xhwid=true` flag is passed to the `install-config` deep link (disabled by default in the client).
+- **FlClashX**: supports automatic `x-hwid` during subscription fetches; install links use `flclashx://install-config` and GitHub Release assets for Android and desktop. Note: there is no iOS release.
+- **Koala Clash**: sends `x-hwid` when fetching subscriptions; deep link uses `koala-clash://install-config`. Desktop only.
+The public app picker lists **only these four HWID-capable clients**. Previously supported FlClash and Clash Verge Rev download routes remain available for existing links, but they are not advertised as HWID-compatible.
+
+HWID support refers to the subscription request headers. The generated YAML remains standard Mihomo/Mieru; clients must also use a Mihomo core capable of the Mieru protocol.
