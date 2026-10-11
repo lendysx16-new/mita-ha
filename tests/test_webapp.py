@@ -173,6 +173,80 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertNotIn("/" + "A" * 32, data["user"]["subscription_url"])
 
+    def test_can_change_existing_user_lan_permissions_for_legacy_and_hwid(self):
+        users = app.get_users()
+        users[0]["devices"] = [{
+            "id": "0123456789abcdef",
+            "hwid": "devicetest123",
+            "mita_username": "dev_abcdef",
+            "password": "device-secret",
+        }]
+        app.write_json(app.USERS_PATH, users)
+        status, result = self.call("PUT", "/api/users/first/device-settings", {
+            "allow_private_ip": True,
+            "allow_loopback_ip": True,
+            "device_limit": 3,
+        })
+        self.assertEqual(status, 200)
+        self.assertTrue(result["user"]["allow_private_ip"])
+        self.assertTrue(result["user"]["allow_loopback_ip"])
+        self.assertEqual(result["user"]["device_limit"], 3)
+        self.reload_mock.assert_called_once()
+
+        stored = app.get_users()[0]
+        self.assertTrue(stored["allow_private_ip"])
+        self.assertTrue(stored["allow_loopback_ip"])
+        config = app.build_mita_config([stored], app.get_settings())
+        self.assertEqual([u["name"] for u in config["users"]], ["first", "dev_abcdef"])
+        for account in config["users"]:
+            self.assertIs(account["allowPrivateIP"], True)
+            self.assertIs(account["allowLoopbackIP"], True)
+
+        self.reload_mock.reset_mock()
+        status, result = self.call("PUT", "/api/users/first/device-settings", {
+            "allow_private_ip": False,
+            "allow_loopback_ip": False,
+        })
+        self.assertEqual(status, 200)
+        self.assertFalse(result["user"]["allow_private_ip"])
+        self.assertFalse(result["user"]["allow_loopback_ip"])
+        self.reload_mock.assert_called_once()
+        for account in app.build_mita_config(app.get_users(), app.get_settings())["users"]:
+            self.assertIs(account["allowPrivateIP"], False)
+            self.assertIs(account["allowLoopbackIP"], False)
+
+    def test_lan_update_reload_failure_rolls_back_permissions(self):
+        self.reload_mock.side_effect = [(False, "reload rejected"), (True, "restored")]
+        status, result = self.call("PUT", "/api/users/first/device-settings", {
+            "allow_private_ip": True, "allow_loopback_ip": True,
+        })
+        self.assertEqual(status, 503)
+        self.assertIn("reload rejected", result["error"])
+        stored = app.get_users()[0]
+        self.assertFalse(stored["allow_private_ip"])
+        self.assertFalse(stored["allow_loopback_ip"])
+        self.assertEqual(self.reload_mock.call_count, 2)
+
+    def test_lan_permission_flags_require_real_json_booleans(self):
+        for key in ("allow_private_ip", "allow_loopback_ip", "legacy_enabled"):
+            for invalid in ("false", "true", 1, None, []):
+                with self.subTest(key=key, value=invalid):
+                    status, result = self.call("PUT", "/api/users/first/device-settings", {
+                        key: invalid,
+                    })
+                    self.assertEqual(status, 400)
+                    self.assertIn(key, result["error"])
+        self.reload_mock.assert_not_called()
+        self.assertFalse(app.get_users()[0]["allow_private_ip"])
+
+    def test_limit_only_does_not_trigger_mita_reload(self):
+        status, result = self.call("PUT", "/api/users/first/device-settings", {
+            "device_limit": 4
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(result["user"]["device_limit"], 4)
+        self.reload_mock.assert_not_called()
+
     def test_device_settings_reload_rollback(self):
         self.reload_mock.side_effect = [(False, "reload rejected"), (True, "restored")]
         status, _ = self.call("PUT", "/api/users/first/device-settings", {
