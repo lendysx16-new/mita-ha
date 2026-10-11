@@ -12,7 +12,7 @@ The admin UI is not published as a normal host port. It is served through Home A
 
 - add users;
 - delete users;
-- choose per-user LAN/loopback access;
+- choose per-user LAN/loopback access (including editing permissions for existing accounts in the user detail view);
 - rotate subscription tokens;
 - copy subscription URLs;
 - configure the public Mieru hostname and port;
@@ -168,3 +168,9 @@ tar -tzf mita-backup.tar.gz
 ```
 
 Compare the SHA-256 value with the corresponding database record before restoring. Extract only into a trusted, **stopped** add-on's data directory after making a backup of its current contents. Never run a restore over a running add-on, and never expose the backup archive to the public subscription site.
+
+## Private LAN and loopback destinations
+
+Under **Users → select a user → Devices and access**, turn on **Allow private / LAN IP destinations** to permit Mita to proxy requests from this user (including their HWID device credentials) to private addresses such as `192.168.1.20` or `10.0.0.5`. Turn on **Allow loopback (127.0.0.1) destinations** separately to permit access to services running on the proxy server's own localhost. Press **Save** to apply changes using `mita reload`; a failed reload rolls back the settings.
+
+These flags control **destination filtering on the Mita server**, not whether the user's device can access its own LAN or whether the client's split-tunnel rules send LAN traffic into the proxy. For LAN requests to work, the client must route the target IP through Mieru, and the Home Assistant host/container must be able to reach that private address. Local domains (e.g. `.local`) can additionally require DNS/mDNS configuration; test using a private IP address first.

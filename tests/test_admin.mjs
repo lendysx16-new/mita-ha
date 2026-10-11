@@ -29,6 +29,8 @@ test('overview is a compact directory, while account actions are on user detail'
 
 function setup() {
   const values = new Map();
+  const requests = [];
+  let deviceCard = null;
   function element(key) {
     if (!values.has(key)) {
       const node = {
@@ -67,6 +69,7 @@ function setup() {
     querySelectorAll(selector) {
       if (selector === '[data-tab]' || selector === '.tab') return tabs;
       if (selector === '.tab-panel') return panels;
+      if (selector === '[data-device-card]') return deviceCard ? [deviceCard] : [];
       return [];
     },
   };
@@ -74,15 +77,23 @@ function setup() {
     document,
     navigator: { languages: ['en-US'], clipboard: { async writeText(v) { ctx.copied = v; } } },
     location: { href: 'https://ha.example/ingress/' },
-    fetch: async url => ({ ok: true, json: async () =>
-      String(url).includes('api/backup-status') ? {status:{enabled:false}} : state }),
+    fetch: async (url, options={}) => {
+      if (options.method === 'PUT') requests.push({url:String(url),body:JSON.parse(options.body)});
+      return { ok: true, json: async () =>
+        String(url).includes('api/backup-status') ? {status:{enabled:false}} : state };
+    },
     Intl, Date, URL,
     alert() {}, confirm() { return true; },
     setTimeout() { return 1; }, clearTimeout() {},
     setInterval() { return 1; }, clearInterval() {},
   });
   vm.runInContext(script, ctx, {filename:'admin.html'});
-  return { ctx, element, panels, tabs, state };
+  return { ctx, element, panels, tabs, state, requests,
+    useDeviceForm(fields) { deviceCard={
+      dataset:{deviceCard:'alice'},
+      querySelector(selector) {return fields[selector];}
+    }; }
+  };
 }
 
 test('user directory hides tokens; profile and device table link to owner', async () => {
@@ -122,4 +133,29 @@ test('user creation form stays hidden until requested; device directory opens ow
   assert.equal(panels.find(p=>p.id==='userDetailTab').classList.active, true);
   element('#backToUsers').onclick();
   assert.equal(panels.find(p=>p.id==='devicesTab').classList.active, true);
+});
+
+test('existing user can edit LAN and loopback permissions via the profile', async () => {
+  const view=setup();
+  await view.ctx.load();
+  view.ctx.openUser('alice');
+  const html=view.element('#detailDeviceUsers').innerHTML;
+  assert.match(html, /data-private type="checkbox"/);
+  assert.match(html, /data-loopback type="checkbox"/);
+  assert.match(html, /Allow private \/ LAN IP destinations/);
+  assert.match(html, /Allow loopback \(127\.0\.0\.1\)/);
+  assert.doesNotMatch(view.element('#users').innerHTML, /data-private|data-loopback/);
+  view.useDeviceForm({
+    '[data-device-limit]':{value:'2'},
+    '[data-legacy]':{checked:true},
+    '[data-private]':{checked:true},
+    '[data-loopback]':{checked:false},
+  });
+  await view.ctx.saveDeviceSettings('alice');
+  const result=view.requests.find(r=>r.url.includes('api/users/alice/device-settings'));
+  assert.ok(result);
+  assert.equal(result.body.allow_private_ip,true);
+  assert.equal(result.body.allow_loopback_ip,false);
+  assert.equal(result.body.legacy_enabled,true);
+  assert.equal(result.body.device_limit,2);
 });
