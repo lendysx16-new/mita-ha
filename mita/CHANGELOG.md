@@ -1,3 +1,8 @@
+## 3.38.0.31
+
+- Fixed oversized second setup step when expanding the Linux terminal install command or alternative downloads on mobile.
+- Use independent step row heights for expanded installation details, while preserving viewport-height layout when collapsed and compact behavior on short screens.
+
 ## 3.38.0.30
 
 - Added a collapsed "Install via terminal" option on the Linux subscription setup page, with a copyable command for the selected HWID-capable client.
