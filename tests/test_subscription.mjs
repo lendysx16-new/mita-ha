@@ -10,6 +10,10 @@ const source = scripts[1][1];
 
 test('loads minimalist font with system fallback and respects device appearance', () => {
   assert.match(html, /family=Manrope/);
+  assert.match(html, /family=Press\+Start\+2P/);
+  assert.match(html, /font-family: "Press Start 2P"/);
+  assert.match(html, /--pink:\s*#[0-9a-f]{6}/);
+  assert.match(html, /background: var\(--pink\)/);
   assert.match(html, /font-family: "Manrope".*system-ui, sans-serif;/);
   assert.match(html, /@media\s*\(prefers-color-scheme:\s*dark\)/);
   assert.match(html, /name="theme-color".*prefers-color-scheme: light/);
@@ -22,7 +26,8 @@ test('loads minimalist font with system fallback and respects device appearance'
 
 test('minimal design uses flat sections with restrained corners', () => {
   assert.match(html, /--radius:\s*5px;/);
-  assert.match(html, /\.step\s*\{[\s\S]*?border-bottom:\s*1px solid var\(--border\)/);
+  assert.match(html, /\.step\s*\{[\s\S]*?border:\s*1px solid var\(--border\)/);
+  assert.match(html, /border-left:\s*3px solid var\(--pink\)/);
   assert.match(html, /\.choice\s*\{[\s\S]*?background:\s*transparent/);
   assert.doesNotMatch(html, /box-shadow\s*:/);
   assert.doesNotMatch(html, /border-radius:\s*(?:999px|1[0-9]px|[2-9][0-9]px)/);
@@ -38,13 +43,14 @@ test('mobile setup prioritizes two actions within the first viewport', () => {
   assert.match(html, /\.footer\s*\{\s*display:\s*none;/);
   assert.match(html, /<details id="advanced">/);
   assert.match(html, /<summary>Другие способы подключения<\/summary>/);
+  assert.match(html, /<option value="" disabled hidden>Платформа<\/option>/);
 });
 
 function setup(platform = 'ios') {
   const ids = [
     'clientSelect', 'platformSelect', 'hwidBadge', 'installBtn', 'missingInstall',
     'alternatives', 'alternativeLinks', 'installLabel', 'installSource',
-    'openProfile', 'copyPrimary', 'openLabel', 'openHint', 'copySecondary', 'copyFeedback',
+    'openProfile', 'openLabel', 'openHint', 'copySecondary', 'copyFeedback',
   ];
   const nodes = new Map();
   const makeNode = () => ({
@@ -65,7 +71,7 @@ function setup(platform = 'ios') {
   for (const id of ids) nodes.set(id, makeNode());
   const clientNode = nodes.get('clientSelect');
   clientNode.value = 'clashmi';
-  clientNode.options = [...html.matchAll(/<option value="(clashmi|karing|flclashx|koala|flclash|verge|generic)">/g)]
+  clientNode.options = [...html.matchAll(/<option value="(clashmi|karing|flclashx|koala)">/g)]
     .map(([, value]) => ({ value, disabled: false, hidden: false }));
   Object.defineProperty(clientNode, 'selectedOptions', {
     get() { return clientNode.options.filter(option => option.value === clientNode.value); },
@@ -122,24 +128,30 @@ test('changes installation and app import together when selecting Karing', () =>
 
 test('preserves verified download routing and platform alternatives', () => {
   const view = setup('android');
-  view.change('clientSelect', 'flclash');
-  assert.match(view.get('installBtn').href, /\/download\/flclash\/android-arm64$/);
-  assert.match(view.get('openProfile').href, /^flclash:\/\//);
-  assert.equal(view.get('hwidBadge').hidden, true);
+  view.change('clientSelect', 'flclashx');
+  assert.match(view.get('installBtn').href, /\/download\/flclashx\/android-arm64$/);
+  assert.match(view.get('openProfile').href, /^flclashx:\/\//);
+  assert.equal(view.get('hwidBadge').hidden, false);
   view.change('platformSelect', 'linux');
   assert.equal(view.get('alternatives').hidden, false);
   assert.ok(view.get('alternativeLinks').children.length > 0);
-  assert.match(view.get('installBtn').href, /\/download\/flclash\/linux-amd64-appimage$/);
+  assert.match(view.get('installBtn').href, /\/download\/flclashx\/linux-amd64-appimage$/);
 });
 
-test('shows manual import when a client has no supported URL scheme', async () => {
+test('manual subscription link remains available in advanced settings', async () => {
   const view = setup('windows');
-  view.change('clientSelect', 'verge');
-  assert.equal(view.get('openProfile').hidden, true);
-  assert.equal(view.get('copyPrimary').hidden, false);
-  await view.get('copyPrimary').events.click();
+  view.change('clientSelect', 'koala');
+  assert.match(view.get('openProfile').href, /^koala-clash:\/\//);
+  await view.get('copySecondary').events.click();
   assert.equal(view.clipboard, 'https://vpn.example.com/sub/' + 'T'.repeat(32));
   assert.equal(view.get('copyFeedback').hidden, false);
+});
+
+test('picker contains only HWID-capable clients and no generic option', () => {
+  const view = setup('ios');
+  const values = view.get('clientSelect').options.map(option => option.value);
+  assert.deepEqual(values, ['clashmi', 'karing', 'flclashx', 'koala']);
+  assert.doesNotMatch(html, /<option value="(?:flclash|verge|generic)">/);
 });
 
 test('FlClashX supports HWID on Android and uses its registered deep link', () => {
