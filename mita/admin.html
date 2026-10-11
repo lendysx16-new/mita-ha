@@ -324,6 +324,7 @@ code { font-size: 11px; overflow-wrap: anywhere; }
               <label class="span-2">PostgreSQL connection<input id="postgresDsn" type="password" autocomplete="off" placeholder="postgresql://user:password@host:5432/database"><span class="field-help">Leave empty to disable database logging. Logs are buffered in /data/mita.log until a connection is configured.</span></label>
             </div>
             <div id="logDbStatus" class="muted" role="status">Checking database logging…</div>
+            <p class="field-help">When PostgreSQL is configured, Mita saves up to 30 compressed backups: on startup and every 24 hours. Backups contain user passwords and subscription tokens; protect database access.</p>
             <div id="backupStatus" class="muted" role="status">Checking PostgreSQL backups…</div>
           </div>
           <div class="card-actions"><button id="showDsn" class="secondary" type="button">Show connection</button><button id="saveConf" type="button">Save settings</button></div>
@@ -671,6 +672,7 @@ $('#saveSettings').onclick=async()=>{
   }catch(e){alert(e.message)}
 };
 load().then(()=>loadBackupStatus()).catch(e=>alert(e.message));
+setInterval(loadBackupStatus, 30000);
 </script>
 </body>
 </html>
