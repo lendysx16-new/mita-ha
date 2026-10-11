@@ -1,3 +1,12 @@
+## 3.38.0.27
+
+- Serialize user, token, device and settings mutations to prevent lost updates under concurrent API requests.
+- Roll back persistent state and retry the previous configuration when Mita rejects a reload; report HTTP 503 rather than false success.
+- Avoid logging subscription tokens in HTTP access logs.
+- Validate JSON request bodies and Content-Length before processing API mutations.
+- Keep newly generated user passwords visible until explicitly dismissed in the admin UI.
+- Add regression tests for API operations, device registration, concurrency, and rollback behavior.
+
 ## 3.38.0.26
 
 - Redesigned Home Assistant Ingress admin panel with shadcn-inspired colors, layout, cards, forms, badges, and responsive navigation.
