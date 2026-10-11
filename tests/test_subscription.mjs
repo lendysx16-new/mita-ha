@@ -20,6 +20,16 @@ test('loads minimalist font with system fallback and respects device appearance'
   assert.match(html, /animation:\s*none;/);
 });
 
+test('minimal design uses flat sections with restrained corners', () => {
+  assert.match(html, /--radius:\s*5px;/);
+  assert.match(html, /\.step\s*\{[\s\S]*?border-bottom:\s*1px solid var\(--border\)/);
+  assert.match(html, /\.choice\s*\{[\s\S]*?background:\s*transparent/);
+  assert.doesNotMatch(html, /box-shadow\s*:/);
+  assert.doesNotMatch(html, /border-radius:\s*(?:999px|1[0-9]px|[2-9][0-9]px)/);
+  assert.match(html, /class="step-num" aria-hidden="true">01</);
+  assert.match(html, /class="step-num" aria-hidden="true">02</);
+});
+
 function setup(platform = 'ios') {
   const ids = [
     'clientSelect', 'platformSelect', 'hwidBadge', 'installBtn', 'missingInstall',
