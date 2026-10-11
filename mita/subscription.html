@@ -204,6 +204,21 @@
     .notice strong { color: var(--foreground); font-weight: 600; }
     .empty { padding: 13px 14px; border: 1px dashed var(--border); border-radius: var(--radius); color: var(--muted); font-size: 12px; }
     .alternatives { margin-top: 16px; }
+    .terminal-box {
+      margin: 12px 0 10px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--subtle);
+    }
+    .terminal-box code {
+      display: block;
+      font: 12px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace;
+      overflow-wrap: anywhere;
+      user-select: all;
+    }
+    .terminal-copy { min-height: 40px; }
+    .terminal-note { color: var(--muted); font-size: 12px; line-height: 1.6; }
     summary { width: fit-content; cursor: pointer; color: var(--muted); font-size: 11px; }
     summary:hover { color: var(--foreground); }
     .alternatives-list { display: grid; gap: 8px; margin-top: 12px; }
@@ -406,6 +421,13 @@
         <summary>Другие версии для этой платформы</summary>
         <div class="alternatives-list" id="alternativeLinks"></div>
       </details>
+      <details class="alternatives" id="terminalInstall" hidden>
+        <summary>Установить через терминал</summary>
+        <p class="terminal-note">Определит DEB, RPM или AppImage и загрузит актуальный релиз с GitHub. Нужны curl и Python 3. Скрипт можно проверить перед запуском.</p>
+        <div class="terminal-box"><code id="terminalCommand"></code></div>
+        <button id="copyTerminal" class="button secondary terminal-copy" type="button">Скопировать команду</button>
+        <p id="terminalFeedback" class="feedback" role="status" aria-live="polite" hidden></p>
+      </details>
     </section>
 
     <section class="step" aria-labelledby="connectTitle">
@@ -525,6 +547,13 @@ function detectPlatform() {
 const platform = detectPlatform();
 platformSelect.value = ['ios','android','windows','macos','linux'].includes(platform) ? platform : '';
 
+const terminalInstallerUrl =
+  'https://raw.githubusercontent.com/lendysx16-new/mita-ha/main/mita/install-linux.sh';
+function buildTerminalCommand(client) {
+  return 'curl -fsSLo ./mita-install-linux.sh ' + terminalInstallerUrl +
+    ' && bash ./mita-install-linux.sh ' + client.id;
+}
+
 function rawSubscriptionUrl() {
   const url = new URL(data.url);
   url.searchParams.set('raw', '1');
@@ -597,6 +626,12 @@ function render() {
   const missing = element('missingInstall');
   const alternatives = element('alternatives');
   const alternateLinks = element('alternativeLinks');
+  const terminalInstall = element('terminalInstall');
+  terminalInstall.hidden = os !== 'linux' || downloads.length === 0;
+  if (!terminalInstall.hidden) {
+    element('terminalCommand').textContent = buildTerminalCommand(client);
+  }
+  element('terminalFeedback').hidden = true;
 
   install.hidden = downloads.length === 0;
   missing.hidden = downloads.length > 0;
@@ -648,6 +683,32 @@ async function copySubscription() {
   element('copyFeedback').hidden = false;
 }
 
+async function copyTerminalCommand() {
+  const command = element('terminalCommand').textContent;
+  const feedback = element('terminalFeedback');
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+    await navigator.clipboard.writeText(command);
+  } catch (_) {
+    const field = document.createElement('textarea');
+    field.value = command;
+    field.style.position = 'fixed';
+    field.style.opacity = '0';
+    document.body.appendChild(field);
+    field.select();
+    const copied = document.execCommand('copy');
+    field.remove();
+    if (!copied) {
+      feedback.textContent = 'Не удалось скопировать команду. Выделите текст выше вручную.';
+      feedback.hidden = false;
+      return;
+    }
+  }
+  feedback.textContent = 'Команда скопирована. Перед запуском можно открыть и проверить скрипт.';
+  feedback.hidden = false;
+}
+
+element('copyTerminal').addEventListener('click', copyTerminalCommand);
 clientSelect.addEventListener('change', render);
 platformSelect.addEventListener('change', render);
 element('copySecondary').addEventListener('click', copySubscription);
