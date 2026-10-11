@@ -3,6 +3,7 @@
 - Increased iPhone typography for the pixel-style heading, step titles, inputs, labels and action buttons.
 - Let the two bordered setup steps grow to use available vertical space on taller iPhones, avoiding the compressed half-screen layout.
 - Retained compact spacing on shorter screens, scroll fallback, system theme, animations and reduced-motion support.
+- Fixed platform auto-detection for Firefox iOS/iPad desktop-mode User-Agents in Python and in-browser, with regression tests.
 
 ## 3.38.0.28
 
