@@ -494,7 +494,19 @@ const element = id => document.getElementById(id);
 const clientSelect = element('clientSelect');
 const platformSelect = element('platformSelect');
 const selectedClient = () => clients.find(client => client.id === clientSelect.value) || clients[0];
-const platform = String(data.platform || '').toLowerCase();
+function detectPlatform() {
+  // Browsers on iOS can use a desktop User-Agent with "Macintosh".
+  // Touch detection helps when the browser suppresses its iOS marker entirely.
+  const ua = String(navigator.userAgent || '').toLowerCase();
+  const browserPlatform = String(navigator.platform || '').toLowerCase();
+  const serverPlatform = String(data.platform || '').toLowerCase();
+  if (/iphone|ipad|ipod|fxios\/|crios\/|edgios\/|opios\//.test(ua)) return 'ios';
+  if ((ua.includes('macintosh') || browserPlatform.startsWith('mac')) &&
+      Number(navigator.maxTouchPoints || 0) > 1) return 'ios';
+  if (ua.includes('android')) return 'android';
+  return serverPlatform;
+}
+const platform = detectPlatform();
 platformSelect.value = ['ios','android','windows','macos','linux'].includes(platform) ? platform : '';
 
 function rawSubscriptionUrl() {
