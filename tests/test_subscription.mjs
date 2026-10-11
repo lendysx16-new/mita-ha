@@ -44,6 +44,8 @@ test('mobile setup prioritizes two actions within the first viewport', () => {
   assert.match(html, /<details id="advanced">/);
   assert.match(html, /<summary>Другие способы подключения<\/summary>/);
   assert.match(html, /<option value="" disabled hidden>Платформа<\/option>/);
+  assert.match(html, /@@CONTACT_LINK_HTML@@/);
+  assert.match(html, /\.contact-info a\s*\{\s*color:\s*var\(--pink\)/);
 });
 
 test('iPhone typography is larger and cards use available viewport height', () => {
