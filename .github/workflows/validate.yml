@@ -46,7 +46,7 @@ jobs:
           docker = Path("mita/Dockerfile").read_text(encoding="utf-8")
           assert 'Path(__file__).with_name("admin.html")' in source
           assert "COPY admin.html /app/admin.html" in docker
-          required = ("users", "deviceUsers", "traffic", "refreshTraffic",
+          required = ("users", "deviceUsers", "traffic", "refreshTraffic", "contactEmail", "backupStatus",
                       "username", "password", "host", "port", "base",
                       "logLevel", "postgresDsn", "msg")
           for name in required:
@@ -66,6 +66,7 @@ jobs:
           assert "@@BOOTSTRAP_JSON@@" in source
           assert "@@USERNAME_HTML@@" in source
           assert "@@SUBSCRIPTION_URL_HTML@@" in source
+          assert "@@CONTACT_LINK_HTML@@" in source
           assert 'id="installTitle"' in source
           assert 'id="connectTitle"' in source
           assert "cdn.jsdelivr.net" not in source
