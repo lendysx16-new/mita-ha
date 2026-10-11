@@ -3,6 +3,8 @@ name: Validate add-on
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -23,3 +25,24 @@ jobs:
                   yaml.safe_load(f)
               print(path, "OK")
           PY
+      - name: Validate standalone admin panel
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          source = Path("mita/webapp.py").read_text(encoding="utf-8")
+          html = Path("mita/admin.html").read_text(encoding="utf-8")
+          docker = Path("mita/Dockerfile").read_text(encoding="utf-8")
+          assert 'Path(__file__).with_name("admin.html")' in source
+          assert "COPY admin.html /app/admin.html" in docker
+          required = ("users", "deviceUsers", "traffic", "refreshTraffic",
+                      "username", "password", "host", "port", "base",
+                      "logLevel", "postgresDsn", "msg")
+          for name in required:
+              assert f'id="{name}"' in html, name
+          script = re.search(r"<script>(.*?)</script>", html, re.S)
+          assert script, "admin script missing"
+          Path("/tmp/mita-admin.js").write_text(script.group(1), encoding="utf-8")
+          PY
+          node --check /tmp/mita-admin.js
