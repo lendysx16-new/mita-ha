@@ -1,3 +1,11 @@
+## 3.38.0.33
+
+- Redesigned the admin dashboard as a compact directory of users. Access, HWID counts and per-user navigation stay visible; full subscription URLs and destructive actions are no longer rendered in the overview table.
+- Added a dedicated user details view with subscription copy/rotation, deletion, HWID settings and registered device controls.
+- Replaced the large Devices tab with a concise device directory linking to its owner.
+- Moved public connection settings to Settings, folded user creation into an on-demand form, and shortened the server statistics header.
+- Added responsive mobile layout and Node regression tests covering navigation and subscription token privacy.
+
 ## 3.38.0.32
 
 - Added a configurable optional contact email in the admin's Public connection settings. Public subscription pages show a safe mailto link only when the field is set.
