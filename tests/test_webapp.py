@@ -175,21 +175,21 @@ class SubscriptionTests(unittest.TestCase):
     def test_device_creation_and_limit(self):
         with mock.patch.object(app, "reload_mita", return_value=(True, "")) as reload_mock:
             user, credential, _, status, _ = app.resolve_subscription(
-                "T" * 32, {"x-hwid": "device-test-123", "x-device-os": "iOS"}
+                "T" * 32, {"x-hwid": "devicetest123", "x-device-os": "iOS"}
             )
             self.assertIsNone(status)
             self.assertTrue(credential["username"].startswith("dev_"))
             self.assertEqual(len(app.get_users()[0]["devices"]), 1)
             self.assertEqual(reload_mock.call_count, 1)
             _, _, _, status, _ = app.resolve_subscription(
-                "T" * 32, {"x-hwid": "device-test-456"}
+                "T" * 32, {"x-hwid": "devicetest456"}
             )
             self.assertEqual(int(status), 404)
 
     def test_failed_registration_does_not_consume_device_slot(self):
         with mock.patch.object(app, "reload_mita", side_effect=[(False, "failed"), (True, "restored")]):
             _, _, _, status, _ = app.resolve_subscription(
-                "T" * 32, {"x-hwid": "device-test-123"}
+                "T" * 32, {"x-hwid": "devicetest123"}
             )
         self.assertEqual(int(status), 503)
         self.assertEqual(app.get_users()[0]["devices"], [])
