@@ -12,120 +12,221 @@
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <title>@@PAGE_TITLE@@ — подключение</title>
   <style>
+
     :root {
       font-family: "Manrope", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
       color-scheme: light;
-      --background: #fafafa;
-      --foreground: #18181b;
-      --surface: #fff;
-      --muted: #71717a;
-      --subtle: #f4f4f5;
-      --border: #e4e4e7;
-      --primary: #18181b;
-      --primary-foreground: #fff;
-      --ring: #a1a1aa;
-      --shadow: 0 6px 24px rgba(24, 24, 27, .035);
-      --radius: 14px;
+      --background: #ffffff;
+      --foreground: #171717;
+      --surface: #ffffff;
+      --muted: #737373;
+      --subtle: #f7f7f7;
+      --border: #e5e5e5;
+      --primary: #171717;
+      --primary-foreground: #ffffff;
+      --ring: #8a8a8a;
+      --radius: 5px;
       -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
     }
     @media (prefers-color-scheme: dark) {
       :root {
         color-scheme: dark;
-        --background: #09090b;
-        --foreground: #fafafa;
-        --surface: #18181b;
-        --muted: #a1a1aa;
-        --subtle: #27272a;
-        --border: #3f3f46;
-        --primary: #fafafa;
-        --primary-foreground: #18181b;
-        --ring: #71717a;
-        --shadow: 0 8px 28px rgba(0, 0, 0, .16);
+        --background: #0c0c0d;
+        --foreground: #ededed;
+        --surface: #141415;
+        --muted: #a0a0a0;
+        --subtle: #1b1b1d;
+        --border: #333336;
+        --primary: #ededed;
+        --primary-foreground: #111112;
+        --ring: #a1a1a1;
       }
     }
     * { box-sizing: border-box; }
     [hidden] { display: none !important; }
+    html { min-width: 320px; }
     body {
-      min-width: 320px;
       min-height: 100vh;
       margin: 0;
-      padding: max(32px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right))
-        max(36px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));
+      padding:
+        max(38px,env(safe-area-inset-top))
+        max(20px,env(safe-area-inset-right))
+        max(40px,env(safe-area-inset-bottom))
+        max(20px,env(safe-area-inset-left));
       background: var(--background);
       color: var(--foreground);
       font-size: 14px;
-      line-height: 1.5;
+      line-height: 1.55;
     }
-    main { max-width: 510px; margin: 0 auto; }
+    main { max-width: 480px; margin: 0 auto; }
     button, select, a { font: inherit; }
     button, a, select { -webkit-tap-highlight-color: transparent; }
-    :where(a,button,select,summary):focus-visible { outline: 3px solid var(--ring); outline-offset: 3px; }
-    .identity { display: flex; align-items: center; gap: 11px; margin-bottom: 26px; }
-    .logo { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: var(--primary); color: var(--primary-foreground); font-weight: 750; font-size: 22px; }
-    .identity strong { display: block; font-size: 15px; line-height: 1.35; }
-    .identity small { display: block; font-size: 12px; color: var(--muted); }
-    h1 { font-size: clamp(27px,5vw,33px); letter-spacing: -.9px; line-height: 1.12; font-weight: 720; margin: 0 0 10px; }
-    h2 { font-size: 16px; line-height: 1.3; letter-spacing: -.3px; font-weight: 670; margin: 0; }
+    :where(a,button,select,summary):focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+    .identity {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding-bottom: 21px;
+      margin-bottom: 44px;
+      border-bottom: 1px solid var(--border);
+    }
+    .logo {
+      display: grid;
+      place-items: center;
+      width: 33px;
+      height: 33px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: -.08em;
+    }
+    .identity strong { display: block; font-size: 13px; font-weight: 750; letter-spacing: -.025em; line-height: 1.3; }
+    .identity small { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+    h1 { margin: 0 0 11px; font-size: clamp(27px,6vw,34px); line-height: 1.2; letter-spacing: -.055em; font-weight: 750; }
+    h2 { margin: 0; font-size: 15px; line-height: 1.35; letter-spacing: -.025em; font-weight: 700; }
     p { margin: 0; }
     .muted { color: var(--muted); }
-    .intro { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 24px; }
-    .choice { border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; background: var(--surface); box-shadow: var(--shadow); margin-bottom: 14px; }
-    .field-label { display: block; margin-bottom: 9px; font-size: 12px; font-weight: 650; }
-    select { display: block; width: 100%; min-height: 47px; border: 1px solid var(--border); border-radius: 9px; padding: 11px 12px; color: var(--foreground); background: var(--surface); }
-    .choice-row { display: flex; gap: 10px; justify-content: space-between; flex-wrap: wrap; align-items: center; margin-top: 12px; }
-    .choice-row label { color: var(--muted); font-size: 12px; }
-    .choice-row select { width: auto; min-height: 34px; font-size: 12px; padding: 6px 9px; }
-    .badge { display: inline-flex; gap: 6px; align-items: center; background: var(--subtle); border: 1px solid var(--border); border-radius: 999px; padding: 4px 9px; color: var(--muted); font-size: 11px; font-weight: 540; }
-    .badge-dot { width: 6px; height: 6px; background: #16a34a; border-radius: 50%; }
-    .steps { display: grid; gap: 14px; }
-    .step { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px; box-shadow: var(--shadow); }
-    .step-heading { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 19px; }
-    .step-num { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; font-weight: 700; background: var(--subtle); }
-    .step-heading p { color: var(--muted); font-size: 12px; margin-top: 5px; }
-    .button { display: flex; width: 100%; min-height: 48px; align-items: center; justify-content: center; gap: 9px; border-radius: 9px; padding: 12px 15px; border: 1px solid var(--border); font-size: 13px; font-weight: 640; line-height: 1.4; cursor: pointer; text-decoration: none; text-align: center; transition: background .18s ease,opacity .18s ease,transform .18s ease; }
-    .button:active { transform: scale(.99); }
-    .button:hover { opacity: .83; }
+    .intro { max-width: 420px; margin-bottom: 35px; color: var(--muted); font-size: 13px; line-height: 1.8; }
+    .intro strong { color: var(--foreground); font-weight: 650; }
+    .choice {
+      margin-bottom: 5px;
+      padding: 0 0 29px;
+      border: 0;
+      border-bottom: 1px solid var(--border);
+      background: transparent;
+    }
+    .field-label { display: block; margin-bottom: 9px; font-size: 11px; font-weight: 650; color: var(--muted); }
+    select {
+      display: block;
+      width: 100%;
+      min-height: 44px;
+      padding: 9px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--foreground);
+      background: var(--surface);
+      cursor: pointer;
+      font-size: 13px;
+    }
+    select:hover { border-color: var(--muted); }
+    .choice-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 18px; }
+    .choice-row label { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 11px; }
+    .choice-row select { min-height: 36px; width: auto; max-width: 195px; padding: 6px 9px; font-size: 11px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 540;
+    }
+    .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+    .steps { display: grid; gap: 0; }
+    .step {
+      padding: 29px 0 32px;
+      border-bottom: 1px solid var(--border);
+      background: transparent;
+    }
+    .step-heading { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 21px; }
+    .step-num {
+      display: grid;
+      place-items: center;
+      flex: none;
+      width: 30px;
+      height: 30px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font: 650 11px/1 "Manrope", system-ui, sans-serif;
+      color: var(--muted);
+    }
+    .step-heading p { margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: 100%;
+      min-height: 46px;
+      padding: 11px 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-weight: 680;
+      line-height: 1.45;
+      text-align: center;
+      text-decoration: none;
+      cursor: pointer;
+      transition: background-color .16s ease, border-color .16s ease, opacity .16s ease, transform .16s ease;
+    }
+    .button:active { transform: translateY(1px); }
     .button.primary { color: var(--primary-foreground); background: var(--primary); border-color: var(--primary); }
-    .button.secondary { color: var(--foreground); background: var(--surface); }
-    .button svg { width: 17px; height: 17px; flex: none; }
-    .notice { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.6; }
-    .notice strong { color: var(--foreground); font-weight: 560; }
-    .empty { font-size: 12px; border: 1px dashed var(--border); padding: 12px; border-radius: 9px; color: var(--muted); }
-    .alternatives { margin-top: 14px; }
-    summary { font-size: 12px; color: var(--muted); cursor: pointer; }
+    .button.primary:hover { opacity: .86; }
+    .button.secondary { color: var(--foreground); background: transparent; }
+    .button.secondary:hover { background: var(--subtle); }
+    .button svg { width: 16px; height: 16px; flex: none; }
+    .notice { margin-top: 11px; color: var(--muted); font-size: 11px; line-height: 1.75; }
+    .notice strong { color: var(--foreground); font-weight: 600; }
+    .empty { padding: 13px 14px; border: 1px dashed var(--border); border-radius: var(--radius); color: var(--muted); font-size: 12px; }
+    .alternatives { margin-top: 16px; }
+    summary { width: fit-content; cursor: pointer; color: var(--muted); font-size: 11px; }
     summary:hover { color: var(--foreground); }
-    .alternatives-list { display: grid; gap: 8px; margin-top: 10px; }
-    .alternative { display: flex; align-items: center; justify-content: space-between; gap: 14px; border: 1px solid var(--border); padding: 11px; border-radius: 9px; color: var(--foreground); font-size: 12px; text-decoration: none; }
+    .alternatives-list { display: grid; gap: 8px; margin-top: 12px; }
+    .alternative {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 11px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--foreground);
+      font-size: 12px;
+      text-decoration: none;
+    }
     .alternative:hover { background: var(--subtle); }
     .alternative small { color: var(--muted); text-align: right; font-size: 11px; }
-    .step-footer { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 15px; }
-    .step-footer .button { min-height: 41px; }
-    .feedback { margin-top: 12px; padding: 10px 12px; border-radius: 8px; color: var(--foreground); background: var(--subtle); font-size: 12px; line-height: 1.55; }
-    .details-footer { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 16px; }
-    .token { display: block; width: 100%; margin-top: 10px; padding: 11px; font: 11px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace; color: var(--foreground); background: var(--subtle); border-radius: 8px; overflow-wrap: anywhere; }
-    .footer { margin-top: 18px; text-align: center; font-size: 11px; color: var(--muted); }
-    /* Entrance animations are visual-only: the page also works without animation. */
+    .step-footer { margin-top: 19px; }
+    .step-footer .button { min-height: 40px; }
+    .feedback { margin-top: 12px; padding: 12px; border-left: 2px solid var(--muted); color: var(--foreground); background: var(--subtle); font-size: 11px; line-height: 1.6; }
+    .details-footer { margin-top: 26px; }
+    .token {
+      display: block;
+      width: 100%;
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--foreground);
+      background: var(--subtle);
+      font: 11px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+      overflow-wrap: anywhere;
+    }
+    .footer { margin-top: 48px; text-align: center; font-size: 10px; letter-spacing: .035em; color: var(--muted); }
     @keyframes reveal {
-      from { opacity: 0; transform: translate3d(0, 12px, 0); }
+      from { opacity: 0; transform: translate3d(0, 8px, 0); }
       to { opacity: 1; transform: translate3d(0, 0, 0); }
     }
     .identity, h1, .intro, .choice, .step, .details-footer, .footer {
-      animation: reveal .48s cubic-bezier(.2,.75,.3,1) both;
+      animation: reveal .38s cubic-bezier(.2,.75,.3,1) both;
     }
     .identity { animation-delay: 0ms; }
-    h1 { animation-delay: 45ms; }
-    .intro { animation-delay: 90ms; }
-    .choice { animation-delay: 135ms; }
-    .step:nth-child(1) { animation-delay: 205ms; }
-    .step:nth-child(2) { animation-delay: 275ms; }
-    .details-footer { animation-delay: 325ms; }
-    .footer { animation-delay: 370ms; }
-    @media(min-width:640px) { body { padding-top: 56px; } }
-    @media(max-width:360px) { .step,.choice { padding: 16px; } }
-    @media(prefers-reduced-motion:reduce) {
-      .identity, h1, .intro, .choice, .step, .details-footer, .footer {
-        animation: none;
-      }
+    h1 { animation-delay: 35ms; }
+    .intro { animation-delay: 70ms; }
+    .choice { animation-delay: 105ms; }
+    .step:nth-child(1) { animation-delay: 155ms; }
+    .step:nth-child(2) { animation-delay: 205ms; }
+    .details-footer { animation-delay: 255ms; }
+    .footer { animation-delay: 300ms; }
+    @media (min-width: 640px) { body { padding-top: 54px; } }
+    @media (max-width: 400px) {
+      .choice-row { align-items: flex-start; }
+      .choice-row label { width: 100%; justify-content: space-between; }
+    }
+    @media (max-width: 360px) { .step { padding-top: 25px; padding-bottom: 27px; } }
+    @media (prefers-reduced-motion: reduce) {
+      .identity, h1, .intro, .choice, .step, .details-footer, .footer { animation: none; }
       .button { transition: none; }
     }
   </style>
@@ -167,7 +268,7 @@
   <div class="steps">
     <section class="step" aria-labelledby="installTitle">
       <div class="step-heading">
-        <span class="step-num" aria-hidden="true">1</span>
+        <span class="step-num" aria-hidden="true">01</span>
         <div><h2 id="installTitle">Установите приложение</h2><p>Если уже установлено — переходите к шагу 2.</p></div>
       </div>
       <a id="installBtn" class="button primary" href="#" target="_blank" rel="noopener noreferrer" hidden>
@@ -184,7 +285,7 @@
 
     <section class="step" aria-labelledby="connectTitle">
       <div class="step-heading">
-        <span class="step-num" aria-hidden="true">2</span>
+        <span class="step-num" aria-hidden="true">02</span>
         <div><h2 id="connectTitle">Откройте профиль в приложении</h2><p>Профиль добавится по вашей персональной ссылке.</p></div>
       </div>
       <a id="openProfile" class="button primary" href="#">
