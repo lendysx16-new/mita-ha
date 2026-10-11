@@ -225,6 +225,54 @@
       .choice-row label { width: 100%; justify-content: space-between; }
     }
     @media (max-width: 360px) { .step { padding-top: 25px; padding-bottom: 27px; } }
+
+    /* Compact first-screen setup: controls and both steps remain above the fold
+       on standard iPhone Safari viewports. Optional help stays collapsed. */
+    .choice-grid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 12px; }
+    .choice-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; font-size: 11px; font-weight: 650; color: var(--muted); }
+    .choice-field select { width: 100%; min-width: 0; color: var(--foreground); font-weight: 500; }
+    .advanced-body { display: grid; gap: 11px; margin-top: 14px; }
+    .advanced-body .badge { font-size: 11px; }
+    .advanced-body .token { margin-top: 0; }
+    @media (max-width: 640px) {
+      body {
+        min-height: 100dvh;
+        padding: max(12px,env(safe-area-inset-top)) 18px
+          max(14px,env(safe-area-inset-bottom));
+        font-size: 13px;
+      }
+      main { max-width: 440px; }
+      .identity { gap: 9px; margin-bottom: 20px; padding-bottom: 12px; }
+      .logo { width: 28px; height: 28px; font-size: 13px; }
+      .identity strong { font-size: 12px; }
+      .identity small { font-size: 10px; margin-top: 0; }
+      h1 { font-size: 27px; line-height: 1.15; margin-bottom: 6px; }
+      .intro { font-size: 11px; line-height: 1.45; margin-bottom: 18px; }
+      .choice { margin: 0; padding: 0 0 16px; }
+      .choice-grid { gap: 9px; }
+      select { min-height: 43px; padding: 9px 8px; font-size: 12px; }
+      .steps { gap: 0; }
+      .step { padding: 17px 0; }
+      .step-heading { align-items: center; gap: 10px; margin-bottom: 11px; }
+      .step-heading h2 { font-size: 13px; }
+      .step-heading p { display: none; }
+      .step-num { width: 24px; height: 24px; font-size: 10px; }
+      .button { min-height: 43px; padding: 10px 12px; font-size: 12px; }
+      #installSource, #openHint { display: none; }
+      .alternatives { margin-top: 9px; }
+      .details-footer { margin-top: 16px; }
+      .footer { display: none; }
+    }
+    @media (max-width: 640px) and (max-height: 740px) {
+      body { padding-top: max(8px,env(safe-area-inset-top)); }
+      .identity { margin-bottom: 12px; padding-bottom: 8px; }
+      h1 { font-size: 24px; }
+      .intro { margin-bottom: 12px; }
+      .choice { padding-bottom: 12px; }
+      .step { padding: 12px 0; }
+      .step-heading { margin-bottom: 8px; }
+      .details-footer { margin-top: 11px; }
+    }
     @media (prefers-reduced-motion: reduce) {
       .identity, h1, .intro, .choice, .step, .details-footer, .footer { animation: none; }
       .button { transition: none; }
@@ -239,22 +287,24 @@
   </div>
 
   <h1>Настройка VPN</h1>
-  <p class="intro">Для пользователя <strong>@@USERNAME_HTML@@</strong>. Всего два шага: установите приложение и добавьте в него профиль.</p>
+  <p class="intro">Профиль <strong>@@USERNAME_HTML@@</strong> · Установка в два шага</p>
 
   <section class="choice" aria-label="Выбор приложения">
-    <label class="field-label" for="clientSelect">Приложение</label>
-    <select id="clientSelect">
-      <option value="clashmi">Clash Mi</option>
-      <option value="karing">Karing</option>
-      <option value="flclash">FlClash</option>
-      <option value="verge">Clash Verge Rev</option>
-      <option value="generic">Другой Clash / Mihomo клиент</option>
-    </select>
-    <div class="choice-row">
-      <span class="badge" id="hwidBadge"><span class="badge-dot"></span>Отдельный профиль для устройства</span>
-      <label for="platformSelect">Устройство
+    <div class="choice-grid">
+      <label class="choice-field" for="clientSelect">Приложение
+        <select id="clientSelect">
+          <option value="clashmi">Clash Mi</option>
+          <option value="karing">Karing</option>
+          <option value="flclashx">FlClashX</option>
+          <option value="koala">Koala Clash</option>
+          <option value="flclash">FlClash</option>
+          <option value="verge">Clash Verge Rev</option>
+          <option value="generic">Другой Clash / Mihomo</option>
+        </select>
+      </label>
+      <label class="choice-field" for="platformSelect">Устройство
         <select id="platformSelect">
-          <option value="">Выберите платформу</option>
+          <option value="">Платформа</option>
           <option value="ios">iPhone / iPad</option>
           <option value="android">Android</option>
           <option value="windows">Windows</option>
@@ -269,7 +319,7 @@
     <section class="step" aria-labelledby="installTitle">
       <div class="step-heading">
         <span class="step-num" aria-hidden="true">01</span>
-        <div><h2 id="installTitle">Установите приложение</h2><p>Если уже установлено — переходите к шагу 2.</p></div>
+        <div><h2 id="installTitle">Установить приложение</h2><p>Если установлено, переходите к шагу 2.</p></div>
       </div>
       <a id="installBtn" class="button primary" href="#" target="_blank" rel="noopener noreferrer" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4"/></svg>
@@ -286,7 +336,7 @@
     <section class="step" aria-labelledby="connectTitle">
       <div class="step-heading">
         <span class="step-num" aria-hidden="true">02</span>
-        <div><h2 id="connectTitle">Откройте профиль в приложении</h2><p>Профиль добавится по вашей персональной ссылке.</p></div>
+        <div><h2 id="connectTitle">Открыть профиль</h2><p>Импортируйте подписку одним нажатием.</p></div>
       </div>
       <a id="openProfile" class="button primary" href="#">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/><path d="M5 5h5M5 5v14h14v-5"/></svg>
@@ -294,18 +344,19 @@
       </a>
       <button id="copyPrimary" class="button primary" type="button" hidden>Скопировать ссылку профиля</button>
       <p class="notice" id="openHint">Если приложение не открылось, убедитесь, что оно установлено.</p>
-      <div class="step-footer">
-        <button id="copySecondary" class="button secondary" type="button">Скопировать ссылку вручную</button>
-      </div>
       <p id="copyFeedback" class="feedback" role="status" aria-live="polite" hidden></p>
     </section>
   </div>
 
   <div class="details-footer">
-    <details>
-      <summary>Показать ссылку подписки</summary>
-      <code class="token">@@SUBSCRIPTION_URL_HTML@@</code>
-      <p class="notice">Не публикуйте ссылку: она предоставляет доступ к вашему профилю.</p>
+    <details id="advanced">
+      <summary>Другие способы подключения</summary>
+      <div class="advanced-body">
+        <span class="badge" id="hwidBadge"><span class="badge-dot"></span>Поддержка отдельного HWID устройства</span>
+        <button id="copySecondary" class="button secondary" type="button">Скопировать ссылку подписки</button>
+        <code class="token">@@SUBSCRIPTION_URL_HTML@@</code>
+        <p class="notice">Ссылка содержит секретный токен доступа. Не передавайте её посторонним.</p>
+      </div>
     </details>
   </div>
   <p class="footer">Mita · Приватная подписка Mieru</p>
@@ -340,6 +391,40 @@ const clients = [
           { os: 'android', platform: 'Android', target: 'android-arm64', note: 'Latest ARM64 APK · GitHub' },
           { os: 'linux', platform: 'Linux · x64 AppImage', target: 'linux-amd64-appimage', note: 'Latest AppImage · GitHub' },
           { os: 'linux', platform: 'Linux · x64 DEB', target: 'linux-amd64-deb', note: 'Latest DEB · GitHub' }
+        ]
+      },
+      {
+        id: 'flclashx',
+        name: 'FlClashX',
+        scheme: 'flclashx',
+        hwid: true,
+        downloads: [
+          { os: 'android', platform: 'Android · ARM64', target: 'android-arm64', note: 'APK · GitHub' },
+          { os: 'android', platform: 'Android · ARMv7', target: 'android-armv7', note: 'APK · GitHub' },
+          { os: 'windows', platform: 'Windows · x64', target: 'windows-amd64', note: 'EXE · GitHub' },
+          { os: 'windows', platform: 'Windows · ARM64', target: 'windows-arm64', note: 'EXE · GitHub' },
+          { os: 'macos', platform: 'macOS · Apple Silicon', target: 'macos-arm64', note: 'DMG · GitHub' },
+          { os: 'macos', platform: 'macOS · Intel', target: 'macos-amd64', note: 'DMG · GitHub' },
+          { os: 'linux', platform: 'Linux · AppImage', target: 'linux-amd64-appimage', note: 'AppImage · GitHub' },
+          { os: 'linux', platform: 'Linux · DEB', target: 'linux-amd64-deb', note: 'DEB · GitHub' },
+          { os: 'linux', platform: 'Linux · RPM', target: 'linux-amd64-rpm', note: 'RPM · GitHub' },
+          { os: 'linux', platform: 'Linux · ARM64 DEB', target: 'linux-arm64-deb', note: 'DEB · GitHub' }
+        ]
+      },
+      {
+        id: 'koala',
+        name: 'Koala Clash',
+        scheme: 'koala-clash',
+        hwid: true,
+        downloads: [
+          { os: 'windows', platform: 'Windows · x64', target: 'windows-amd64', note: 'EXE · GitHub' },
+          { os: 'windows', platform: 'Windows · ARM64', target: 'windows-arm64', note: 'EXE · GitHub' },
+          { os: 'macos', platform: 'macOS · Apple Silicon', target: 'macos-arm64', note: 'PKG · GitHub' },
+          { os: 'macos', platform: 'macOS · Intel', target: 'macos-amd64', note: 'PKG · GitHub' },
+          { os: 'linux', platform: 'Linux · DEB', target: 'linux-amd64-deb', note: 'DEB · GitHub' },
+          { os: 'linux', platform: 'Linux · ARM64 DEB', target: 'linux-arm64-deb', note: 'DEB · GitHub' },
+          { os: 'linux', platform: 'Linux · RPM', target: 'linux-amd64-rpm', note: 'RPM · GitHub' },
+          { os: 'linux', platform: 'Linux · ARM64 RPM', target: 'linux-arm64-rpm', note: 'RPM · GitHub' }
         ]
       },
       {
@@ -408,7 +493,9 @@ function buildImportUrl(client) {
     url: rawSubscriptionUrl(),
     name: 'Mieru ' + data.username
   });
-  if (client.hwid) params.set('xhwid', 'true');
+  // Only Clash Mi and Karing require a deep-link flag; Koala and FlClashX
+  // send x-hwid automatically when fetching subscriptions.
+  if (client.id === 'clashmi' || client.id === 'karing') params.set('xhwid', 'true');
   return client.scheme + '://install-config?' + params.toString();
 }
 
@@ -444,8 +531,23 @@ function makeAlternative(item) {
 }
 
 function render() {
-  const client = selectedClient();
   const os = platformSelect.value;
+  // Hide clients that cannot be installed on the selected device. Keep the
+  // generic manual-import option available even for unsupported platforms.
+  for (const option of clientSelect.options || []) {
+    const candidate = clients.find(client => client.id === option.value);
+    if (!candidate) continue;
+    const unavailable = Boolean(os) && candidate.id !== 'generic' &&
+      !candidate.downloads.some(download => download.os === os);
+    option.disabled = unavailable;
+    option.hidden = unavailable;
+  }
+  if (clientSelect.selectedOptions?.[0]?.disabled ||
+      (os && !availableDownloads(selectedClient(), os).length && selectedClient().id !== 'generic')) {
+    clientSelect.value = clients.find(candidate =>
+      candidate.downloads.some(download => download.os === os))?.id || 'generic';
+  }
+  const client = selectedClient();
   element('hwidBadge').hidden = !client.hwid;
   const downloads = availableDownloads(client, os);
   const install = element('installBtn');
@@ -504,7 +606,7 @@ async function copySubscription() {
     const copied = document.execCommand('copy');
     input.remove();
     if (!copied) {
-      element('copyFeedback').textContent = 'Не удалось скопировать автоматически. Раскройте ссылку подписки ниже и скопируйте вручную.';
+      element('copyFeedback').textContent = 'Не удалось скопировать. Откройте «Другие способы подключения» и скопируйте ссылку.';
       element('copyFeedback').hidden = false;
       return;
     }
