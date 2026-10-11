@@ -519,8 +519,7 @@ function makeAlternative(item) {
 
 function render() {
   const os = platformSelect.value;
-  // Hide clients that cannot be installed on the selected device. Keep the
-  // generic manual-import option available even for unsupported platforms.
+  // Keep only clients supported by the chosen platform selectable.
   for (const option of clientSelect.options || []) {
     const candidate = clients.find(client => client.id === option.value);
     if (!candidate) continue;
