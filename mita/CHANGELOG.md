@@ -1,3 +1,10 @@
+## 3.38.0.26
+
+- Redesigned Home Assistant Ingress admin panel with shadcn-inspired colors, layout, cards, forms, badges, and responsive navigation.
+- Added account filtering and overview counters for users, HWID devices, and legacy credentials.
+- Kept all existing management APIs and browser interactions without adding CDN or JavaScript dependencies.
+- Extracted the admin page to `admin.html` for easier future UI updates.
+
 ## 3.38.0.25
 
 - Subscription configs now use global proxy mode for every client.
