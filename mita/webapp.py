@@ -2,12 +2,15 @@
 import argparse
 import copy
 import html
+import hashlib
+import io
 import json
 import os
 import re
 import secrets
 import signal
 import subprocess
+import tarfile
 import threading
 import time
 import urllib.error
@@ -49,6 +52,19 @@ LOG_DB_STATUS = {
     "last_error": "",
     "last_write": None,
     "rows_written": 0,
+}
+BACKUP_INTERVAL_SECONDS = 24 * 60 * 60
+BACKUP_RETRY_SECONDS = 5 * 60
+BACKUP_KEEP_COUNT = 30
+BACKUP_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
+BACKUP_STATUS_LOCK = threading.RLock()
+BACKUP_STATUS = {
+    "enabled": False,
+    "connected": False,
+    "last_error": "",
+    "last_backup": None,
+    "last_reason": None,
+    "backup_count": 0,
 }
 
 
@@ -342,6 +358,148 @@ def log_db_worker():
                     pass
             conn = None
             time.sleep(5)
+
+
+def set_backup_status(**values):
+    with BACKUP_STATUS_LOCK:
+        BACKUP_STATUS.update(values)
+
+
+def get_backup_status():
+    with BACKUP_STATUS_LOCK:
+        return dict(BACKUP_STATUS)
+
+
+def build_backup_archive():
+    """Snapshot persistent operational data, excluding logs and Unix sockets.
+
+    The archive stores credentials and must be treated as confidential.
+    """
+    names = ("users.json", "settings.json", "mita-server.json", "options.json")
+    files = []
+    total = 0
+    with LOCK:
+        for name in names:
+            path = DATA_DIR / name
+            if not path.exists():
+                if name in ("users.json", "settings.json"):
+                    raise RuntimeError(f"backup required file missing: {name}")
+                continue
+            if not path.is_file() or path.is_symlink():
+                raise RuntimeError(f"unsafe backup path: {name}")
+            data = path.read_bytes()
+            total += len(data)
+            if total > BACKUP_MAX_UNCOMPRESSED_BYTES:
+                raise RuntimeError("backup exceeds maximum uncompressed size")
+            files.append((name, data))
+
+        metrics_root = DATA_DIR / "mita-state"
+        if metrics_root.is_dir() and not metrics_root.is_symlink():
+            for path in sorted(metrics_root.rglob("*")):
+                if path.is_symlink():
+                    raise RuntimeError("backup cannot include symlinks")
+                if path.is_dir():
+                    continue
+                if not path.is_file():
+                    raise RuntimeError("backup contains unsupported file")
+                name = path.relative_to(DATA_DIR).as_posix()
+                data = path.read_bytes()
+                total += len(data)
+                if total > BACKUP_MAX_UNCOMPRESSED_BYTES:
+                    raise RuntimeError("backup exceeds maximum uncompressed size")
+                files.append((name, data))
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for name, data in files:
+            info = tarfile.TarInfo(name=name)
+            info.mode = 0o600
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    payload = buffer.getvalue()
+    return payload, [name for name, _ in files], hashlib.sha256(payload).hexdigest()
+
+
+def save_postgres_backup(dsn, reason="scheduled"):
+    """Persist an atomic compressed snapshot and enforce bounded retention."""
+    if psycopg2 is None:
+        raise RuntimeError("psycopg2 is not installed")
+    payload, names, digest = build_backup_archive()
+    with psycopg2.connect(dsn, connect_timeout=8) as connection:
+        with connection.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS mita_backups (
+                    id BIGSERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    reason TEXT NOT NULL,
+                    file_names JSONB NOT NULL,
+                    checksum_sha256 TEXT NOT NULL,
+                    payload BYTEA NOT NULL
+                )
+            """)
+            cur.execute(
+                """
+                INSERT INTO mita_backups (reason, file_names, checksum_sha256, payload)
+                VALUES (%s, %s::jsonb, %s, %s)
+                """,
+                (reason, json.dumps(names), digest, psycopg2.Binary(payload)),
+            )
+            cur.execute(
+                """
+                DELETE FROM mita_backups
+                WHERE id NOT IN (
+                    SELECT id FROM mita_backups ORDER BY created_at DESC, id DESC LIMIT %s
+                )
+                """,
+                (BACKUP_KEEP_COUNT,),
+            )
+            cur.execute("SELECT COUNT(*) FROM mita_backups")
+            count = int(cur.fetchone()[0])
+    return {"reason": reason, "file_names": names, "sha256": digest, "count": count}
+
+
+def backup_db_worker():
+    """Back up on every server start, then every 24h; retry failed jobs."""
+    if psycopg2 is None:
+        set_backup_status(last_error="psycopg2 is not installed")
+        return
+    active_dsn = None
+    next_backup_at = 0.0
+    reason = "startup"
+    while True:
+        dsn = str(get_settings().get("postgres_dsn", "") or "").strip()
+        set_backup_status(enabled=bool(dsn))
+        if not dsn:
+            active_dsn = None
+            next_backup_at = 0.0
+            reason = "startup"
+            set_backup_status(connected=False, last_error="")
+            time.sleep(30)
+            continue
+        if dsn != active_dsn:
+            active_dsn = dsn
+            next_backup_at = 0.0
+            reason = "startup"
+        remaining = next_backup_at - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(60.0, remaining))
+            continue
+        try:
+            result = save_postgres_backup(dsn, reason)
+            set_backup_status(
+                connected=True,
+                last_error="",
+                last_backup=utc_now(),
+                last_reason=result["reason"],
+                backup_count=result["count"],
+            )
+            next_backup_at = time.monotonic() + BACKUP_INTERVAL_SECONDS
+            reason = "scheduled"
+        except Exception as exc:
+            # Do not print exception details or the DSN: backup contains secrets.
+            set_backup_status(connected=False, last_error=type(exc).__name__)
+            next_backup_at = time.monotonic() + BACKUP_RETRY_SECONDS
+        time.sleep(1)
 
 
 def migrate_users():
@@ -1036,6 +1194,9 @@ class AdminHandler(CommonHandler):
         if path == "/api/log-db-status":
             self.send_json(HTTPStatus.OK, {"status": get_log_db_status()})
             return
+        if path == "/api/backup-status":
+            self.send_json(HTTPStatus.OK, {"status": get_backup_status()})
+            return
         self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self):
@@ -1339,6 +1500,7 @@ def serve():
 
     threading.Thread(target=sub.serve_forever, name="subscription-server", daemon=True).start()
     threading.Thread(target=log_db_worker, name="postgres-log-forwarder", daemon=True).start()
+    threading.Thread(target=backup_db_worker, name="postgres-backup-worker", daemon=True).start()
     print("[web] admin UI listening on 8098 (Ingress only)", flush=True)
     print("[web] subscription server listening on 8099", flush=True)
     admin.serve_forever()
