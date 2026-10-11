@@ -1,3 +1,9 @@
+## 3.38.0.34
+
+- Fixed missing private LAN and loopback permissions for existing users: edit **Allow private / LAN IP destinations** and **Allow loopback (127.0.0.1) destinations** in the user's detail page, then save.
+- Persist these permissions through the device-settings API and apply them using `mita reload` so both the legacy credential and every HWID device inherit the new access. Reload failures roll back the change.
+- Validate JSON boolean flags and add API/UI regression tests for enabling, disabling, persistence, HWID propagation and rollback.
+
 ## 3.38.0.33
 
 - Redesigned the admin dashboard as a compact directory of users. Access, HWID counts and per-user navigation stay visible; full subscription URLs and destructive actions are no longer rendered in the overview table.
