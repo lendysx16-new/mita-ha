@@ -425,7 +425,7 @@ def persist_and_reload(path, updated, previous):
     write_json(path, updated)
     ok, output = reload_mita()
     if ok:
-        return
+        return output
     write_json(path, previous)
     # Restore the on-disk mita configuration and retry applying the old state.
     reload_mita()
@@ -987,13 +987,13 @@ class AdminHandler(CommonHandler):
                         "devices": [],
                     }
                     users.append(user)
-                    persist_and_reload(USERS_PATH, users, previous)
+                    reload_output = persist_and_reload(USERS_PATH, users, previous)
                     result = public_user(user)
                 self.send_json(HTTPStatus.CREATED, {
                     "user": result,
                     "generated_password": generated or None,
                     "mita_reloaded": True,
-                    "mita_output": "",
+                    "mita_output": reload_output,
                 })
             except ValueError as exc:
                 self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
@@ -1089,15 +1089,16 @@ class AdminHandler(CommonHandler):
                 settings["public_mieru_host"] = host
                 settings["public_mieru_port"] = port
                 settings["subscription_base_url"] = base
+                reload_output = ""
                 if settings.get("log_level", "INFO") != old_log_level:
-                    persist_and_reload(SETTINGS_PATH, settings, previous)
+                    reload_output = persist_and_reload(SETTINGS_PATH, settings, previous)
                 else:
                     write_json(SETTINGS_PATH, settings)
 
             self.send_json(HTTPStatus.OK, {
                 "settings": settings,
                 "mita_reloaded": True,
-                "mita_output": "",
+                "mita_output": reload_output,
             })
         except ValueError as exc:
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
@@ -1154,11 +1155,11 @@ class AdminHandler(CommonHandler):
                 self.send_json(HTTPStatus.BAD_REQUEST, {"error": "at least one user must remain"})
                 return
             try:
-                persist_and_reload(USERS_PATH, new_users, users)
+                reload_output = persist_and_reload(USERS_PATH, new_users, users)
             except MitaReloadError as exc:
                 self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
                 return
-        self.send_json(HTTPStatus.OK, {"deleted": username, "mita_reloaded": True, "mita_output": ""})
+        self.send_json(HTTPStatus.OK, {"deleted": username, "mita_reloaded": True, "mita_output": reload_output})
 
 
 class SubscriptionHandler(CommonHandler):
