@@ -100,3 +100,13 @@ The public subscription endpoint serves only `/sub/<token>`; it has no admin API
 ## Existing installations
 
 On first start after upgrading, existing users from the Home Assistant app configuration are migrated to `/data/users.json`. After that, the Web UI becomes the user database.
+
+## Development and regression tests
+
+The add-on uses Python's standard library for API tests. Run from the repository root:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Tests use temporary files and mock the Mita reload command. GitHub Actions also checks Python syntax, shell syntax, YAML, and the admin page JavaScript. No live Home Assistant or Mita process is required for the regression suite.
