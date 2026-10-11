@@ -235,6 +235,66 @@ code { font-size: 11px; overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto!important; transition: none!important; animation: none!important; }
 }
+
+/* Directory-first admin layout: lightweight overview, details on demand. */
+.stat-grid { gap: 10px; margin-bottom: 17px; }
+.stat-card { padding: 11px 15px; }
+.stat-label { margin-bottom: 1px; }
+.stat-number { font-size: 22px; }
+.stat-note { display: none; }
+.list-tools { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
+.list-tools .search-box { width: 240px; }
+.user-open, .directory-link {
+  display: inline-flex; align-items: center; gap: 10px;
+  border: 0; background: transparent; color: var(--foreground);
+  font: inherit; font-weight: 650; text-align: left; padding: 2px 0;
+  min-width: 0; cursor: pointer;
+}
+.user-open:hover, .directory-link:hover { color: var(--muted-foreground); }
+.user-open:focus-visible, .directory-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+.user-table td, .device-directory-table td { padding: 11px 14px; }
+.user-table td:last-child { text-align: right; }
+.user-table .row-chevron { color: var(--muted-foreground); font-size: 21px; }
+.user-table .badge { font-size: 11px; }
+#emptyUsers { border-top: 1px solid var(--border); }
+#addUserPanel .card { max-width: 780px; }
+.detail-navigation { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
+.detail-title { display: flex; align-items: center; gap: 13px; min-width: 0; }
+.detail-title h2 { font-size: 20px; overflow-wrap: anywhere; }
+.detail-avatar { width: 44px; height: 44px; font-size: 18px; flex: none; }
+.detail-label { font-size: 12px; font-weight: 600; margin-bottom: 10px; }
+.detail-link-row { display: flex; gap: 10px; align-items: center; }
+.detail-subscription {
+  flex: 1; min-width: 0; padding: 11px; color: var(--foreground);
+  border: 1px solid var(--border); background: var(--secondary);
+  border-radius: 6px; font-size: 12px; overflow-wrap: anywhere;
+}
+.detail-link-row button { flex: none; }
+.detail-link-row + .field-help { margin-top: 10px; }
+.device-directory-table code { max-width: 220px; }
+#detailDeviceUsers .device-user { border-bottom: 0; }
+#detailDeviceUsers .device-user > .section-head { display: none; }
+#detailDeviceUsers .device-list { width: 100%; }
+@media (max-width: 700px) {
+  .stat-grid { gap: 7px; margin-bottom: 14px; }
+  .stat-card { padding: 10px 12px; }
+  .stat-number { font-size: 20px; }
+  .list-tools { width: 100%; }
+  .list-tools .search-box { width: auto; max-width: none; flex: 1; min-width: 120px; }
+  .user-table tr { display: grid!important; grid-template-columns: minmax(0,1fr) auto; gap: 8px 12px; padding: 12px; }
+  .user-table td { display: block!important; padding: 0!important; border: 0!important; }
+  .user-table td[data-label]::before { display: none!important; }
+  .user-table td:nth-child(1) { grid-column: 1; grid-row: 1; }
+  .user-table td:nth-child(2) { grid-column: 1; grid-row: 2; }
+  .user-table td:nth-child(3) { grid-column: 2; grid-row: 1; text-align: right; }
+  .user-table td:nth-child(4) { grid-column: 2; grid-row: 2; }
+  .user-table .avatar { width: 28px; height: 28px; }
+  .user-table .row-chevron { font-size: 17px; }
+  .detail-link-row { align-items: stretch; flex-wrap: wrap; }
+  .detail-link-row button { width: 100%; }
+  .detail-title h2 { font-size: 17px; }
+  .device-directory-table td code { max-width: 100%; }
+}
 </style>
 </head>
 <body>
