@@ -75,6 +75,7 @@ function setup(platform = 'ios', browser = {}) {
   const ids = [
     'clientSelect', 'platformSelect', 'hwidBadge', 'installBtn', 'missingInstall',
     'alternatives', 'alternativeLinks', 'installLabel', 'installSource',
+    'terminalInstall', 'terminalCommand', 'copyTerminal', 'terminalFeedback',
     'openProfile', 'openLabel', 'openHint', 'copySecondary', 'copyFeedback',
   ];
   const nodes = new Map();
@@ -195,6 +196,28 @@ test('preserves verified download routing and platform alternatives', () => {
   assert.equal(view.get('alternatives').hidden, false);
   assert.ok(view.get('alternativeLinks').children.length > 0);
   assert.match(view.get('installBtn').href, /\/download\/flclashx\/linux-amd64-appimage$/);
+});
+
+test('Linux installation displays a terminal command without exposing subscription tokens', async () => {
+  const view = setup('linux');
+  assert.equal(view.get('terminalInstall').hidden, false);
+  const command = view.get('terminalCommand').textContent;
+  assert.match(command, /raw\.githubusercontent\.com\/lendysx16-new\/mita-ha\/main\/mita\/install-linux\.sh/);
+  assert.match(command, /bash \.\/mita-install-linux\.sh clashmi$/);
+  assert.doesNotMatch(command, /vpn\.example\.com|\/sub\/|T{32}/);
+  await view.get('copyTerminal').events.click();
+  assert.equal(view.clipboard, command);
+  assert.equal(view.get('terminalFeedback').hidden, false);
+  view.change('clientSelect', 'koala');
+  assert.match(view.get('terminalCommand').textContent, /install-linux\.sh koala$/);
+});
+
+test('Terminal instructions stay hidden on iPhone and reappear when switching to Linux', () => {
+  const view = setup('ios');
+  assert.equal(view.get('terminalInstall').hidden, true);
+  view.change('platformSelect', 'linux');
+  assert.equal(view.get('terminalInstall').hidden, false);
+  assert.match(view.get('terminalCommand').textContent, /install-linux\.sh clashmi$/);
 });
 
 test('manual subscription link remains available in advanced settings', async () => {
