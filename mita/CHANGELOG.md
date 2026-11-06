@@ -1,3 +1,8 @@
+## 3.39.0.1
+
+- Updated the bundled Mita core from 3.38.0 to 3.39.0 for amd64 and aarch64.
+- Upstream adds active shutdown of idle TCP connections and optimizes outbound traffic memory allocation.
+
 ## 3.38.0.33
 
 - Redesigned the admin dashboard as a compact directory of users. Access, HWID counts and per-user navigation stay visible; full subscription URLs and destructive actions are no longer rendered in the overview table.

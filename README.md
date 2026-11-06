@@ -4,7 +4,7 @@ Home Assistant app/add-on repository for **mita**, the server component of the [
 
 Features:
 
-- Mita 3.38.0 for amd64/aarch64
+- Mita 3.39.0 for amd64/aarch64
 - TCP transport
 - Home Assistant Ingress admin UI
 - add/delete users without restarting the app
