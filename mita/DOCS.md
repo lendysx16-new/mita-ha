@@ -117,7 +117,7 @@ Tests use temporary files and mock the Mita reload command. GitHub Actions also 
 - **Clash Mi**, **Karing**: support `x-hwid` when the `xhwid=true` flag is passed to the `install-config` deep link (disabled by default in the client).
 - **FlClashX**: supports automatic `x-hwid` during subscription fetches; install links use `flclashx://install-config` and GitHub Release assets for Android and desktop. Note: there is no iOS release.
 - **Koala Clash**: sends `x-hwid` when fetching subscriptions; deep link uses `koala-clash://install-config`. Desktop only.
-The public app picker lists **only these four HWID-capable clients**. Previously supported FlClash and Clash Verge Rev download routes remain available for existing links, but they are not advertised as HWID-compatible.
+The public app picker recommends **Clash Verge** on Windows and **Clash - Rule Based Proxy** from the App Store on macOS. The four HWID-capable clients above remain selectable. HWID support is not claimed for the two new recommendations; users with legacy access disabled need an HWID-capable client. Clash Verge offers x64 and ARM64 installers and one-click import. The App Store client uses manual subscription URL import.
 
 HWID support refers to the subscription request headers. The generated YAML remains standard Mihomo/Mieru; clients must also use a Mihomo core capable of the Mieru protocol.
 

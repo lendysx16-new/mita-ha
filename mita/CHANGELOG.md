@@ -1,3 +1,8 @@
+## 3.39.0.2
+
+- Recommend Clash Verge first on Windows and Clash - Rule Based Proxy from the App Store on macOS.
+- Keep platform-specific defaults when switching devices and provide manual subscription import for the App Store client.
+
 ## 3.39.0.1
 
 - Updated the bundled Mita core from 3.38.0 to 3.39.0 for amd64 and aarch64.

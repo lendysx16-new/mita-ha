@@ -402,6 +402,8 @@
     <div class="choice-grid">
       <label class="choice-field" for="clientSelect">Приложение
         <select id="clientSelect">
+          <option value="verge">Clash Verge</option>
+          <option value="clashproxy">Clash - Rule Based Proxy</option>
           <option value="clashmi">Clash Mi</option>
           <option value="karing">Karing</option>
           <option value="flclashx">FlClashX</option>
@@ -477,6 +479,25 @@
 <script>window.__SUBSCRIPTION__=@@BOOTSTRAP_JSON@@;</script>
 <script>
 const clients = [
+      {
+        id: 'verge',
+        name: 'Clash Verge',
+        scheme: 'clash-verge',
+        hwid: false,
+        downloads: [
+          { os: 'windows', platform: 'Windows · x64', target: 'windows-amd64', note: 'EXE · GitHub' },
+          { os: 'windows', platform: 'Windows · ARM64', target: 'windows-arm64', note: 'EXE · GitHub' }
+        ]
+      },
+      {
+        id: 'clashproxy',
+        name: 'Clash - Rule Based Proxy',
+        scheme: null,
+        hwid: false,
+        downloads: [
+          { os: 'macos', platform: 'macOS', url: 'https://apps.apple.com/jp/app/clash-rule-based-proxy/id6794257189?l=en-US', note: 'App Store' }
+        ]
+      },
       {
         id: 'clashmi',
         name: 'Clash Mi',
@@ -563,6 +584,16 @@ function detectPlatform() {
 }
 const platform = detectPlatform();
 platformSelect.value = ['ios','android','windows','macos','linux'].includes(platform) ? platform : '';
+
+const preferredClients = { windows: 'verge', macos: 'clashproxy' };
+function recommendClient() {
+  const preferred = preferredClients[platformSelect.value] || 'clashmi';
+  clientSelect.value = preferred;
+  const options = Array.from(clientSelect.options || []);
+  options.sort((a, b) => Number(b.value === preferred) - Number(a.value === preferred));
+  for (const option of options) clientSelect.append(option);
+}
+recommendClient();
 
 const terminalInstallerUrl =
   'https://raw.githubusercontent.com/lendysx16-new/mita-ha/main/mita/install-linux.sh';
@@ -671,9 +702,13 @@ function render() {
 
   const importUrl = buildImportUrl(client);
   const open = element('openProfile');
-  open.href = importUrl;
+  open.hidden = !importUrl;
+  if (importUrl) open.href = importUrl;
+  else open.removeAttribute('href');
   element('openLabel').textContent = 'Открыть в ' + client.name;
-  element('openHint').textContent = 'Нажмите после установки. Если приложение не открылось, скопируйте ссылку вручную.';
+  element('openHint').textContent = importUrl
+    ? 'Нажмите после установки. Если приложение не открылось, скопируйте ссылку вручную.'
+    : 'Скопируйте ссылку подписки и добавьте её в приложении через импорт из URL.';
   element('copyFeedback').hidden = true;
 }
 
@@ -727,7 +762,7 @@ async function copyTerminalCommand() {
 
 element('copyTerminal').addEventListener('click', copyTerminalCommand);
 clientSelect.addEventListener('change', render);
-platformSelect.addEventListener('change', render);
+platformSelect.addEventListener('change', () => { recommendClient(); render(); });
 element('copySecondary').addEventListener('click', copySubscription);
 element('openProfile').addEventListener('click', () => {
   element('copyFeedback').textContent = 'Если приложение не открылось, сначала установите его из шага 1.';

@@ -107,7 +107,7 @@ function setup(platform = 'ios', browser = {}) {
   for (const id of ids) nodes.set(id, makeNode());
   const clientNode = nodes.get('clientSelect');
   clientNode.value = 'clashmi';
-  clientNode.options = [...html.matchAll(/<option value="(clashmi|karing|flclashx|koala)">/g)]
+  clientNode.options = [...html.matchAll(/<option value="(verge|clashproxy|clashmi|karing|flclashx|koala)">/g)]
     .map(([, value]) => ({ value, disabled: false, hidden: false }));
   Object.defineProperty(clientNode, 'selectedOptions', {
     get() { return clientNode.options.filter(option => option.value === clientNode.value); },
@@ -203,6 +203,7 @@ test('preserves verified download routing and platform alternatives', () => {
   assert.match(view.get('openProfile').href, /^flclashx:\/\//);
   assert.equal(view.get('hwidBadge').hidden, false);
   view.change('platformSelect', 'linux');
+  view.change('clientSelect', 'flclashx');
   assert.equal(view.get('alternatives').hidden, false);
   assert.ok(view.get('alternativeLinks').children.length > 0);
   assert.match(view.get('installBtn').href, /\/download\/flclashx\/linux-amd64-appimage$/);
@@ -239,11 +240,11 @@ test('manual subscription link remains available in advanced settings', async ()
   assert.equal(view.get('copyFeedback').hidden, false);
 });
 
-test('picker contains only HWID-capable clients and no generic option', () => {
+test('picker includes platform recommendations and no generic option', () => {
   const view = setup('ios');
   const values = view.get('clientSelect').options.map(option => option.value);
-  assert.deepEqual(values, ['clashmi', 'karing', 'flclashx', 'koala']);
-  assert.doesNotMatch(html, /<option value="(?:flclash|verge|generic)">/);
+  assert.deepEqual(values, ['verge', 'clashproxy', 'clashmi', 'karing', 'flclashx', 'koala']);
+  assert.doesNotMatch(html, /<option value="(?:flclash|generic)">/);
 });
 
 test('FlClashX supports HWID on Android and uses its registered deep link', () => {
@@ -281,4 +282,33 @@ test('requires device selection when OS is unknown', () => {
   assert.match(view.get('missingInstall').textContent, /Выберите своё устройство/);
   view.change('platformSelect', 'windows');
   assert.equal(view.get('installBtn').hidden, false);
+});
+
+
+test('Windows recommends Clash Verge with a matching import link', () => {
+  const view = setup('windows');
+  assert.equal(view.get('clientSelect').value, 'verge');
+  assert.match(view.get('installBtn').href, /\/download\/verge\/windows-amd64$/);
+  assert.match(view.get('openProfile').href, /^clash-verge:\/\/install-config\?/);
+  assert.equal(view.get('hwidBadge').hidden, true);
+  view.change('clientSelect', 'koala');
+  assert.match(view.get('openProfile').href, /^koala-clash:/);
+});
+
+test('macOS recommends the requested App Store client and manual import', async () => {
+  const view = setup('macos');
+  assert.equal(view.get('clientSelect').value, 'clashproxy');
+  assert.equal(view.get('installBtn').href, 'https://apps.apple.com/jp/app/clash-rule-based-proxy/id6794257189?l=en-US');
+  assert.equal(view.get('openProfile').hidden, true);
+  assert.equal(view.get('openProfile').href, undefined);
+  assert.equal(view.get('hwidBadge').hidden, true);
+  await view.get('copySecondary').events.click();
+  assert.equal(view.clipboard, 'https://vpn.example.com/sub/' + 'T'.repeat(32));
+  view.change('platformSelect', 'windows');
+  assert.equal(view.get('clientSelect').value, 'verge');
+  assert.equal(view.get('openProfile').hidden, false);
+  view.change('platformSelect', 'macos');
+  assert.equal(view.get('clientSelect').value, 'clashproxy');
+  view.change('platformSelect', 'ios');
+  assert.equal(view.get('clientSelect').value, 'clashmi');
 });
