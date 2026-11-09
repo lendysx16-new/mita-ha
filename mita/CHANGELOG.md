@@ -1,3 +1,8 @@
+## 3.39.0.3
+
+- Remove unsupported apps from the subscription picker instead of hiding options, fixing disabled extra entries in native Safari menus.
+- Restore supported apps and platform defaults when switching devices.
+
 ## 3.39.0.2
 
 - Recommend Clash Verge first on Windows and Clash - Rule Based Proxy from the App Store on macOS.

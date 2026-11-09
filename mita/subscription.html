@@ -586,12 +586,9 @@ const platform = detectPlatform();
 platformSelect.value = ['ios','android','windows','macos','linux'].includes(platform) ? platform : '';
 
 const preferredClients = { windows: 'verge', macos: 'clashproxy' };
+const clientOptions = Array.from(clientSelect.options);
 function recommendClient() {
-  const preferred = preferredClients[platformSelect.value] || 'clashmi';
-  clientSelect.value = preferred;
-  const options = Array.from(clientSelect.options || []);
-  options.sort((a, b) => Number(b.value === preferred) - Number(a.value === preferred));
-  for (const option of options) clientSelect.append(option);
+  clientSelect.value = preferredClients[platformSelect.value] || 'clashmi';
 }
 recommendClient();
 
@@ -653,20 +650,17 @@ function makeAlternative(item) {
 
 function render() {
   const os = platformSelect.value;
-  // Keep only clients supported by the chosen platform selectable.
-  for (const option of clientSelect.options || []) {
+  // Native Safari pickers can display hidden/disabled options. Remove unsupported
+  // options from the select itself, retaining the originals for platform changes.
+  const previous = clientSelect.value;
+  const preferred = preferredClients[os] || 'clashmi';
+  const options = clientOptions.filter(option => {
     const candidate = clients.find(client => client.id === option.value);
-    if (!candidate) continue;
-    const unavailable = Boolean(os) &&
-      !candidate.downloads.some(download => download.os === os);
-    option.disabled = unavailable;
-    option.hidden = unavailable;
-  }
-  if (clientSelect.selectedOptions?.[0]?.disabled ||
-      (os && !availableDownloads(selectedClient(), os).length)) {
-    clientSelect.value = clients.find(candidate =>
-      candidate.downloads.some(download => download.os === os))?.id || clients[0].id;
-  }
+    return candidate && (!os || candidate.downloads.some(item => item.os === os));
+  }).sort((a, b) => Number(b.value === preferred) - Number(a.value === preferred));
+  clientSelect.replaceChildren(...options);
+  clientSelect.value = options.some(option => option.value === previous)
+    ? previous : options[0]?.value || '';
   const client = selectedClient();
   element('hwidBadge').hidden = !client.hwid;
   const downloads = availableDownloads(client, os);

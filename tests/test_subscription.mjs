@@ -109,6 +109,7 @@ function setup(platform = 'ios', browser = {}) {
   clientNode.value = 'clashmi';
   clientNode.options = [...html.matchAll(/<option value="(verge|clashproxy|clashmi|karing|flclashx|koala)">/g)]
     .map(([, value]) => ({ value, disabled: false, hidden: false }));
+  clientNode.replaceChildren = function (...options) { this.options = options; this.children = options; };
   Object.defineProperty(clientNode, 'selectedOptions', {
     get() { return clientNode.options.filter(option => option.value === clientNode.value); },
   });
@@ -154,7 +155,7 @@ test('Firefox on iPhone remains iOS even when server classified UA as macOS', ()
   });
   assert.equal(view.get('platformSelect').value, 'ios');
   assert.match(view.get('installBtn').href, /^https:\/\/apps\.apple\.com/);
-  assert.equal(view.get('clientSelect').options.find(x => x.value === 'koala').disabled, true);
+  assert.equal(view.get('clientSelect').options.find(x => x.value === 'koala'), undefined);
 });
 
 test('iPad desktop mode is identified from touch support', () => {
@@ -241,9 +242,9 @@ test('manual subscription link remains available in advanced settings', async ()
 });
 
 test('picker includes platform recommendations and no generic option', () => {
-  const view = setup('ios');
+  const view = setup('unknown');
   const values = view.get('clientSelect').options.map(option => option.value);
-  assert.deepEqual(values, ['verge', 'clashproxy', 'clashmi', 'karing', 'flclashx', 'koala']);
+  assert.deepEqual(values, ['clashmi', 'verge', 'clashproxy', 'karing', 'flclashx', 'koala']);
   assert.doesNotMatch(html, /<option value="(?:flclash|generic)">/);
 });
 
@@ -265,15 +266,17 @@ test('Koala Clash supports HWID and has a verified scheme on desktop', () => {
   assert.equal(view.get('hwidBadge').hidden, false);
 });
 
-test('iOS hides clients that have no iOS installation option', () => {
+test('iOS contains only supported apps and restores alternatives when switching platforms', () => {
   const view = setup('ios');
-  const clients = view.get('clientSelect').options;
-  assert.equal(clients.find(item => item.value === 'koala').disabled, true);
-  assert.equal(clients.find(item => item.value === 'flclashx').hidden, true);
-  assert.equal(clients.find(item => item.value === 'karing').disabled, false);
+  assert.deepEqual(view.get('clientSelect').options.map(item => item.value), ['clashmi', 'karing']);
   view.change('platformSelect', 'windows');
-  assert.equal(clients.find(item => item.value === 'koala').hidden, false);
-  assert.equal(clients.find(item => item.value === 'flclashx').disabled, false);
+  assert.deepEqual(view.get('clientSelect').options.map(item => item.value), ['verge', 'clashmi', 'karing', 'flclashx', 'koala']);
+  view.change('clientSelect', 'koala');
+  assert.match(view.get('openProfile').href, /^koala-clash:/);
+  view.change('platformSelect', 'macos');
+  assert.equal(view.get('clientSelect').options[0].value, 'clashproxy');
+  view.change('platformSelect', 'ios');
+  assert.deepEqual(view.get('clientSelect').options.map(item => item.value), ['clashmi', 'karing']);
 });
 
 test('requires device selection when OS is unknown', () => {
