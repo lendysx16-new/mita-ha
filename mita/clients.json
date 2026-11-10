@@ -1,0 +1,162 @@
+{
+  "_comment": "Single source of truth for subscription clients. webapp.py builds its download allowlist from it and passes it to subscription.html; tests check install-linux.sh against it. 'asset' is a full-match regex for the latest GitHub Release asset. 'hwid' means the client sends x-hwid by default; 'xhwid_param' adds xhwid=true to the import deep link.",
+  "clients": [
+    {
+      "id": "verge",
+      "name": "Clash Verge",
+      "repo": "clash-verge-rev/clash-verge-rev",
+      "scheme": "clash-verge",
+      "hwid": false,
+      "downloads": [
+        {"os": "windows", "label": "Windows · x64", "note": "EXE · GitHub", "target": "windows-amd64", "asset": "^Clash\\.Verge_.*_x64-setup\\.exe$"},
+        {"os": "windows", "label": "Windows · ARM64", "note": "EXE · GitHub", "target": "windows-arm64", "asset": "^Clash\\.Verge_.*_arm64-setup\\.exe$"},
+        {"os": "macos", "label": "macOS · Apple Silicon", "note": "DMG · GitHub", "target": "macos-arm64", "asset": "^Clash\\.Verge_.*_aarch64\\.dmg$"},
+        {"os": "macos", "label": "macOS · Intel", "note": "DMG · GitHub", "target": "macos-amd64", "asset": "^Clash\\.Verge_.*_x64\\.dmg$"},
+        {"os": "linux", "label": "Linux · x64 DEB", "note": "DEB · GitHub", "target": "linux-amd64-deb", "asset": "^Clash\\.Verge_.*_amd64\\.deb$"},
+        {"os": "linux", "label": "Linux · ARM64 DEB", "note": "DEB · GitHub", "target": "linux-arm64-deb", "asset": "^Clash\\.Verge_.*_arm64\\.deb$"},
+        {"os": "linux", "label": "Linux · x64 RPM", "note": "RPM · GitHub", "target": "linux-amd64-rpm", "asset": "^Clash\\.Verge-.*-1\\.x86_64\\.rpm$"},
+        {"os": "linux", "label": "Linux · ARM64 RPM", "note": "RPM · GitHub", "target": "linux-arm64-rpm", "asset": "^Clash\\.Verge-.*-1\\.aarch64\\.rpm$"}
+      ]
+    },
+    {
+      "id": "clashproxy",
+      "name": "Clash - Rule Based Proxy",
+      "repo": null,
+      "scheme": null,
+      "hwid": false,
+      "downloads": [
+        {"os": "macos", "label": "macOS", "note": "App Store", "url": "https://apps.apple.com/jp/app/clash-rule-based-proxy/id6794257189?l=en-US"}
+      ]
+    },
+    {
+      "id": "clashmi",
+      "name": "Clash Mi",
+      "repo": "KaringX/clashmi",
+      "scheme": "clashmi",
+      "hwid": true,
+      "xhwid_param": true,
+      "downloads": [
+        {"os": "ios", "label": "iOS", "note": "App Store", "url": "https://apps.apple.com/us/app/clash-mi/id6744321968"},
+        {"os": "android", "label": "Android · ARM64", "note": "APK · GitHub", "target": "android-arm64", "asset": "^clashmi_.*_android_arm64-v8a\\.apk$"},
+        {"os": "android", "label": "Android · ARMv7", "note": "APK · GitHub", "target": "android-armv7", "asset": "^clashmi_.*_android_armeabi-v7a\\.apk$"},
+        {"os": "windows", "label": "Windows", "note": "EXE · GitHub", "target": "windows", "asset": "^clashmi_.*_windows_x64\\.exe$"},
+        {"os": "macos", "label": "macOS", "note": "DMG · GitHub", "target": "macos", "asset": "^clashmi_.*_macos_universal\\.dmg$"},
+        {"os": "linux", "label": "Linux · x64 AppImage", "note": "AppImage · GitHub", "target": "linux-amd64-appimage", "asset": "^clashmi_.*_linux_amd64\\.AppImage$"},
+        {"os": "linux", "label": "Linux · x64 DEB", "note": "DEB · GitHub", "target": "linux-amd64-deb", "asset": "^clashmi_.*_linux_amd64\\.deb$"},
+        {"os": "linux", "label": "Linux · x64 RPM", "note": "RPM · GitHub", "target": "linux-amd64-rpm", "asset": "^clashmi_.*_linux_amd64\\.rpm$"}
+      ]
+    },
+    {
+      "id": "karing",
+      "name": "Karing",
+      "repo": "KaringX/karing",
+      "scheme": "karing",
+      "hwid": true,
+      "xhwid_param": true,
+      "downloads": [
+        {"os": "ios", "label": "iOS", "note": "App Store", "url": "https://apps.apple.com/us/app/karing/id6472431552"},
+        {"os": "android", "label": "Android · ARM64", "note": "APK · GitHub", "target": "android-arm64", "asset": "^karing_.*_android_arm64-v8a\\.apk$"},
+        {"os": "android", "label": "Android · ARMv7", "note": "APK · GitHub", "target": "android-armv7", "asset": "^karing_.*_android_armeabi-v7a\\.apk$"},
+        {"os": "windows", "label": "Windows", "note": "EXE · GitHub", "target": "windows", "asset": "^karing_.*_windows_x64\\.exe$"},
+        {"os": "macos", "label": "macOS", "note": "DMG · GitHub", "target": "macos", "asset": "^karing_.*_macos_universal\\.dmg$"},
+        {"os": "linux", "label": "Linux · x64 DEB", "note": "DEB · GitHub", "target": "linux-amd64-deb", "asset": "^karing_.*_linux_amd64\\.deb$"}
+      ]
+    },
+    {
+      "id": "flclashx",
+      "name": "FlClashX",
+      "repo": "pluralplay/FlClashX",
+      "scheme": "flclashx",
+      "hwid": true,
+      "downloads": [
+        {"os": "android", "label": "Android · ARM64", "note": "APK · GitHub", "target": "android-arm64", "asset": "^FlClashX-android-arm64-v8a\\.apk$"},
+        {"os": "android", "label": "Android · ARMv7", "note": "APK · GitHub", "target": "android-armv7", "asset": "^FlClashX-android-armeabi-v7a\\.apk$"},
+        {"os": "windows", "label": "Windows · x64", "note": "EXE · GitHub", "target": "windows-amd64", "asset": "^FlClashX-windows-amd64-setup\\.exe$"},
+        {"os": "windows", "label": "Windows · ARM64", "note": "EXE · GitHub", "target": "windows-arm64", "asset": "^FlClashX-windows-arm64-setup\\.exe$"},
+        {"os": "macos", "label": "macOS · Apple Silicon", "note": "DMG · GitHub", "target": "macos-arm64", "asset": "^FlClashX-macos-arm64\\.dmg$"},
+        {"os": "macos", "label": "macOS · Intel", "note": "DMG · GitHub", "target": "macos-amd64", "asset": "^FlClashX-macos-amd64\\.dmg$"},
+        {"os": "linux", "label": "Linux · AppImage", "note": "AppImage · GitHub", "target": "linux-amd64-appimage", "asset": "^FlClashX-linux-amd64\\.AppImage$"},
+        {"os": "linux", "label": "Linux · DEB", "note": "DEB · GitHub", "target": "linux-amd64-deb", "asset": "^FlClashX-linux-amd64\\.deb$"},
+        {"os": "linux", "label": "Linux · RPM", "note": "RPM · GitHub", "target": "linux-amd64-rpm", "asset": "^FlClashX-linux-amd64\\.rpm$"},
+        {"os": "linux", "label": "Linux · ARM64 DEB", "note": "DEB · GitHub", "target": "linux-arm64-deb", "asset": "^FlClashX-linux-arm64\\.deb$"}
+      ]
+    },
+    {
+      "id": "koala",
+      "name": "Koala Clash",
+      "repo": "coolcoala/koala-clash",
+      "scheme": "koala-clash",
+      "hwid": true,
+      "downloads": [
+        {"os": "windows", "label": "Windows · x64", "note": "EXE · GitHub", "target": "windows-amd64", "asset": "^Koala\\.Clash_x64-setup\\.exe$"},
+        {"os": "windows", "label": "Windows · ARM64", "note": "EXE · GitHub", "target": "windows-arm64", "asset": "^Koala\\.Clash_arm64-setup\\.exe$"},
+        {"os": "macos", "label": "macOS · Apple Silicon", "note": "PKG · GitHub", "target": "macos-arm64", "asset": "^Koala\\.Clash_arm64\\.pkg$"},
+        {"os": "macos", "label": "macOS · Intel", "note": "PKG · GitHub", "target": "macos-amd64", "asset": "^Koala\\.Clash_x64\\.pkg$"},
+        {"os": "linux", "label": "Linux · DEB", "note": "DEB · GitHub", "target": "linux-amd64-deb", "asset": "^Koala\\.Clash_amd64\\.deb$"},
+        {"os": "linux", "label": "Linux · ARM64 DEB", "note": "DEB · GitHub", "target": "linux-arm64-deb", "asset": "^Koala\\.Clash_arm64\\.deb$"},
+        {"os": "linux", "label": "Linux · RPM", "note": "RPM · GitHub", "target": "linux-amd64-rpm", "asset": "^Koala\\.Clash_x86_64\\.rpm$"},
+        {"os": "linux", "label": "Linux · ARM64 RPM", "note": "RPM · GitHub", "target": "linux-arm64-rpm", "asset": "^Koala\\.Clash_aarch64\\.rpm$"}
+      ]
+    },
+    {
+      "id": "slothclash",
+      "name": "SlothClash",
+      "repo": "Nemu-x/SlothClash",
+      "scheme": "slothclash",
+      "hwid": true,
+      "downloads": [
+        {"os": "windows", "label": "Windows · x64", "note": "EXE · GitHub", "target": "windows-amd64", "asset": "^SlothClash-windows-amd64-installer\\.exe$"},
+        {"os": "windows", "label": "Windows · ARM64", "note": "EXE · GitHub", "target": "windows-arm64", "asset": "^SlothClash-windows-arm64-installer\\.exe$"},
+        {"os": "macos", "label": "macOS · Apple Silicon", "note": "DMG · GitHub", "target": "macos-arm64", "asset": "^SlothClash-macOS-arm64\\.dmg$"},
+        {"os": "macos", "label": "macOS · Intel", "note": "DMG · GitHub", "target": "macos-amd64", "asset": "^SlothClash-macOS-x64\\.dmg$"},
+        {"os": "linux", "label": "Linux · x64 AppImage", "note": "AppImage · GitHub", "target": "linux-amd64-appimage", "asset": "^SlothClash-x86_64\\.AppImage$"},
+        {"os": "linux", "label": "Linux · x64 DEB", "note": "DEB · GitHub", "target": "linux-amd64-deb", "asset": "^sloth-clash-linux-amd64\\.deb$"},
+        {"os": "linux", "label": "Linux · x64 RPM", "note": "RPM · GitHub", "target": "linux-amd64-rpm", "asset": "^sloth-clash-linux-amd64\\.rpm$"},
+        {"os": "linux", "label": "Linux · ARM64 AppImage", "note": "AppImage · GitHub", "target": "linux-arm64-appimage", "asset": "^SlothClash-aarch64\\.AppImage$"},
+        {"os": "linux", "label": "Linux · ARM64 DEB", "note": "DEB · GitHub", "target": "linux-arm64-deb", "asset": "^sloth-clash-linux-arm64\\.deb$"},
+        {"os": "linux", "label": "Linux · ARM64 RPM", "note": "RPM · GitHub", "target": "linux-arm64-rpm", "asset": "^sloth-clash-linux-arm64\\.rpm$"}
+      ]
+    },
+    {
+      "id": "clashfest",
+      "name": "ClashFest",
+      "repo": "Nemu-x/ClashFest",
+      "scheme": "clashfest",
+      "hwid": true,
+      "downloads": [
+        {"os": "android", "label": "Android · ARM64", "note": "APK · GitHub", "target": "android-arm64", "asset": "^clashfest-alpha-arm64-v8a\\.apk$"},
+        {"os": "android", "label": "Android · ARMv7", "note": "APK · GitHub", "target": "android-armv7", "asset": "^clashfest-alpha-armeabi-v7a\\.apk$"},
+        {"os": "android", "label": "Android · Universal", "note": "APK · GitHub", "target": "android-universal", "asset": "^clashfest-alpha-universal\\.apk$"}
+      ]
+    },
+    {
+      "id": "clashparty",
+      "name": "Clash Party",
+      "repo": "mihomo-party-org/clash-party",
+      "scheme": "clash",
+      "hwid": false,
+      "downloads": [
+        {"os": "windows", "label": "Windows · x64", "note": "EXE · GitHub", "target": "windows-amd64", "asset": "^clash-party-windows-.*-x64-setup\\.exe$"},
+        {"os": "windows", "label": "Windows · ARM64", "note": "EXE · GitHub", "target": "windows-arm64", "asset": "^clash-party-windows-.*-arm64-setup\\.exe$"},
+        {"os": "macos", "label": "macOS · Apple Silicon", "note": "PKG · GitHub", "target": "macos-arm64", "asset": "^clash-party-macos-.*-arm64\\.pkg$"},
+        {"os": "macos", "label": "macOS · Intel", "note": "PKG · GitHub", "target": "macos-amd64", "asset": "^clash-party-macos-.*-x64\\.pkg$"},
+        {"os": "linux", "label": "Linux · x64 DEB", "note": "DEB · GitHub", "target": "linux-amd64-deb", "asset": "^clash-party-linux-.*-amd64\\.deb$"},
+        {"os": "linux", "label": "Linux · ARM64 DEB", "note": "DEB · GitHub", "target": "linux-arm64-deb", "asset": "^clash-party-linux-.*-arm64\\.deb$"},
+        {"os": "linux", "label": "Linux · x64 RPM", "note": "RPM · GitHub", "target": "linux-amd64-rpm", "asset": "^clash-party-linux-.*-x86_64\\.rpm$"},
+        {"os": "linux", "label": "Linux · ARM64 RPM", "note": "RPM · GitHub", "target": "linux-arm64-rpm", "asset": "^clash-party-linux-.*-aarch64\\.rpm$"}
+      ]
+    },
+    {
+      "id": "cmfa",
+      "name": "Clash Meta for Android",
+      "repo": "MetaCubeX/ClashMetaForAndroid",
+      "scheme": "clashmeta",
+      "hwid": false,
+      "downloads": [
+        {"os": "android", "label": "Android · ARM64", "note": "APK · GitHub", "target": "android-arm64", "asset": "^cmfa-.*-meta-arm64-v8a-release\\.apk$"},
+        {"os": "android", "label": "Android · ARMv7", "note": "APK · GitHub", "target": "android-armv7", "asset": "^cmfa-.*-meta-armeabi-v7a-release\\.apk$"},
+        {"os": "android", "label": "Android · Universal", "note": "APK · GitHub", "target": "android-universal", "asset": "^cmfa-.*-meta-universal-release\\.apk$"}
+      ]
+    }
+  ]
+}

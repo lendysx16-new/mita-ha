@@ -50,7 +50,7 @@ class AdminAPITests(unittest.TestCase):
         self.reload_mock = self.reload_patch.start()
         self.addCleanup(self.reload_patch.stop)
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), app.AdminHandler)
+        self.server = app.Server(("127.0.0.1", 0), app.AdminHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.addCleanup(self.stop_server)
@@ -157,8 +157,144 @@ class AdminAPITests(unittest.TestCase):
             with self.subTest(body=body):
                 status, _ = self.call("POST", "/api/users", body, raw=True)
                 self.assertEqual(status, 400)
-        status, _ = self.call("POST", "/api/users", '{}', raw=True, headers={"Content-Length": "-1"})
+        status, _ = self.call("POST", "/api/users", '{}', raw=True,
+                             headers={"Content-Type": "application/json", "Content-Length": "-1"})
         self.assertEqual(status, 400)
+
+    def test_mutations_require_json_content_type(self):
+        status, data = self.call("POST", "/api/users", '{"username":"csrf"}', raw=True,
+                                 headers={"Content-Type": "text/plain"})
+        self.assertEqual(status, 415)
+        self.assertEqual(len(app.get_users()), 1)
+        status, _ = self.call("POST", "/api/users/first/rotate-token", headers={"Content-Type": "text/plain"})
+        self.assertEqual(status, 415)
+
+    def test_admin_rejects_clients_other_than_ingress(self):
+        self.assertTrue(app.is_allowed_admin_client("172.30.32.2"))
+        self.assertTrue(app.is_allowed_admin_client("::ffff:172.30.32.2"))
+        self.assertFalse(app.is_allowed_admin_client("172.30.33.5"))
+        with mock.patch.object(app, "admin_allowed_clients", return_value={"172.30.32.2"}):
+            status, data = self.call("GET", "/api/state")
+        self.assertEqual(status, 403)
+        self.assertNotIn("users", data)
+
+    def test_wrong_field_types_are_rejected_not_coerced(self):
+        cases = [
+            ("PUT", "/api/users/first/device-settings", {"device_limit": None}),
+            ("PUT", "/api/users/first/device-settings", {"legacy_enabled": "false"}),
+            ("PATCH", "/api/users/first", {"allow_private_ip": "false"}),
+            ("PUT", "/api/settings", {"public_mieru_port": []}),
+            ("PUT", "/api/settings", {"public_mieru_host": 5}),
+            ("POST", "/api/users", {"username": "typed", "allow_private_ip": "false"}),
+            ("POST", "/api/users", {"username": "typed", "password": 123}),
+            ("POST", "/api/users", {"username": ["x"]}),
+        ]
+        for method, path, body in cases:
+            with self.subTest(method=method, path=path, body=body):
+                status, data = self.call(method, path, body)
+                self.assertEqual(status, 400)
+                self.assertIn("error", data)
+        self.assertEqual(len(app.get_users()), 1)
+        self.assertFalse(app.get_users()[0]["allow_private_ip"])
+        self.reload_mock.assert_not_called()
+
+    def test_null_password_generates_one(self):
+        status, data = self.call("POST", "/api/users", {"username": "nullpw", "password": None})
+        self.assertEqual(status, 201)
+        self.assertTrue(data["generated_password"])
+        self.assertNotEqual(app.get_users()[1]["password"], "None")
+
+    def test_patch_user_updates_access_and_reloads_only_when_needed(self):
+        status, data = self.call("PATCH", "/api/users/first", {"device_limit": 3})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["user"]["device_limit"], 3)
+        self.reload_mock.assert_not_called()
+        status, data = self.call("PATCH", "/api/users/first", {"allow_private_ip": True, "allow_loopback_ip": True})
+        self.assertEqual(status, 200)
+        self.assertTrue(data["user"]["allow_private_ip"])
+        self.assertTrue(app.get_users()[0]["allow_loopback_ip"])
+        self.assertEqual(self.reload_mock.call_count, 1)
+        status, _ = self.call("PATCH", "/api/users/missing", {"allow_private_ip": True})
+        self.assertEqual(status, 404)
+
+    def test_failed_access_change_is_rolled_back(self):
+        self.reload_mock.side_effect = [(False, "reload rejected"), (True, "restored")]
+        status, _ = self.call("PATCH", "/api/users/first", {"allow_private_ip": True})
+        self.assertEqual(status, 503)
+        self.assertFalse(app.get_users()[0]["allow_private_ip"])
+
+    def test_reset_password_generated_or_supplied(self):
+        status, data = self.call("POST", "/api/users/first/password", {})
+        self.assertEqual(status, 200)
+        generated = data["generated_password"]
+        self.assertTrue(generated)
+        self.assertEqual(app.get_users()[0]["password"], generated)
+        self.assertNotIn("password", data["user"])
+        self.assertEqual(self.reload_mock.call_count, 1)
+        status, data = self.call("POST", "/api/users/first/password", {"password": "chosen-secret"})
+        self.assertEqual(status, 200)
+        self.assertIsNone(data["generated_password"])
+        self.assertEqual(app.get_users()[0]["password"], "chosen-secret")
+        status, _ = self.call("POST", "/api/users/first/password", {"password": "bad\nline"})
+        self.assertEqual(status, 400)
+
+    def test_corrupt_user_database_is_never_overwritten(self):
+        app.USERS_PATH.write_text('[{"username": "first"', encoding="utf-8")
+        status, data = self.call("GET", "/api/state")
+        self.assertEqual(status, 503)
+        self.assertIn("users.json", data["error"])
+        status, _ = self.call("POST", "/api/users", {"username": "second"})
+        self.assertEqual(status, 503)
+        self.assertEqual(app.USERS_PATH.read_text(encoding="utf-8"), '[{"username": "first"')
+
+    def test_unknown_method_and_unexpected_errors_return_json(self):
+        status, data = self.call("PATCH", "/api/settings", {})
+        self.assertEqual(status, 405)
+        with mock.patch.object(app, "get_log_db_status", side_effect=KeyError("boom")):
+            status, data = self.call("GET", "/api/log-db-status")
+        self.assertEqual(status, 500)
+        self.assertEqual(data["error"], "internal error")
+
+    def test_failed_config_rebuild_rolls_back(self):
+        self.reload_patch.stop()
+        with mock.patch.object(app, "rebuild_mita_config", side_effect=[OSError("disk full"), None]), \
+                mock.patch.object(app.subprocess, "run") as run:
+            status, data = self.call("POST", "/api/users", {"username": "second"})
+        self.reload_patch.start()
+        self.assertEqual(status, 503)
+        self.assertIn("disk full", data["error"])
+        self.assertEqual(len(app.get_users()), 1)
+
+    def test_admin_page_sends_security_headers(self):
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=10)
+        try:
+            connection.request("GET", "/")
+            response = connection.getresponse()
+            response.read()
+        finally:
+            connection.close()
+        self.assertEqual(response.status, 200)
+        self.assertIn("frame-ancestors 'self'", response.getheader("Content-Security-Policy"))
+        self.assertEqual(response.getheader("X-Content-Type-Options"), "nosniff")
+        self.assertEqual(response.getheader("Referrer-Policy"), "no-referrer")
+
+    def test_placeholder_password_is_flagged_and_cannot_be_set(self):
+        users = app.get_users()
+        users[0]["password"] = app.PLACEHOLDER_PASSWORD
+        app.write_json(app.USERS_PATH, users)
+        status, data = self.call("GET", "/api/state")
+        self.assertTrue(data["users"][0]["default_password"])
+        self.assertNotIn(app.PLACEHOLDER_PASSWORD, json.dumps(data))
+        for method, path, body in (
+            ("POST", "/api/users", {"username": "second", "password": app.PLACEHOLDER_PASSWORD}),
+            ("POST", "/api/users/first/password", {"password": app.PLACEHOLDER_PASSWORD}),
+        ):
+            with self.subTest(path=path):
+                status, _ = self.call(method, path, body)
+                self.assertEqual(status, 400)
+        status, data = self.call("POST", "/api/users/first/password", {})
+        self.assertEqual(status, 200)
+        self.assertFalse(data["user"]["default_password"])
 
     def test_concurrent_user_creations_are_not_lost(self):
         def create(i):
@@ -222,6 +358,30 @@ class SubscriptionTests(unittest.TestCase):
             self.assertIn('href="mailto:support+vpn@example.com"', page)
             self.assertIn("support+vpn@example.com</a>", page)
             self.assertNotIn("@@CONTACT_LINK_HTML@@", page)
+
+    def test_page_bootstrap_carries_catalog_and_hwid_requirement(self):
+        import base64, hashlib, re
+        template_path = Path(__file__).resolve().parents[1] / "mita" / "subscription.html"
+        users = app.get_users()
+        users[0]["legacy_enabled"] = False
+        app.write_json(app.USERS_PATH, users)
+        with mock.patch.object(app, "SUBSCRIPTION_PAGE_PATH", template_path):
+            page = app.render_subscription_page(app.get_users()[0])
+        scripts = re.findall(r"<script>(.*?)</script>", page, re.S)
+        bootstrap = json.loads(scripts[0].strip()[len("window.__SUBSCRIPTION__="):].rstrip(";"))
+        self.assertTrue(bootstrap["hwid_required"])
+        self.assertEqual([c["id"] for c in bootstrap["clients"]], [c["id"] for c in app.CLIENTS])
+        serialized = json.dumps(bootstrap["clients"])
+        self.assertNotIn('"asset"', serialized)
+        self.assertNotIn('"repo"', serialized)
+
+        csp = app.subscription_page_headers(page)["Content-Security-Policy"]
+        self.assertIn("frame-ancestors 'none'", csp)
+        self.assertNotIn("'unsafe-inline' ;", csp)
+        for script in scripts:
+            digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+            self.assertIn(f"'sha256-{digest}'", csp)
+        self.assertNotIn("unsafe-inline", csp.split("script-src", 1)[1].split(";", 1)[0])
 
     def test_device_creation_and_limit(self):
         with mock.patch.object(app, "reload_mita", return_value=(True, "")) as reload_mock:
@@ -290,6 +450,46 @@ class ReleaseDownloadsTests(unittest.TestCase):
                     self.assertIsNone(re.fullmatch(pattern, filename + ".sha256"))
 
 
+class ClientCatalogTests(unittest.TestCase):
+    def test_catalog_is_consistent(self):
+        ids = [c["id"] for c in app.CLIENTS]
+        self.assertEqual(len(ids), len(set(ids)))
+        for client in app.CLIENTS:
+            with self.subTest(client=client["id"]):
+                targets = [d["target"] for d in client["downloads"] if "target" in d]
+                self.assertEqual(len(targets), len(set(targets)), "duplicate target")
+                self.assertTrue(client["downloads"], "client without downloads")
+                for d in client["downloads"]:
+                    self.assertIn(d["os"], {"ios", "android", "windows", "macos", "linux"})
+                    if "url" in d:
+                        self.assertTrue(d["url"].startswith("https://"))
+                    if d["os"] == "linux" and "target" in d:
+                        # install-linux.sh derives linux-<arch>-<format> targets.
+                        self.assertRegex(d["target"], r"^linux-(amd64|arm64)-(deb|rpm|appimage)$")
+                if client.get("scheme"):
+                    self.assertRegex(client["scheme"], r"^[a-z][a-z0-9-]*$")
+
+    def test_download_allowlist_is_built_from_catalog(self):
+        self.assertEqual(
+            app.GITHUB_DOWNLOADS["slothclash"]["targets"]["windows-amd64"],
+            r"^SlothClash-windows-amd64-installer\.exe$",
+        )
+        self.assertNotIn("clashproxy", app.GITHUB_DOWNLOADS, "App Store-only client has no GitHub assets")
+        with self.assertRaises(ValueError):
+            app.resolve_github_download("clashproxy", "macos")
+        with self.assertRaises(ValueError):
+            app.resolve_github_download("karing", "linux-amd64-appimage")
+
+    def test_invalid_catalog_entries_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "clients.json"
+            path.write_text(json.dumps({"clients": [{"id": "x", "name": "X", "repo": "a/b", "downloads": [
+                {"os": "linux", "label": "L", "note": "N", "target": "linux-amd64-deb", "asset": "^a$", "url": "https://x"}
+            ]}]}), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                app.load_client_catalog(path)
+
+
 class PlatformDetectionTests(unittest.TestCase):
     def test_ios_firefox_user_agents(self):
         cases = [
@@ -340,3 +540,53 @@ class PureHelpersTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InitializeDefaultsTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        names = ("DATA_DIR", "OPTIONS_PATH", "USERS_PATH", "SETTINGS_PATH", "MITA_CONFIG_PATH")
+        original = {name: getattr(app, name) for name in names}
+        self.addCleanup(lambda: [setattr(app, k, v) for k, v in original.items()])
+        app.DATA_DIR = Path(temp.name)
+        app.OPTIONS_PATH = app.DATA_DIR / "options.json"
+        app.USERS_PATH = app.DATA_DIR / "users.json"
+        app.SETTINGS_PATH = app.DATA_DIR / "settings.json"
+        app.MITA_CONFIG_PATH = app.DATA_DIR / "mita-server.json"
+
+    def init(self, options):
+        app.write_json(app.OPTIONS_PATH, options)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            app.initialize()
+        return out.getvalue()
+
+    def mita_passwords(self):
+        return [u["password"] for u in json.loads(app.MITA_CONFIG_PATH.read_text())["users"]]
+
+    def test_placeholder_from_options_never_becomes_a_live_credential(self):
+        log = self.init({"users": [
+            {"username": "change-me", "password": app.PLACEHOLDER_PASSWORD},
+            {"username": "real", "password": "chosen-secret"},
+        ]})
+        passwords = self.mita_passwords()
+        self.assertNotIn(app.PLACEHOLDER_PASSWORD, passwords)
+        self.assertIn("chosen-secret", passwords)
+        self.assertGreaterEqual(len(app.get_users()[0]["password"]), 24)
+        self.assertIn("replaced the placeholder password of 'change-me'", log)
+        self.assertNotIn(app.get_users()[0]["password"], log)
+
+    def test_fallback_user_gets_a_random_password(self):
+        self.init({"users": []})
+        users = app.get_users()
+        self.assertEqual([u["username"] for u in users], ["change-me"])
+        self.assertNotEqual(users[0]["password"], app.PLACEHOLDER_PASSWORD)
+        self.assertNotIn(app.PLACEHOLDER_PASSWORD, self.mita_passwords())
+
+    def test_existing_placeholder_user_is_kept_but_warned_about(self):
+        app.write_json(app.USERS_PATH, [{
+            "username": "change-me", "password": app.PLACEHOLDER_PASSWORD, "token": "T" * 32,
+        }])
+        log = self.init({})
+        self.assertEqual(app.get_users()[0]["password"], app.PLACEHOLDER_PASSWORD)
+        self.assertIn("WARNING: user 'change-me' still uses the public placeholder password", log)

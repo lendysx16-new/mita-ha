@@ -20,12 +20,20 @@ jobs:
         run: |
           bash -n mita/run.sh
           bash -n mita/install-linux.sh
+          export MITA_INSTALL_ARCH=x86_64
           bash mita/install-linux.sh clashmi deb --dry-run | grep -F 'KaringX/clashmi|'
-          bash mita/install-linux.sh karing rpm --dry-run | grep -F 'KaringX/karing|'
+          bash mita/install-linux.sh karing deb --dry-run | grep -F 'KaringX/karing|'
           bash mita/install-linux.sh flclashx appimage --dry-run | grep -F 'pluralplay/FlClashX|'
           bash mita/install-linux.sh koala deb --dry-run | grep -F 'coolcoala/koala-clash|'
+          bash mita/install-linux.sh slothclash rpm --dry-run | grep -F 'Nemu-x/SlothClash|'
+          # auto picks the first format this machine prefers that the client actually publishes
+          MITA_INSTALL_ARCH=aarch64 MITA_INSTALL_PREFER="deb appimage" bash mita/install-linux.sh flclashx auto --dry-run | grep -F '|deb'
+          MITA_INSTALL_PREFER="rpm appimage" bash mita/install-linux.sh slothclash auto --dry-run | grep -F '|rpm'
+          MITA_INSTALL_PREFER="appimage" bash mita/install-linux.sh clashmi auto --dry-run | grep -F '|appimage'
+          if MITA_INSTALL_PREFER="rpm appimage" bash mita/install-linux.sh karing auto --dry-run; then exit 1; fi
           if bash mita/install-linux.sh unknown deb --dry-run; then exit 1; fi
           if bash mita/install-linux.sh koala appimage --dry-run; then exit 1; fi
+          if bash mita/install-linux.sh karing rpm --dry-run; then exit 1; fi
       - name: Parse YAML
         run: |
           python3 - <<'PY'
@@ -46,6 +54,7 @@ jobs:
           docker = Path("mita/Dockerfile").read_text(encoding="utf-8")
           assert 'Path(__file__).with_name("admin.html")' in source
           assert "COPY admin.html /app/admin.html" in docker
+          assert "COPY clients.json /app/clients.json" in docker
           required = ("users", "deviceUsers", "traffic", "refreshTraffic", "contactEmail", "backupStatus",
                       "username", "password", "host", "port", "base",
                       "logLevel", "postgresDsn", "msg")

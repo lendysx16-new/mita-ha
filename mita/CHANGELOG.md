@@ -1,3 +1,23 @@
+## 3.39.0.3
+
+- Subscription page: added **SlothClash** (desktop) and **ClashFest** (Android), which send `x-hwid` by default, plus **Clash Party** (formerly Mihomo Party) and **Clash Meta for Android** without HWID. Every download pattern was checked against the clients' latest GitHub releases.
+- Client catalog moved to `mita/clients.json`, shared by the backend download allowlist, the subscription page and `install-linux.sh`. Fixed catalog drift: Karing's Linux AppImage/RPM links (not published upstream) are gone, Clash Verge's Linux DEB pattern now matches the real file name, and Verge's macOS/Linux plus Clash Mi/Karing ARMv7 builds are now offered.
+- Users without legacy access only see HWID-capable clients on the subscription page, instead of being recommended apps whose import would fail with 404.
+- Subscription page script refactored (one clipboard helper that reports failures, no import link without a valid platform, manual-import hint kept visible on short screens) and served with a hash-pinned Content-Security-Policy, `frame-ancestors 'none'`, nosniff and no-referrer.
+- `install-linux.sh` reads the shared catalog and picks a format the client actually publishes for the CPU architecture, with a clear list of alternatives when none fits.
+- Refactored the admin panel: consolidated stylesheet with a single button system, auto-escaping HTML templates, a small API client and delegated event handling.
+- Added deep-linkable views (`#/users/<name>`, `#/devices`, `#/traffic`, `#/settings`) with browser back/forward support.
+- Replaced browser alerts and confirms with toasts and a confirmation dialog; buttons show a busy state and block double submits.
+- Added device search, most-recent-first ordering and a "Last refresh" column for users.
+- Disabled actions the backend would reject (deleting the last user, removing the last device while legacy access is off) and added native form validation.
+- Admin users can now change LAN/loopback access after creation and reset a legacy password (`PATCH /api/users/<name>`, `POST /api/users/<name>/password`).
+- Admin API only accepts requests from the Home Assistant Ingress proxy and loopback, requires `Content-Type: application/json` on mutations (CSRF protection) and sends CSP, nosniff and no-referrer headers with the panel.
+- Request fields are type-checked: `"false"` strings no longer enable permissions, `null` values no longer crash requests or become the password `"None"`; every error returns a JSON response.
+- A corrupt `users.json` or `settings.json` is reported (503) instead of being treated as empty and overwritten by the next change; config rebuild and disk errors roll back cleanly.
+- Fresh installs no longer activate the public placeholder password `change-this-password`: it is replaced with a random one (the fallback `change-me` user too). Existing users still on it keep working but are flagged in the admin UI with a one-click reset and logged as a warning at startup; the API refuses to set it again.
+- Admin API routes moved to a single route table; HTTP servers use a larger connection backlog.
+- Polling now runs only for the visible view and pauses while the tab is hidden; clipboard copy falls back when the Ingress iframe blocks the async clipboard.
+
 ## 3.39.0.2
 
 - Recommend Clash Verge first on Windows and Clash - Rule Based Proxy from the App Store on macOS.

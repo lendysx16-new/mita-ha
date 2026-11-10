@@ -371,7 +371,7 @@
       .step-heading p { display: none; }
       .step-num { width: 26px; height: 26px; }
       .button { min-height: 44px; padding: 10px; font-size: 13px; }
-      #installSource, #openHint { display: none; }
+      #installSource, .step[data-import="link"] #openHint { display: none; }
       .details-footer { margin-top: 15px; }
     }
     @media (max-width: 360px) {
@@ -401,14 +401,7 @@
   <section class="choice" aria-label="Выбор приложения">
     <div class="choice-grid">
       <label class="choice-field" for="clientSelect">Приложение
-        <select id="clientSelect">
-          <option value="verge">Clash Verge</option>
-          <option value="clashproxy">Clash - Rule Based Proxy</option>
-          <option value="clashmi">Clash Mi</option>
-          <option value="karing">Karing</option>
-          <option value="flclashx">FlClashX</option>
-          <option value="koala">Koala Clash</option>
-        </select>
+        <select id="clientSelect"></select>
       </label>
       <label class="choice-field" for="platformSelect">Устройство
         <select id="platformSelect">
@@ -421,6 +414,7 @@
         </select>
       </label>
     </div>
+    <p class="notice" id="hwidRequiredNote" hidden>Профиль привязывается к устройству, поэтому показаны только приложения с поддержкой HWID.</p>
   </section>
 
   <div class="steps">
@@ -448,7 +442,7 @@
       </details>
     </section>
 
-    <section class="step" aria-labelledby="connectTitle">
+    <section class="step" id="connectStep" aria-labelledby="connectTitle">
       <div class="step-heading">
         <span class="step-num" aria-hidden="true">02</span>
         <div><h2 id="connectTitle">Открыть профиль</h2><p>Импортируйте подписку одним нажатием.</p></div>
@@ -478,296 +472,193 @@
 </main>
 <script>window.__SUBSCRIPTION__=@@BOOTSTRAP_JSON@@;</script>
 <script>
-const clients = [
-      {
-        id: 'verge',
-        name: 'Clash Verge',
-        scheme: 'clash-verge',
-        hwid: false,
-        downloads: [
-          { os: 'windows', platform: 'Windows · x64', target: 'windows-amd64', note: 'EXE · GitHub' },
-          { os: 'windows', platform: 'Windows · ARM64', target: 'windows-arm64', note: 'EXE · GitHub' }
-        ]
-      },
-      {
-        id: 'clashproxy',
-        name: 'Clash - Rule Based Proxy',
-        scheme: null,
-        hwid: false,
-        downloads: [
-          { os: 'macos', platform: 'macOS', url: 'https://apps.apple.com/jp/app/clash-rule-based-proxy/id6794257189?l=en-US', note: 'App Store' }
-        ]
-      },
-      {
-        id: 'clashmi',
-        name: 'Clash Mi',
-        scheme: 'clashmi',
-        hwid: true,
-        downloads: [
-          { os: 'macos', platform: 'macOS', target: 'macos', note: 'Latest DMG · GitHub' },
-          { os: 'windows', platform: 'Windows', target: 'windows', note: 'Latest EXE · GitHub' },
-          { os: 'ios', platform: 'iOS', url: 'https://apps.apple.com/us/app/clash-mi/id6744321968', note: 'App Store' },
-          { os: 'android', platform: 'Android', target: 'android-arm64', note: 'Latest ARM64 APK · GitHub' },
-          { os: 'linux', platform: 'Linux · x64 AppImage', target: 'linux-amd64-appimage', note: 'Latest AppImage · GitHub' },
-          { os: 'linux', platform: 'Linux · x64 DEB', target: 'linux-amd64-deb', note: 'Latest DEB · GitHub' },
-          { os: 'linux', platform: 'Linux · x64 RPM', target: 'linux-amd64-rpm', note: 'Latest RPM · GitHub' }
-        ]
-      },
-      {
-        id: 'karing',
-        name: 'Karing',
-        scheme: 'karing',
-        hwid: true,
-        downloads: [
-          { os: 'macos', platform: 'macOS', target: 'macos', note: 'Latest DMG · GitHub' },
-          { os: 'windows', platform: 'Windows', target: 'windows', note: 'Latest EXE · GitHub' },
-          { os: 'ios', platform: 'iOS', url: 'https://apps.apple.com/us/app/karing/id6472431552', note: 'App Store' },
-          { os: 'android', platform: 'Android', target: 'android-arm64', note: 'Latest ARM64 APK · GitHub' },
-          { os: 'linux', platform: 'Linux · x64 AppImage', target: 'linux-amd64-appimage', note: 'Latest AppImage · GitHub' },
-          { os: 'linux', platform: 'Linux · x64 DEB', target: 'linux-amd64-deb', note: 'Latest DEB · GitHub' }
-        ]
-      },
-      {
-        id: 'flclashx',
-        name: 'FlClashX',
-        scheme: 'flclashx',
-        hwid: true,
-        downloads: [
-          { os: 'android', platform: 'Android · ARM64', target: 'android-arm64', note: 'APK · GitHub' },
-          { os: 'android', platform: 'Android · ARMv7', target: 'android-armv7', note: 'APK · GitHub' },
-          { os: 'windows', platform: 'Windows · x64', target: 'windows-amd64', note: 'EXE · GitHub' },
-          { os: 'windows', platform: 'Windows · ARM64', target: 'windows-arm64', note: 'EXE · GitHub' },
-          { os: 'macos', platform: 'macOS · Apple Silicon', target: 'macos-arm64', note: 'DMG · GitHub' },
-          { os: 'macos', platform: 'macOS · Intel', target: 'macos-amd64', note: 'DMG · GitHub' },
-          { os: 'linux', platform: 'Linux · AppImage', target: 'linux-amd64-appimage', note: 'AppImage · GitHub' },
-          { os: 'linux', platform: 'Linux · DEB', target: 'linux-amd64-deb', note: 'DEB · GitHub' },
-          { os: 'linux', platform: 'Linux · RPM', target: 'linux-amd64-rpm', note: 'RPM · GitHub' },
-          { os: 'linux', platform: 'Linux · ARM64 DEB', target: 'linux-arm64-deb', note: 'DEB · GitHub' }
-        ]
-      },
-      {
-        id: 'koala',
-        name: 'Koala Clash',
-        scheme: 'koala-clash',
-        hwid: true,
-        downloads: [
-          { os: 'windows', platform: 'Windows · x64', target: 'windows-amd64', note: 'EXE · GitHub' },
-          { os: 'windows', platform: 'Windows · ARM64', target: 'windows-arm64', note: 'EXE · GitHub' },
-          { os: 'macos', platform: 'macOS · Apple Silicon', target: 'macos-arm64', note: 'PKG · GitHub' },
-          { os: 'macos', platform: 'macOS · Intel', target: 'macos-amd64', note: 'PKG · GitHub' },
-          { os: 'linux', platform: 'Linux · DEB', target: 'linux-amd64-deb', note: 'DEB · GitHub' },
-          { os: 'linux', platform: 'Linux · ARM64 DEB', target: 'linux-arm64-deb', note: 'DEB · GitHub' },
-          { os: 'linux', platform: 'Linux · RPM', target: 'linux-amd64-rpm', note: 'RPM · GitHub' },
-          { os: 'linux', platform: 'Linux · ARM64 RPM', target: 'linux-arm64-rpm', note: 'RPM · GitHub' }
-        ]
-      },
-
-    ];
-
-
+'use strict';
+/* Client catalog, platform and HWID requirement come from the server (clients.json). */
 const data = window.__SUBSCRIPTION__;
-const element = id => document.getElementById(id);
-const clientSelect = element('clientSelect');
-const platformSelect = element('platformSelect');
-const selectedClient = () => clients.find(client => client.id === clientSelect.value) || clients[0];
+const PLATFORMS = ['ios', 'android', 'windows', 'macos', 'linux'];
+// Platform-specific recommendations for clients without HWID; used only when the profile allows them.
+const RECOMMENDED = { windows: 'verge', macos: 'clashproxy' };
+const DEFAULT_CLIENT = 'clashmi';
+const LINUX_INSTALLER_URL = 'https://raw.githubusercontent.com/lendysx16-new/mita-ha/main/mita/install-linux.sh';
+
+const $ = id => document.getElementById(id);
+const clientSelect = $('clientSelect');
+const platformSelect = $('platformSelect');
+// HWID-only profiles return 404 to clients without x-hwid, so never offer those.
+const clients = (data.clients || []).filter(client => !data.hwid_required || client.hwid);
+const byId = id => clients.find(client => client.id === id) || null;
+const downloadsFor = (client, os) => client ? client.downloads.filter(item => item.os === os) : [];
+const supports = (client, os) => downloadsFor(client, os).length > 0;
+
+/* ---------- Platform ---------- */
 function detectPlatform() {
   // Browsers on iOS can use a desktop User-Agent with "Macintosh".
   // Touch detection helps when the browser suppresses its iOS marker entirely.
   const ua = String(navigator.userAgent || '').toLowerCase();
   const browserPlatform = String(navigator.platform || '').toLowerCase();
-  const serverPlatform = String(data.platform || '').toLowerCase();
   if (/iphone|ipad|ipod|fxios\/|crios\/|edgios\/|opios\//.test(ua)) return 'ios';
   if ((ua.includes('macintosh') || browserPlatform.startsWith('mac')) &&
       Number(navigator.maxTouchPoints || 0) > 1) return 'ios';
   if (ua.includes('android')) return 'android';
-  return serverPlatform;
-}
-const platform = detectPlatform();
-platformSelect.value = ['ios','android','windows','macos','linux'].includes(platform) ? platform : '';
-
-const preferredClients = { windows: 'verge', macos: 'clashproxy' };
-function recommendClient() {
-  const preferred = preferredClients[platformSelect.value] || 'clashmi';
-  clientSelect.value = preferred;
-  const options = Array.from(clientSelect.options || []);
-  options.sort((a, b) => Number(b.value === preferred) - Number(a.value === preferred));
-  for (const option of options) clientSelect.append(option);
-}
-recommendClient();
-
-const terminalInstallerUrl =
-  'https://raw.githubusercontent.com/lendysx16-new/mita-ha/main/mita/install-linux.sh';
-function buildTerminalCommand(client) {
-  return 'curl -fsSLo ./mita-install-linux.sh ' + terminalInstallerUrl +
-    ' && bash ./mita-install-linux.sh ' + client.id;
+  const server = String(data.platform || '').toLowerCase();
+  return PLATFORMS.includes(server) ? server : '';
 }
 
+/* ---------- Links ---------- */
 function rawSubscriptionUrl() {
   const url = new URL(data.url);
   url.searchParams.set('raw', '1');
   return url.toString();
 }
-
-function buildImportUrl(client) {
-  if (!client.scheme) return null;
-  const params = new URLSearchParams({
-    url: rawSubscriptionUrl(),
-    name: 'Mieru ' + data.username
-  });
-  // Only Clash Mi and Karing require a deep-link flag; Koala and FlClashX
-  // send x-hwid automatically when fetching subscriptions.
-  if (client.id === 'clashmi' || client.id === 'karing') params.set('xhwid', 'true');
+function importUrl(client) {
+  if (!client || !client.scheme) return null;
+  const params = new URLSearchParams({ url: rawSubscriptionUrl(), name: 'Mieru ' + data.username });
+  // Some clients only send x-hwid for subscriptions imported with this flag.
+  if (client.xhwid_param) params.set('xhwid', 'true');
   return client.scheme + '://install-config?' + params.toString();
 }
-
-function buildDownloadUrl(client, target) {
+function downloadUrl(client, item) {
+  if (item.url) return item.url;
   const url = new URL(data.url);
   url.search = '';
   url.hash = '';
   url.pathname = url.pathname.replace(/\/$/, '') + '/download/' +
-    encodeURIComponent(client.id) + '/' + encodeURIComponent(target);
+    encodeURIComponent(client.id) + '/' + encodeURIComponent(item.target);
   return url.toString();
 }
+const terminalCommand = client =>
+  'curl -fsSLo ./mita-install-linux.sh ' + LINUX_INSTALLER_URL + ' && bash ./mita-install-linux.sh ' + client.id;
 
-function availableDownloads(client, os) {
-  return client.downloads.filter(item => item.os === os).map(item => ({
-    name: item.platform,
-    note: item.note,
-    url: item.url || buildDownloadUrl(client, item.target)
-  }));
+/* ---------- Clipboard ---------- */
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); return true; }
+  } catch (_) { /* fall back below */ }
+  const field = document.createElement('textarea');
+  field.value = text;
+  field.setAttribute('readonly', '');
+  field.style.position = 'fixed';
+  field.style.opacity = '0';
+  document.body.appendChild(field);
+  try {
+    field.select();
+    return document.execCommand('copy');
+  } catch (_) {
+    return false;
+  } finally {
+    field.remove();
+  }
+}
+function feedback(id, text) {
+  const node = $(id);
+  node.textContent = text;
+  node.hidden = false;
 }
 
-function makeAlternative(item) {
+/* ---------- Picker ---------- */
+function preferredClient(os) {
+  const recommended = byId(RECOMMENDED[os]);
+  if (recommended && supports(recommended, os)) return recommended.id;
+  if (supports(byId(DEFAULT_CLIENT), os) || !os) return DEFAULT_CLIENT;
+  const first = clients.find(client => supports(client, os));
+  return first ? first.id : '';
+}
+function buildClientOptions(os) {
+  const preferred = preferredClient(os);
+  const ordered = [...clients].sort((a, b) => Number(b.id === preferred) - Number(a.id === preferred));
+  clientSelect.replaceChildren(...ordered.map(client => {
+    const option = document.createElement('option');
+    option.value = client.id;
+    option.textContent = client.name;
+    const unavailable = Boolean(os) && !supports(client, os);
+    option.disabled = unavailable;
+    option.hidden = unavailable;
+    return option;
+  }));
+  clientSelect.value = preferred;
+}
+
+/* ---------- Render ---------- */
+function makeAlternative(client, item) {
   const anchor = document.createElement('a');
   const name = document.createElement('span');
   const note = document.createElement('small');
   anchor.className = 'alternative';
-  anchor.href = item.url;
+  anchor.href = downloadUrl(client, item);
   anchor.target = '_blank';
   anchor.rel = 'noopener noreferrer';
-  name.textContent = item.name;
+  name.textContent = item.label;
   note.textContent = item.note;
   anchor.append(name, note);
   return anchor;
 }
-
-function render() {
-  const os = platformSelect.value;
-  // Keep only clients supported by the chosen platform selectable.
-  for (const option of clientSelect.options || []) {
-    const candidate = clients.find(client => client.id === option.value);
-    if (!candidate) continue;
-    const unavailable = Boolean(os) &&
-      !candidate.downloads.some(download => download.os === os);
-    option.disabled = unavailable;
-    option.hidden = unavailable;
-  }
-  if (clientSelect.selectedOptions?.[0]?.disabled ||
-      (os && !availableDownloads(selectedClient(), os).length)) {
-    clientSelect.value = clients.find(candidate =>
-      candidate.downloads.some(download => download.os === os))?.id || clients[0].id;
-  }
-  const client = selectedClient();
-  element('hwidBadge').hidden = !client.hwid;
-  const downloads = availableDownloads(client, os);
-  const install = element('installBtn');
-  const missing = element('missingInstall');
-  const alternatives = element('alternatives');
-  const alternateLinks = element('alternativeLinks');
-  const terminalInstall = element('terminalInstall');
-  terminalInstall.hidden = os !== 'linux' || downloads.length === 0;
-  if (!terminalInstall.hidden) {
-    element('terminalCommand').textContent = buildTerminalCommand(client);
-  }
-  element('terminalFeedback').hidden = true;
-
+function renderInstall(client, os) {
+  const downloads = downloadsFor(client, os);
+  const install = $('installBtn');
   install.hidden = downloads.length === 0;
-  missing.hidden = downloads.length > 0;
-  alternatives.hidden = downloads.length < 2;
-  alternateLinks.replaceChildren(...downloads.slice(1).map(makeAlternative));
-
+  $('missingInstall').hidden = downloads.length > 0;
+  $('alternatives').hidden = downloads.length < 2;
+  $('alternativeLinks').replaceChildren(...downloads.slice(1).map(item => makeAlternative(client, item)));
   if (downloads.length) {
-    install.href = downloads[0].url;
-    element('installLabel').textContent = 'Установить ' + client.name;
-    element('installSource').textContent = downloads[0].note;
+    install.href = downloadUrl(client, downloads[0]);
+    $('installLabel').textContent = 'Установить ' + client.name;
+    $('installSource').textContent = downloads[0].note;
   } else {
     install.removeAttribute('href');
-    element('installSource').textContent = '';
-    if (!os) {
-      missing.textContent = 'Выберите своё устройство выше, чтобы получить ссылку на установку.';
-    } else {
-      missing.textContent = 'Для выбранной платформы нет прямой ссылки. Выберите другое приложение.';
-    }
+    $('installSource').textContent = '';
+    $('missingInstall').textContent = !os
+      ? 'Выберите своё устройство выше, чтобы получить ссылку на установку.'
+      : 'Для выбранной платформы нет подходящего приложения.';
   }
-
-  const importUrl = buildImportUrl(client);
-  const open = element('openProfile');
-  open.hidden = !importUrl;
-  if (importUrl) open.href = importUrl;
-  else open.removeAttribute('href');
-  element('openLabel').textContent = 'Открыть в ' + client.name;
-  element('openHint').textContent = importUrl
+  const terminal = $('terminalInstall');
+  terminal.hidden = os !== 'linux' || !downloads.some(item => item.target);
+  if (!terminal.hidden) $('terminalCommand').textContent = terminalCommand(client);
+  $('terminalFeedback').hidden = true;
+}
+function renderImport(client, os) {
+  // Only offer one-tap import for a valid, installable selection.
+  const link = os && supports(client, os) ? importUrl(client) : null;
+  const open = $('openProfile');
+  open.hidden = !link;
+  if (link) open.href = link; else open.removeAttribute('href');
+  $('openLabel').textContent = client ? 'Открыть в ' + client.name : 'Открыть в приложении';
+  $('openHint').textContent = link
     ? 'Нажмите после установки. Если приложение не открылось, скопируйте ссылку вручную.'
-    : 'Скопируйте ссылку подписки и добавьте её в приложении через импорт из URL.';
-  element('copyFeedback').hidden = true;
+    : 'Скопируйте ссылку подписки в «Другие способы подключения» и добавьте её в приложении через импорт из URL.';
+  const step = $('connectStep');
+  if (step && step.dataset) step.dataset.import = link ? 'link' : 'manual';
+  $('copyFeedback').hidden = true;
+}
+function render() {
+  const os = platformSelect.value;
+  const client = byId(clientSelect.value);
+  $('hwidBadge').hidden = !(client && client.hwid);
+  $('hwidRequiredNote').hidden = !data.hwid_required;
+  renderInstall(client, os);
+  renderImport(client, os);
 }
 
-async function copySubscription() {
-  try {
-    if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('Clipboard API unavailable');
-    await navigator.clipboard.writeText(data.url);
-  } catch (_) {
-    const input = document.createElement('textarea');
-    input.value = data.url;
-    input.style.position = 'fixed';
-    input.style.opacity = '0';
-    document.body.appendChild(input);
-    input.select();
-    const copied = document.execCommand('copy');
-    input.remove();
-    if (!copied) {
-      element('copyFeedback').textContent = 'Не удалось скопировать. Откройте «Другие способы подключения» и скопируйте ссылку.';
-      element('copyFeedback').hidden = false;
-      return;
-    }
-  }
-  element('copyFeedback').textContent = 'Ссылка скопирована. Добавьте её в приложении через импорт подписки из URL.';
-  element('copyFeedback').hidden = false;
-}
-
-async function copyTerminalCommand() {
-  const command = element('terminalCommand').textContent;
-  const feedback = element('terminalFeedback');
-  try {
-    if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
-    await navigator.clipboard.writeText(command);
-  } catch (_) {
-    const field = document.createElement('textarea');
-    field.value = command;
-    field.style.position = 'fixed';
-    field.style.opacity = '0';
-    document.body.appendChild(field);
-    field.select();
-    const copied = document.execCommand('copy');
-    field.remove();
-    if (!copied) {
-      feedback.textContent = 'Не удалось скопировать команду. Выделите текст выше вручную.';
-      feedback.hidden = false;
-      return;
-    }
-  }
-  feedback.textContent = 'Команда скопирована. Перед запуском можно открыть и проверить скрипт.';
-  feedback.hidden = false;
-}
-
-element('copyTerminal').addEventListener('click', copyTerminalCommand);
-clientSelect.addEventListener('change', render);
-platformSelect.addEventListener('change', () => { recommendClient(); render(); });
-element('copySecondary').addEventListener('click', copySubscription);
-element('openProfile').addEventListener('click', () => {
-  element('copyFeedback').textContent = 'Если приложение не открылось, сначала установите его из шага 1.';
-  element('copyFeedback').hidden = false;
+/* ---------- Wiring ---------- */
+$('copyTerminal').addEventListener('click', async () => {
+  const ok = await copyText($('terminalCommand').textContent);
+  feedback('terminalFeedback', ok
+    ? 'Команда скопирована. Перед запуском можно открыть и проверить скрипт.'
+    : 'Не удалось скопировать команду. Выделите текст выше вручную.');
 });
+$('copySecondary').addEventListener('click', async () => {
+  const ok = await copyText(data.url);
+  feedback('copyFeedback', ok
+    ? 'Ссылка скопирована. Добавьте её в приложении через импорт подписки из URL.'
+    : 'Не удалось скопировать. Выделите ссылку ниже вручную.');
+});
+$('openProfile').addEventListener('click', () => {
+  feedback('copyFeedback', 'Если приложение не открылось, сначала установите его из шага 1.');
+});
+clientSelect.addEventListener('change', render);
+platformSelect.addEventListener('change', () => { buildClientOptions(platformSelect.value); render(); });
+
+platformSelect.value = detectPlatform();
+buildClientOptions(platformSelect.value);
 render();
 </script>
 </body>
