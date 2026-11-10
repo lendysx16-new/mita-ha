@@ -8,11 +8,15 @@ Open the app and click **Open Web UI**.
 
 The **Users** tab is a compact directory. Select an account to open its dedicated profile with its subscription URL, copy/rotate actions, delete control, HWID devices and limits. The add-user form is collapsed until **+ Add user** is selected, and public connection settings have moved to **Settings**. **Devices** now shows a searchable-sized compact table of registered devices with direct links to the owning account. This keeps secrets and destructive actions off the main list.
 
-The admin UI is not published as a normal host port. It is served through Home Assistant Ingress and lets you:
+The admin UI is not published as a normal host port. It is served through Home Assistant Ingress and only answers requests from the Ingress proxy (`172.30.32.2`) and loopback; for local development extra addresses can be allowed with the `MITA_ADMIN_ALLOWED_IPS` environment variable (comma-separated). It lets you:
 
 - add users;
 - delete users;
-- choose per-user LAN/loopback access;
+- choose and later change per-user LAN/loopback access;
+- reset a user's legacy password (a new one is generated and shown once);
+
+The `change-me` / `change-this-password` entry in the default options is only a placeholder. On first start it is replaced with a random password, so clients should use the user's subscription link (or a password set with **Reset password**). Users that still have the placeholder from an older install are flagged with a **Default password** badge.
+
 - rotate subscription tokens;
 - copy subscription URLs;
 - configure the public Mieru hostname and port;
@@ -117,7 +121,11 @@ Tests use temporary files and mock the Mita reload command. GitHub Actions also 
 - **Clash Mi**, **Karing**: support `x-hwid` when the `xhwid=true` flag is passed to the `install-config` deep link (disabled by default in the client).
 - **FlClashX**: supports automatic `x-hwid` during subscription fetches; install links use `flclashx://install-config` and GitHub Release assets for Android and desktop. Note: there is no iOS release.
 - **Koala Clash**: sends `x-hwid` when fetching subscriptions; deep link uses `koala-clash://install-config`. Desktop only.
-The public app picker recommends **Clash Verge** on Windows and **Clash - Rule Based Proxy** from the App Store on macOS. The four HWID-capable clients above remain selectable. HWID support is not claimed for the two new recommendations; users with legacy access disabled need an HWID-capable client. Clash Verge offers x64 and ARM64 installers and one-click import. The App Store client uses manual subscription URL import.
+- **SlothClash** (desktop, a Clash Verge Rev fork) and **ClashFest** (Android): send a SHA-256 `x-hwid` by default (users can opt out in the app); deep links `slothclash://install-config` and `clashfest://install-config`.
+- **Clash Party** (formerly Mihomo Party, desktop) and **Clash Meta for Android**: Mieru-capable Mihomo clients without HWID; deep links `clash://install-config` and `clashmeta://install-config`.
+
+All clients, their HWID support, deep-link schemes and the exact GitHub Release asset patterns live in `mita/clients.json`. The backend builds its download allowlist from it, the subscription page receives it in its bootstrap data, and `install-linux.sh` reads it, so one edit updates all three. When a user's legacy access is disabled, the page lists only HWID-capable clients, because the subscription is refused to clients that don't send `x-hwid`.
+The public app picker recommends **Clash Verge** on Windows and **Clash - Rule Based Proxy** from the App Store on macOS when the user's legacy access is enabled; otherwise it recommends Clash Mi and hides clients without HWID. Clash Verge offers x64 and ARM64 installers and one-click import. The App Store client uses manual subscription URL import.
 
 HWID support refers to the subscription request headers. The generated YAML remains standard Mihomo/Mieru; clients must also use a Mihomo core capable of the Mieru protocol.
 
@@ -131,7 +139,7 @@ curl -fsSLo ./mita-install-linux.sh https://raw.githubusercontent.com/lendysx16-
 
 The script is versioned in this repository (`mita/install-linux.sh`). Inspect the downloaded file before running `bash` if desired. It uses Python 3 and curl to look up the latest GitHub Release from the client's **official** repository and download an exact matching installer; it does not run remotely downloaded scripts from that release. On Debian/Ubuntu it invokes `sudo apt-get install` on the DEB, and on Fedora/openSUSE it uses DNF/Zypper to install an RPM. If neither manager exists, it installs an AppImage into `~/.local/bin` when the client publishes one. Root access is only needed for package installation, not the AppImage.
 
-To override package detection, run `bash ./mita-install-linux.sh koala rpm`, `... deb`, or `... appimage`. Some clients publish only AMD64 packages or do not publish AppImages; unsupported architecture/format combinations fail with an explicit message. Test compatibility without downloading or installing using `bash ./mita-install-linux.sh koala deb --dry-run`.
+With no format given, the script takes the first format the machine can install (DEB with apt, RPM with DNF/Zypper, then AppImage) that the client actually publishes for the CPU architecture. To force one, run `bash ./mita-install-linux.sh koala rpm`, `... deb`, or `... appimage`; unsupported combinations fail with a message listing what is available. The client list comes from `clients.json` next to the script, or from the same repository branch when the script was downloaded on its own. After an AppImage install, start the app once so it registers its link handler before using step 2. Test compatibility without downloading or installing using `bash ./mita-install-linux.sh koala deb --dry-run`.
 
 **Privacy:** the Linux terminal command references only the public installation script and client ID; it never includes the user's subscription URL or token. After installing the application, use step 2 on the page to add the private subscription in the app.
 

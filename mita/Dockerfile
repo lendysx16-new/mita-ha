@@ -33,8 +33,9 @@ COPY run.sh /run.sh
 COPY webapp.py /app/webapp.py
 COPY subscription.html /app/subscription.html
 COPY admin.html /app/admin.html
+COPY clients.json /app/clients.json
 
 RUN chmod 0755 /usr/bin/mita /run.sh /app/webapp.py \
-    && chmod 0644 /app/subscription.html /app/admin.html
+    && chmod 0644 /app/subscription.html /app/admin.html /app/clients.json
 
 CMD ["/run.sh"]

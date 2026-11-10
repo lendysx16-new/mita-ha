@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import base64
+import ipaddress
 import contextlib
 import copy
 import html
@@ -41,6 +43,12 @@ SUB_PORT = 8099
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 HWID_RE = re.compile(r"^[A-Za-z0-9=-]{10,64}$")
 DEVICE_ID_RE = re.compile(r"^[A-Fa-f0-9]{16}$")
+PASSWORD_MAX_LENGTH = 256
+# Placeholder shipped in config.yaml. It is public, so it must never become a live credential.
+PLACEHOLDER_PASSWORD = "change-this-password"
+# Home Assistant Ingress proxies every request from the Supervisor at this address.
+# Extra addresses (e.g. for local development) can be added with MITA_ADMIN_ALLOWED_IPS.
+INGRESS_PROXY_IP = "172.30.32.2"
 CONTACT_EMAIL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9.-]+$")
 LOCK = threading.RLock()
 RELEASE_CACHE_LOCK = threading.RLock()
@@ -69,89 +77,52 @@ BACKUP_STATUS = {
 }
 
 
+CLIENT_CATALOG_PATH = Path(__file__).with_name("clients.json")
+
+
+def load_client_catalog(path=None):
+    """Read the subscription client catalog shared with subscription.html and tests."""
+    with (path or CLIENT_CATALOG_PATH).open("r", encoding="utf-8") as f:
+        clients = json.load(f)["clients"]
+    for client in clients:
+        for download in client["downloads"]:
+            if ("asset" in download) == ("url" in download):
+                raise ValueError(f"{client['id']}: download needs exactly one of asset/url")
+            if "asset" in download:
+                re.compile(download["asset"])
+                if not client.get("repo") or not download.get("target"):
+                    raise ValueError(f"{client['id']}: GitHub download needs repo and target")
+    return clients
+
+
+CLIENTS = load_client_catalog()
+# Allowlist for /sub/<token>/download/<client>/<target>: only these release assets are resolved.
 GITHUB_DOWNLOADS = {
-    "clashmi": {
-        "repo": "KaringX/clashmi",
-        "targets": {
-            "macos": r"^clashmi_.*_macos_universal\.dmg$",
-            "windows": r"^clashmi_.*_windows_x64\.exe$",
-            "android-arm64": r"^clashmi_.*_android_arm64-v8a\.apk$",
-            "android-armv7": r"^clashmi_.*_android_armeabi-v7a\.apk$",
-            "linux-amd64-appimage": r"^clashmi_.*_linux_amd64\.AppImage$",
-            "linux-amd64-deb": r"^clashmi_.*_linux_amd64\.deb$",
-            "linux-amd64-rpm": r"^clashmi_.*_linux_amd64\.rpm$",
-        },
-    },
-    "karing": {
-        "repo": "KaringX/karing",
-        "targets": {
-            "macos": r"^karing_.*_macos_universal\.dmg$",
-            "windows": r"^karing_.*_windows_x64\.exe$",
-            "android-arm64": r"^karing_.*_android_arm64-v8a\.apk$",
-            "android-armv7": r"^karing_.*_android_armeabi-v7a\.apk$",
-            "linux-amd64-appimage": r"^karing_.*_linux_amd64\.AppImage$",
-            "linux-amd64-deb": r"^karing_.*_linux_amd64\.deb$",
-        },
-    },
-    "flclash": {
-        "repo": "chen08209/FlClash",
-        "targets": {
-            "macos-arm64": r"^FlClash-.*-macos-arm64\.dmg$",
-            "macos-amd64": r"^FlClash-.*-macos-amd64\.dmg$",
-            "windows-amd64": r"^FlClash-.*-windows-amd64-setup\.exe$",
-            "windows-arm64": r"^FlClash-.*-windows-arm64-setup\.exe$",
-            "android-arm64": r"^FlClash-.*-android-arm64-v8a\.apk$",
-            "android-armv7": r"^FlClash-.*-android-armeabi-v7a\.apk$",
-            "linux-amd64-appimage": r"^FlClash-.*-linux-amd64\.AppImage$",
-            "linux-amd64-deb": r"^FlClash-.*-linux-amd64\.deb$",
-            "linux-amd64-rpm": r"^FlClash-.*-linux-amd64\.rpm$",
-            "linux-arm64-appimage": r"^FlClash-.*-linux-arm64\.AppImage$",
-            "linux-arm64-deb": r"^FlClash-.*-linux-arm64\.deb$",
-            "linux-arm64-rpm": r"^FlClash-.*-linux-arm64\.rpm$",
-        },
-    },
-    "flclashx": {
-        "repo": "pluralplay/FlClashX",
-        "targets": {
-            "android-arm64": r"^FlClashX-android-arm64-v8a\.apk$",
-            "android-armv7": r"^FlClashX-android-armeabi-v7a\.apk$",
-            "windows-amd64": r"^FlClashX-windows-amd64-setup\.exe$",
-            "windows-arm64": r"^FlClashX-windows-arm64-setup\.exe$",
-            "macos-arm64": r"^FlClashX-macos-arm64\.dmg$",
-            "macos-amd64": r"^FlClashX-macos-amd64\.dmg$",
-            "linux-amd64-appimage": r"^FlClashX-linux-amd64\.AppImage$",
-            "linux-amd64-deb": r"^FlClashX-linux-amd64\.deb$",
-            "linux-amd64-rpm": r"^FlClashX-linux-amd64\.rpm$",
-            "linux-arm64-deb": r"^FlClashX-linux-arm64\.deb$",
-        },
-    },
-    "koala": {
-        "repo": "coolcoala/koala-clash",
-        "targets": {
-            "windows-amd64": r"^Koala\.Clash_x64-setup\.exe$",
-            "windows-arm64": r"^Koala\.Clash_arm64-setup\.exe$",
-            "macos-amd64": r"^Koala\.Clash_x64\.pkg$",
-            "macos-arm64": r"^Koala\.Clash_arm64\.pkg$",
-            "linux-amd64-deb": r"^Koala\.Clash_amd64\.deb$",
-            "linux-arm64-deb": r"^Koala\.Clash_arm64\.deb$",
-            "linux-amd64-rpm": r"^Koala\.Clash_x86_64\.rpm$",
-            "linux-arm64-rpm": r"^Koala\.Clash_aarch64\.rpm$",
-        },
-    },
-    "verge": {
-        "repo": "clash-verge-rev/clash-verge-rev",
-        "targets": {
-            "macos-arm64": r"^Clash\.Verge_.*_aarch64\.dmg$",
-            "macos-amd64": r"^Clash\.Verge_.*_x64\.dmg$",
-            "windows-amd64": r"^Clash\.Verge_.*_x64-setup\.exe$",
-            "windows-arm64": r"^Clash\.Verge_.*_arm64-setup\.exe$",
-            "linux-amd64-deb": r"^Clash Verge_.*_amd64\.deb$",
-            "linux-amd64-rpm": r"^Clash Verge-.*-1\.x86_64\.rpm$",
-            "linux-arm64-deb": r"^Clash Verge_.*_arm64\.deb$",
-            "linux-arm64-rpm": r"^Clash\.Verge-.*-1\.aarch64\.rpm$",
-        },
-    },
+    client["id"]: {
+        "repo": client["repo"],
+        "targets": {d["target"]: d["asset"] for d in client["downloads"] if "asset" in d},
+    }
+    for client in CLIENTS
+    if client.get("repo")
 }
+
+
+def public_client_catalog():
+    """Catalog for the browser: no regexes or repository internals."""
+    return [
+        {
+            "id": client["id"],
+            "name": client["name"],
+            "scheme": client.get("scheme"),
+            "hwid": bool(client.get("hwid")),
+            "xhwid_param": bool(client.get("xhwid_param")),
+            "downloads": [
+                {key: d[key] for key in ("os", "label", "note", "target", "url") if key in d}
+                for d in client["downloads"]
+            ],
+        }
+        for client in CLIENTS
+    ]
 
 
 def resolve_github_download(client_id, target_id):
@@ -196,11 +167,20 @@ def resolve_github_download(client_id, target_id):
     raise RuntimeError("matching release asset not found")
 
 
-def load_json(path, default):
+class StateError(RuntimeError):
+    """Persisted state is unreadable; mutations must stop until it is restored."""
+
+
+def load_json(path, default, strict=False):
+    """Read JSON state. With strict=True a corrupt file raises instead of acting empty."""
     try:
         with path.open("r", encoding="utf-8") as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError:
+        return default
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        if strict:
+            raise StateError(f"{path.name} is corrupt ({exc}); restore it from a backup") from exc
         return default
 
 
@@ -591,6 +571,13 @@ def initialize():
             password = str(item.get("password", ""))
             if not username or not password:
                 continue
+            if password == PLACEHOLDER_PASSWORD:
+                password = secrets.token_urlsafe(24)
+                print(
+                    f"[init] replaced the placeholder password of '{username}' with a random one; "
+                    "share its subscription link or reset the password in the admin UI",
+                    flush=True,
+                )
             users.append({
                 "username": username,
                 "password": password,
@@ -604,7 +591,7 @@ def initialize():
         if not users:
             users = [{
                 "username": "change-me",
-                "password": "change-this-password",
+                "password": secrets.token_urlsafe(24),
                 "allow_private_ip": default_private,
                 "allow_loopback_ip": default_loopback,
                 "token": secrets.token_urlsafe(24),
@@ -615,6 +602,13 @@ def initialize():
         write_json(USERS_PATH, users)
 
     migrate_users()
+    for user in get_users():
+        if user.get("password") == PLACEHOLDER_PASSWORD:
+            print(
+                f"[init] WARNING: user '{user['username']}' still uses the public placeholder password; "
+                "reset it in the admin UI",
+                flush=True,
+            )
 
     if not SETTINGS_PATH.exists():
         settings = {
@@ -642,22 +636,76 @@ def persist_and_reload(path, updated, previous):
 
     Caller must hold LOCK through the full read/modify/write/reload sequence.
     """
-    write_json(path, updated)
+    try:
+        write_json(path, updated)
+    except OSError as exc:  # os.replace is atomic, so the previous file is intact.
+        raise MitaReloadError(f"unable to save {path.name}: {exc}") from exc
     ok, output = reload_mita()
     if ok:
         return output
-    write_json(path, previous)
+    try:
+        write_json(path, previous)
+    except OSError as exc:
+        raise MitaReloadError(
+            f"{output or 'mita reload failed'}; rollback of {path.name} also failed: {exc}"
+        ) from exc
     # Restore the on-disk mita configuration and retry applying the old state.
     reload_mita()
     raise MitaReloadError(output or "mita reload failed")
 
 
 def get_users():
-    return load_json(USERS_PATH, [])
+    users = load_json(USERS_PATH, [], strict=True)
+    if not isinstance(users, list) or not all(
+        isinstance(u, dict) and isinstance(u.get("username"), str) for u in users
+    ):
+        raise StateError(f"{USERS_PATH.name} has an invalid structure; restore it from a backup")
+    return users
 
 
 def get_settings():
-    return load_json(SETTINGS_PATH, {})
+    settings = load_json(SETTINGS_PATH, {}, strict=True)
+    if not isinstance(settings, dict):
+        raise StateError(f"{SETTINGS_PATH.name} has an invalid structure; restore it from a backup")
+    return settings
+
+
+def parse_bool(body, key, default):
+    """Accept only real JSON booleans so "false" can never enable a permission."""
+    if key not in body:
+        return default
+    value = body[key]
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be true or false")
+    return value
+
+
+def parse_int(body, key, default, minimum, maximum):
+    if key not in body:
+        return default
+    value = body[key]
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{key} must be an integer")
+    if value < minimum or value > maximum:
+        raise ValueError(f"{key} must be between {minimum} and {maximum}")
+    return value
+
+
+def parse_password(body):
+    """Return (password, generated) from an optional "password" field."""
+    value = body.get("password")
+    if value is None or value == "":
+        password = secrets.token_urlsafe(24)
+        return password, password
+    if not isinstance(value, str):
+        raise ValueError("password must be a string")
+    if value == PLACEHOLDER_PASSWORD:
+        raise ValueError("this placeholder password is public; choose another one")
+    if len(value) > PASSWORD_MAX_LENGTH or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ValueError(f"password must be at most {PASSWORD_MAX_LENGTH} printable characters")
+    return value, ""
 
 
 def build_mita_config(users, settings):
@@ -697,8 +745,8 @@ def rebuild_mita_config():
 
 
 def reload_mita():
-    rebuild_mita_config()
     try:
+        rebuild_mita_config()
         proc = subprocess.run(
             ["/usr/bin/mita", "reload"],
             stdout=subprocess.PIPE,
@@ -998,6 +1046,9 @@ def render_subscription_page(user, request_headers=None):
             "username": user["username"],
             "url": subscription_url,
             "platform": detect_platform_from_user_agent(user_agent),
+            # Without legacy access the subscription is only served to clients sending x-hwid.
+            "hwid_required": not user.get("legacy_enabled", True),
+            "clients": public_client_catalog(),
         },
         ensure_ascii=False,
     ).replace("</", "<\\/")
@@ -1010,6 +1061,24 @@ def render_subscription_page(user, request_headers=None):
         .replace("@@CONTACT_LINK_HTML@@", contact_link)
         .replace("@@BOOTSTRAP_JSON@@", bootstrap)
     )
+
+
+def subscription_page_headers(page):
+    """CSP pinned to the page's own inline scripts (the bootstrap differs per user)."""
+    hashes = " ".join(
+        "'sha256-" + base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii") + "'"
+        for script in re.findall(r"<script>(.*?)</script>", page, re.S)
+    )
+    return {
+        "Content-Security-Policy": (
+            f"default-src 'none'; script-src {hashes}; "
+            "style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
+            "img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ),
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "X-Frame-Options": "DENY",
+    }
 
 
 def public_device(device):
@@ -1034,6 +1103,7 @@ def public_user(user):
         "allow_loopback_ip": bool(user.get("allow_loopback_ip", False)),
         "subscription_url": base + "/sub/" + user["token"],
         "legacy_enabled": bool(user.get("legacy_enabled", True)),
+        "default_password": user.get("password") == PLACEHOLDER_PASSWORD,
         "device_limit": int(user.get("device_limit", 0) or 0),
         "devices": [public_device(d) for d in user.get("devices", [])],
     }
@@ -1181,234 +1251,304 @@ class CommonHandler(BaseHTTPRequestHandler):
         return body
 
 
+class ApiError(Exception):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+def admin_allowed_clients():
+    extra = os.environ.get("MITA_ADMIN_ALLOWED_IPS", "")
+    allowed = {INGRESS_PROXY_IP, "127.0.0.1", "::1"}
+    allowed.update(item.strip() for item in extra.split(",") if item.strip())
+    return allowed
+
+
+def is_allowed_admin_client(address):
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    if getattr(ip, "ipv4_mapped", None):
+        ip = ip.ipv4_mapped
+    return str(ip) in admin_allowed_clients()
+
+
+def find_user(users, username):
+    user = next((u for u in users if u["username"] == username), None)
+    if not user:
+        raise ApiError(HTTPStatus.NOT_FOUND, "user not found")
+    return user
+
+
+ADMIN_PAGE_HEADERS = {
+    # Ingress embeds the panel in a same-origin iframe; inline code is the page itself.
+    "Content-Security-Policy": (
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+        "img-src 'self' data:; connect-src 'self'; form-action 'self'; "
+        "base-uri 'none'; frame-ancestors 'self'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+USER = r"/api/users/(?P<username>[^/]+)"
+ADMIN_ROUTES = [
+    ("GET", r"/?", "page"),
+    ("GET", r"/api/state", "get_state"),
+    ("GET", r"/api/traffic", "get_traffic"),
+    ("GET", r"/api/log-db-status", "get_log_db"),
+    ("GET", r"/api/backup-status", "get_backup"),
+    ("POST", r"/api/users", "create_user"),
+    ("POST", USER + r"/rotate-token", "rotate_token"),
+    ("POST", USER + r"/password", "reset_password"),
+    ("PATCH", USER, "update_user"),
+    ("PUT", USER + r"/device-settings", "update_user"),  # kept for older UI builds
+    ("PUT", r"/api/settings", "update_settings"),
+    ("DELETE", USER + r"/devices/(?P<device_id>[A-Fa-f0-9]{16})", "delete_device"),
+    ("DELETE", USER, "delete_user"),
+]
+ADMIN_ROUTES = [(method, re.compile(pattern), name) for method, pattern, name in ADMIN_ROUTES]
+
+
 class AdminHandler(CommonHandler):
     def do_GET(self):
-        path = urllib.parse.urlparse(self.path).path
-        if path in ("/", ""):
-            self.send_bytes(HTTPStatus.OK, "text/html; charset=utf-8", PAGE)
-            return
-        if path == "/api/state":
-            self.send_json(HTTPStatus.OK, {"users": [public_user(u) for u in get_users()], "settings": get_settings()})
-            return
-        if path == "/api/traffic":
-            try:
-                self.send_json(HTTPStatus.OK, {"users": get_traffic_view()})
-            except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
-                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
-            return
-        if path == "/api/log-db-status":
-            self.send_json(HTTPStatus.OK, {"status": get_log_db_status()})
-            return
-        if path == "/api/backup-status":
-            self.send_json(HTTPStatus.OK, {"status": get_backup_status()})
-            return
-        self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+        self.dispatch("GET")
 
     def do_POST(self):
-        path = urllib.parse.urlparse(self.path).path
-        if path == "/api/users":
-            try:
-                body = self.read_json()
-                username = str(body.get("username", "")).strip()
-                if not USERNAME_RE.fullmatch(username):
-                    raise ValueError("username must contain only A-Z, a-z, 0-9, _, . or -")
-                password = str(body.get("password", "")) or secrets.token_urlsafe(24)
-                generated = password if not body.get("password") else ""
-                with LOCK:
-                    users = get_users()
-                    if any(u["username"] == username for u in users):
-                        raise ValueError("user already exists")
-                    previous = copy.deepcopy(users)
-                    user = {
-                        "username": username,
-                        "password": password,
-                        "allow_private_ip": bool(body.get("allow_private_ip", False)),
-                        "allow_loopback_ip": bool(body.get("allow_loopback_ip", False)),
-                        "token": secrets.token_urlsafe(24),
-                        "legacy_enabled": bool(body.get("legacy_enabled", True)),
-                        "device_limit": 0,
-                        "devices": [],
-                    }
-                    users.append(user)
-                    reload_output = persist_and_reload(USERS_PATH, users, previous)
-                    result = public_user(user)
-                self.send_json(HTTPStatus.CREATED, {
-                    "user": result,
-                    "generated_password": generated or None,
-                    "mita_reloaded": True,
-                    "mita_output": reload_output,
-                })
-            except ValueError as exc:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-            except MitaReloadError as exc:
-                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
-            return
-
-        m = re.fullmatch(r"/api/users/([^/]+)/rotate-token", path)
-        if m:
-            username = urllib.parse.unquote(m.group(1))
-            with LOCK:
-                users = get_users()
-                for user in users:
-                    if user["username"] == username:
-                        user["token"] = secrets.token_urlsafe(24)
-                        write_json(USERS_PATH, users)
-                        result = public_user(user)
-                        break
-                else:
-                    self.send_json(HTTPStatus.NOT_FOUND, {"error": "user not found"})
-                    return
-            self.send_json(HTTPStatus.OK, {"user": result})
-            return
-
-        self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+        self.dispatch("POST")
 
     def do_PUT(self):
-        path = urllib.parse.urlparse(self.path).path
+        self.dispatch("PUT")
 
-        m = re.fullmatch(r"/api/users/([^/]+)/device-settings", path)
-        if m:
-            username = urllib.parse.unquote(m.group(1))
-            try:
-                body = self.read_json()
-                with LOCK:
-                    users = get_users()
-                    user = next((u for u in users if u["username"] == username), None)
-                    if not user:
-                        self.send_json(HTTPStatus.NOT_FOUND, {"error": "user not found"})
-                        return
-
-                    limit = int(body.get("device_limit", user.get("device_limit", 0) or 0))
-                    if limit < 0 or limit > 100:
-                        raise ValueError("device_limit must be between 0 and 100")
-                    legacy_enabled = bool(body.get("legacy_enabled", user.get("legacy_enabled", True)))
-                    if limit > 0 and len(user.get("devices", [])) > limit:
-                        raise ValueError("device_limit is lower than the number of registered devices")
-
-                    previous = copy.deepcopy(users)
-                    old_legacy = bool(user.get("legacy_enabled", True))
-                    user["legacy_enabled"] = legacy_enabled
-                    user["device_limit"] = limit
-                    if old_legacy != legacy_enabled:
-                        persist_and_reload(USERS_PATH, users, previous)
-                    else:
-                        write_json(USERS_PATH, users)
-                    result = public_user(user)
-
-                self.send_json(HTTPStatus.OK, {"user": result})
-            except ValueError as exc:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-            except MitaReloadError as exc:
-                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
-            return
-
-        if path != "/api/settings":
-            self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
-            return
-        try:
-            body = self.read_json()
-            with LOCK:
-                settings = get_settings()
-                previous = copy.deepcopy(settings)
-                host = str(body.get("public_mieru_host", settings.get("public_mieru_host", ""))).strip()
-                if not host or "/" in host or " " in host:
-                    raise ValueError("invalid public_mieru_host")
-                port = int(body.get("public_mieru_port", settings.get("public_mieru_port", 8443)))
-                if port < 1 or port > 65535:
-                    raise ValueError("invalid public_mieru_port")
-                base = normalize_base_url(body.get("subscription_base_url", settings.get("subscription_base_url", "")))
-                old_log_level = str(settings.get("log_level", "INFO"))
-                if "log_level" in body:
-                    log_level = str(body["log_level"]).upper().strip()
-                    if log_level not in {"FATAL", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"}:
-                        raise ValueError("invalid log_level")
-                    settings["log_level"] = log_level
-                if "postgres_dsn" in body:
-                    postgres_dsn = str(body.get("postgres_dsn", "") or "").strip()
-                    if len(postgres_dsn) > 4096:
-                        raise ValueError("postgres_dsn is too long")
-                    settings["postgres_dsn"] = postgres_dsn
-                if "contact_email" in body:
-                    settings["contact_email"] = normalize_contact_email(body["contact_email"])
-
-                settings["public_mieru_host"] = host
-                settings["public_mieru_port"] = port
-                settings["subscription_base_url"] = base
-                reload_output = ""
-                if settings.get("log_level", "INFO") != old_log_level:
-                    reload_output = persist_and_reload(SETTINGS_PATH, settings, previous)
-                else:
-                    write_json(SETTINGS_PATH, settings)
-
-            self.send_json(HTTPStatus.OK, {
-                "settings": settings,
-                "mita_reloaded": True,
-                "mita_output": reload_output,
-            })
-        except ValueError as exc:
-            self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-        except MitaReloadError as exc:
-            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+    def do_PATCH(self):
+        self.dispatch("PATCH")
 
     def do_DELETE(self):
+        self.dispatch("DELETE")
+
+    def dispatch(self, method):
+        if not is_allowed_admin_client(self.client_address[0]):
+            self.send_json(HTTPStatus.FORBIDDEN, {"error": "admin UI is only available through Home Assistant Ingress"})
+            return
         path = urllib.parse.urlparse(self.path).path
-
-        m = re.fullmatch(r"/api/users/([^/]+)/devices/([A-Fa-f0-9]{16})", path)
-        if m:
-            username = urllib.parse.unquote(m.group(1))
-            device_id = m.group(2)
-            with LOCK:
-                users = get_users()
-                user = next((u for u in users if u["username"] == username), None)
-                if not user:
-                    self.send_json(HTTPStatus.NOT_FOUND, {"error": "user not found"})
-                    return
-                devices = user.get("devices", [])
-                device = next((d for d in devices if d.get("id") == device_id), None)
-                if not device:
-                    self.send_json(HTTPStatus.NOT_FOUND, {"error": "device not found"})
-                    return
-                if not user.get("legacy_enabled", True) and len(devices) == 1:
-                    self.send_json(
-                        HTTPStatus.BAD_REQUEST,
-                        {"error": "enable legacy access before removing the last device"},
-                    )
-                    return
-                previous = copy.deepcopy(users)
-                user["devices"] = [d for d in devices if d.get("id") != device_id]
-                try:
-                    persist_and_reload(USERS_PATH, users, previous)
-                except MitaReloadError as exc:
-                    self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
-                    return
-                result = public_user(user)
-            self.send_json(HTTPStatus.OK, {"deleted": device_id, "user": result})
+        matches = [(m, r.fullmatch(path), name) for m, r, name in ADMIN_ROUTES]
+        matches = [(m, match, name) for m, match, name in matches if match]
+        route = next(((match, name) for m, match, name in matches if m == method), None)
+        if not route:
+            if matches:
+                allow = ", ".join(sorted({m for m, _, _ in matches}))
+                self.send_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "method not allowed"}, headers={"Allow": allow})
+            else:
+                self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
+        if method != "GET":
+            # A JSON media type cannot be sent cross-site without a CORS preflight,
+            # which this server never approves; this blocks form-based CSRF.
+            content_type = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+            if content_type != "application/json":
+                self.send_json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "Content-Type must be application/json"})
+                return
+        match, name = route
+        params = {key: urllib.parse.unquote(value) for key, value in match.groupdict().items()}
+        try:
+            result = getattr(self, "route_" + name)(**params)
+        except ApiError as exc:
+            self.send_json(exc.status, {"error": exc.message})
+        except ValueError as exc:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except (MitaReloadError, StateError) as exc:
+            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+        except Exception as exc:  # Never drop the connection without a response.
+            print(f"[web] {method} {path} failed: {exc!r}", flush=True)
+            self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal error"})
+        else:
+            if result is not None:
+                status, payload = result
+                self.send_json(status, payload)
 
-        m = re.fullmatch(r"/api/users/([^/]+)", path)
-        if not m:
-            self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
-            return
-        username = urllib.parse.unquote(m.group(1))
+    # ----- read-only -----
+    def route_page(self):
+        self.send_bytes(HTTPStatus.OK, "text/html; charset=utf-8", PAGE, headers=ADMIN_PAGE_HEADERS)
+
+    def route_get_state(self):
+        return HTTPStatus.OK, {"users": [public_user(u) for u in get_users()], "settings": get_settings()}
+
+    def route_get_traffic(self):
+        try:
+            return HTTPStatus.OK, {"users": get_traffic_view()}
+        except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, str(exc)) from exc
+
+    def route_get_log_db(self):
+        return HTTPStatus.OK, {"status": get_log_db_status()}
+
+    def route_get_backup(self):
+        return HTTPStatus.OK, {"status": get_backup_status()}
+
+    # ----- users -----
+    def route_create_user(self):
+        body = self.read_json()
+        username = body.get("username", "")
+        username = username.strip() if isinstance(username, str) else ""
+        if not USERNAME_RE.fullmatch(username):
+            raise ValueError("username must contain only A-Z, a-z, 0-9, _, . or -")
+        password, generated = parse_password(body)
+        with LOCK:
+            settings = get_settings()
+            users = get_users()
+            if any(u["username"] == username for u in users):
+                raise ValueError("user already exists")
+            previous = copy.deepcopy(users)
+            user = {
+                "username": username,
+                "password": password,
+                "allow_private_ip": parse_bool(body, "allow_private_ip", bool(settings.get("default_allow_private_ip", False))),
+                "allow_loopback_ip": parse_bool(body, "allow_loopback_ip", bool(settings.get("default_allow_loopback_ip", False))),
+                "token": secrets.token_urlsafe(24),
+                "legacy_enabled": parse_bool(body, "legacy_enabled", True),
+                "device_limit": 0,
+                "devices": [],
+            }
+            users.append(user)
+            reload_output = persist_and_reload(USERS_PATH, users, previous)
+            result = public_user(user)
+        return HTTPStatus.CREATED, {
+            "user": result,
+            "generated_password": generated or None,
+            "mita_reloaded": True,
+            "mita_output": reload_output,
+        }
+
+    def route_rotate_token(self, username):
         with LOCK:
             users = get_users()
+            user = find_user(users, username)
+            user["token"] = secrets.token_urlsafe(24)
+            write_json(USERS_PATH, users)  # Tokens are not part of the mita config.
+            result = public_user(user)
+        return HTTPStatus.OK, {"user": result}
+
+    def route_reset_password(self, username):
+        body = self.read_json()
+        password, generated = parse_password(body)
+        with LOCK:
+            users = get_users()
+            user = find_user(users, username)
+            previous = copy.deepcopy(users)
+            user["password"] = password
+            if user.get("legacy_enabled", True):
+                persist_and_reload(USERS_PATH, users, previous)
+            else:  # Password is only used by the legacy credential.
+                write_json(USERS_PATH, users)
+            result = public_user(user)
+        return HTTPStatus.OK, {"user": result, "generated_password": generated or None}
+
+    def route_update_user(self, username):
+        body = self.read_json()
+        with LOCK:
+            users = get_users()
+            user = find_user(users, username)
+            previous = copy.deepcopy(users)
+            before = {k: bool(user.get(k, d)) for k, d in
+                      (("allow_private_ip", False), ("allow_loopback_ip", False), ("legacy_enabled", True))}
+            after = {k: parse_bool(body, k, v) for k, v in before.items()}
+            limit = parse_int(body, "device_limit", int(user.get("device_limit", 0) or 0), 0, 100)
+            if limit > 0 and len(user.get("devices", [])) > limit:
+                raise ValueError("device_limit is lower than the number of registered devices")
+            user.update(after)
+            user["device_limit"] = limit
+            if after != before:  # Access flags and legacy credentials live in the mita config.
+                persist_and_reload(USERS_PATH, users, previous)
+            else:
+                write_json(USERS_PATH, users)
+            result = public_user(user)
+        return HTTPStatus.OK, {"user": result}
+
+    def route_delete_device(self, username, device_id):
+        with LOCK:
+            users = get_users()
+            user = find_user(users, username)
+            devices = user.get("devices", [])
+            if not any(d.get("id") == device_id for d in devices):
+                raise ApiError(HTTPStatus.NOT_FOUND, "device not found")
+            if not user.get("legacy_enabled", True) and len(devices) == 1:
+                raise ValueError("enable legacy access before removing the last device")
+            previous = copy.deepcopy(users)
+            user["devices"] = [d for d in devices if d.get("id") != device_id]
+            persist_and_reload(USERS_PATH, users, previous)
+            result = public_user(user)
+        return HTTPStatus.OK, {"deleted": device_id, "user": result}
+
+    def route_delete_user(self, username):
+        with LOCK:
+            users = get_users()
+            find_user(users, username)
             new_users = [u for u in users if u["username"] != username]
-            if len(new_users) == len(users):
-                self.send_json(HTTPStatus.NOT_FOUND, {"error": "user not found"})
-                return
             if not new_users:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"error": "at least one user must remain"})
-                return
-            try:
-                reload_output = persist_and_reload(USERS_PATH, new_users, users)
-            except MitaReloadError as exc:
-                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
-                return
-        self.send_json(HTTPStatus.OK, {"deleted": username, "mita_reloaded": True, "mita_output": reload_output})
+                raise ValueError("at least one user must remain")
+            reload_output = persist_and_reload(USERS_PATH, new_users, users)
+        return HTTPStatus.OK, {"deleted": username, "mita_reloaded": True, "mita_output": reload_output}
+
+    # ----- settings -----
+    def route_update_settings(self):
+        body = self.read_json()
+        with LOCK:
+            settings = get_settings()
+            previous = copy.deepcopy(settings)
+            host = body.get("public_mieru_host", settings.get("public_mieru_host", ""))
+            host = host.strip() if isinstance(host, str) else ""
+            if not host or "/" in host or any(c.isspace() for c in host) or len(host) > 253:
+                raise ValueError("invalid public_mieru_host")
+            port = parse_int(body, "public_mieru_port", int(settings.get("public_mieru_port", 8443)), 1, 65535)
+            base = normalize_base_url(body.get("subscription_base_url", settings.get("subscription_base_url", "")))
+            old_log_level = str(settings.get("log_level", "INFO"))
+            if "log_level" in body:
+                log_level = str(body["log_level"]).upper().strip()
+                if log_level not in {"FATAL", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"}:
+                    raise ValueError("invalid log_level")
+                settings["log_level"] = log_level
+            if "postgres_dsn" in body:
+                postgres_dsn = body["postgres_dsn"]
+                if postgres_dsn is None:
+                    postgres_dsn = ""
+                if not isinstance(postgres_dsn, str):
+                    raise ValueError("postgres_dsn must be a string")
+                postgres_dsn = postgres_dsn.strip()
+                if len(postgres_dsn) > 4096:
+                    raise ValueError("postgres_dsn is too long")
+                settings["postgres_dsn"] = postgres_dsn
+            if "contact_email" in body:
+                settings["contact_email"] = normalize_contact_email(body["contact_email"])
+
+            settings["public_mieru_host"] = host
+            settings["public_mieru_port"] = port
+            settings["subscription_base_url"] = base
+            reload_output = ""
+            if settings.get("log_level", "INFO") != old_log_level:
+                reload_output = persist_and_reload(SETTINGS_PATH, settings, previous)
+            else:
+                write_json(SETTINGS_PATH, settings)
+
+        return HTTPStatus.OK, {
+            "settings": settings,
+            "mita_reloaded": True,
+            "mita_output": reload_output,
+        }
 
 
 class SubscriptionHandler(CommonHandler):
     def do_GET(self):
+        try:
+            self.handle_subscription()
+        except StateError as exc:
+            print(f"[web] subscription unavailable: {exc}", flush=True)
+            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "subscription service unavailable"})
+        except Exception as exc:
+            print(f"[web] subscription request failed: {exc!r}", flush=True)
+            self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal error"})
+
+    def handle_subscription(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
@@ -1473,7 +1613,8 @@ class SubscriptionHandler(CommonHandler):
             except OSError as exc:
                 self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
                 return
-            self.send_bytes(HTTPStatus.OK, "text/html; charset=utf-8", page)
+            self.send_bytes(HTTPStatus.OK, "text/html; charset=utf-8", page,
+                            headers=subscription_page_headers(page))
             return
 
         user, credential, response_headers, error_status, error_message = resolve_subscription(
@@ -1492,9 +1633,15 @@ class SubscriptionHandler(CommonHandler):
         )
 
 
+class Server(ThreadingHTTPServer):
+    # The stdlib default backlog of 5 resets connections during short bursts.
+    request_queue_size = 64
+    daemon_threads = True
+
+
 def serve():
-    admin = ThreadingHTTPServer(("0.0.0.0", ADMIN_PORT), AdminHandler)
-    sub = ThreadingHTTPServer(("0.0.0.0", SUB_PORT), SubscriptionHandler)
+    admin = Server(("0.0.0.0", ADMIN_PORT), AdminHandler)
+    sub = Server(("0.0.0.0", SUB_PORT), SubscriptionHandler)
 
     def shutdown_handler(signum, frame):
         threading.Thread(target=admin.shutdown, daemon=True).start()

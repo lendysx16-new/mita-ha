@@ -81,12 +81,21 @@ test('background gradient adapts to theme and step motion slides in from the rig
   assert.match(html, /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.steps\s*>\s*\.step\s*\{\s*animation:\s*none;/);
 });
 
-function setup(platform = 'ios', browser = {}) {
+// Mirrors webapp.public_client_catalog(): the browser never receives regexes or repos.
+const catalog = JSON.parse(fs.readFileSync(new URL('../mita/clients.json', import.meta.url), 'utf8')).clients
+  .map(client => ({
+    id: client.id, name: client.name, scheme: client.scheme ?? null,
+    hwid: Boolean(client.hwid), xhwid_param: Boolean(client.xhwid_param),
+    downloads: client.downloads.map(({os, label, note, target, url}) =>
+      Object.fromEntries(Object.entries({os, label, note, target, url}).filter(([, v]) => v !== undefined))),
+  }));
+
+function setup(platform = 'ios', browser = {}, extra = {}) {
   const ids = [
-    'clientSelect', 'platformSelect', 'hwidBadge', 'installBtn', 'missingInstall',
+    'clientSelect', 'platformSelect', 'hwidBadge', 'hwidRequiredNote', 'installBtn', 'missingInstall',
     'alternatives', 'alternativeLinks', 'installLabel', 'installSource',
     'terminalInstall', 'terminalCommand', 'copyTerminal', 'terminalFeedback',
-    'openProfile', 'openLabel', 'openHint', 'copySecondary', 'copyFeedback',
+    'openProfile', 'openLabel', 'openHint', 'copySecondary', 'copyFeedback', 'connectStep',
   ];
   const nodes = new Map();
   const makeNode = () => ({
@@ -97,8 +106,10 @@ function setup(platform = 'ios', browser = {}) {
     children: [],
     events: {},
     style: {},
+    dataset: {},
     addEventListener(name, callback) { this.events[name] = callback; },
     removeAttribute(name) { delete this[name]; },
+    setAttribute(name, value) { this[name] = value; },
     replaceChildren(...children) { this.children = children; },
     append(...children) { this.children.push(...children); },
     select() {},
@@ -106,25 +117,22 @@ function setup(platform = 'ios', browser = {}) {
   });
   for (const id of ids) nodes.set(id, makeNode());
   const clientNode = nodes.get('clientSelect');
-  clientNode.value = 'clashmi';
-  clientNode.options = [...html.matchAll(/<option value="(verge|clashproxy|clashmi|karing|flclashx|koala)">/g)]
-    .map(([, value]) => ({ value, disabled: false, hidden: false }));
-  Object.defineProperty(clientNode, 'selectedOptions', {
-    get() { return clientNode.options.filter(option => option.value === clientNode.value); },
-  });
+  Object.defineProperty(clientNode, 'options', { get() { return clientNode.children; } });
 
   let clipboard = '';
   const document = {
     getElementById(id) { return nodes.get(id); },
     createElement() { return makeNode(); },
     body: { appendChild() {} },
-    execCommand(command) { return command === 'copy'; },
+    execCommand(command) { return extra.copyFails ? false : command === 'copy'; },
   };
   const context = {
     window: { __SUBSCRIPTION__: {
       username: 'tester',
       url: 'https://vpn.example.com/sub/' + 'T'.repeat(32),
       platform,
+      hwid_required: Boolean(extra.hwidRequired),
+      clients: catalog,
     }},
     URL,
     URLSearchParams,
@@ -133,7 +141,9 @@ function setup(platform = 'ios', browser = {}) {
       userAgent: browser.userAgent || '',
       platform: browser.platform || '',
       maxTouchPoints: browser.maxTouchPoints || 0,
-      clipboard: { async writeText(value) { clipboard = value; } },
+      clipboard: extra.copyFails
+        ? { async writeText() { throw new Error('denied'); } }
+        : { async writeText(value) { clipboard = value; } },
     },
   };
   vm.runInNewContext(source, context, { filename: 'subscription.html' });
@@ -141,6 +151,7 @@ function setup(platform = 'ios', browser = {}) {
   return {
     nodes,
     get(id) { return nodes.get(id); },
+    option(id) { return clientNode.options.find(option => option.value === id); },
     change(id, value) { const node = nodes.get(id); node.value = value; node.events.change(); },
     get clipboard() { return clipboard; },
   };
@@ -240,10 +251,12 @@ test('manual subscription link remains available in advanced settings', async ()
   assert.equal(view.get('copyFeedback').hidden, false);
 });
 
-test('picker includes platform recommendations and no generic option', () => {
+test('picker lists the catalog with the recommendation first and no generic option', () => {
   const view = setup('ios');
   const values = view.get('clientSelect').options.map(option => option.value);
-  assert.deepEqual(values, ['verge', 'clashproxy', 'clashmi', 'karing', 'flclashx', 'koala']);
+  assert.deepEqual(values, ['clashmi', 'verge', 'clashproxy', 'karing', 'flclashx', 'koala',
+    'slothclash', 'clashfest', 'clashparty', 'cmfa']);
+  assert.doesNotMatch(html, /<option value="(?:verge|clashmi|koala)">/, 'options come from clients.json');
   assert.doesNotMatch(html, /<option value="(?:flclash|generic)">/);
 });
 
@@ -267,13 +280,12 @@ test('Koala Clash supports HWID and has a verified scheme on desktop', () => {
 
 test('iOS hides clients that have no iOS installation option', () => {
   const view = setup('ios');
-  const clients = view.get('clientSelect').options;
-  assert.equal(clients.find(item => item.value === 'koala').disabled, true);
-  assert.equal(clients.find(item => item.value === 'flclashx').hidden, true);
-  assert.equal(clients.find(item => item.value === 'karing').disabled, false);
+    assert.equal(view.option('koala').disabled, true);
+  assert.equal(view.option('flclashx').hidden, true);
+  assert.equal(view.option('karing').disabled, false);
   view.change('platformSelect', 'windows');
-  assert.equal(clients.find(item => item.value === 'koala').hidden, false);
-  assert.equal(clients.find(item => item.value === 'flclashx').disabled, false);
+  assert.equal(view.option('koala').hidden, false);
+  assert.equal(view.option('flclashx').disabled, false);
 });
 
 test('requires device selection when OS is unknown', () => {
@@ -311,4 +323,66 @@ test('macOS recommends the requested App Store client and manual import', async 
   assert.equal(view.get('clientSelect').value, 'clashproxy');
   view.change('platformSelect', 'ios');
   assert.equal(view.get('clientSelect').value, 'clashmi');
+});
+
+test('HWID-only profiles never offer clients that cannot send x-hwid', () => {
+  for (const os of ['windows', 'macos', 'android', 'linux']) {
+    const view = setup(os, {}, { hwidRequired: true });
+    const ids = view.get('clientSelect').options.map(option => option.value);
+    assert.ok(!ids.some(id => ['verge', 'clashproxy', 'clashparty', 'cmfa'].includes(id)), os);
+    assert.equal(view.get('hwidRequiredNote').hidden, false);
+    assert.equal(view.get('hwidBadge').hidden, false);
+    assert.equal(view.get('openProfile').hidden, false, os + ' still has a one-tap import');
+  }
+  const windows = setup('windows', {}, { hwidRequired: true });
+  assert.equal(windows.get('clientSelect').value, 'clashmi');
+  const normal = setup('windows');
+  assert.equal(normal.get('hwidRequiredNote').hidden, true);
+});
+
+test('new HWID clients deep-link with their own schemes', () => {
+  const desktop = setup('windows');
+  desktop.change('clientSelect', 'slothclash');
+  assert.match(desktop.get('installBtn').href, /\/download\/slothclash\/windows-amd64$/);
+  assert.match(desktop.get('openProfile').href, /^slothclash:\/\/install-config\?/);
+  assert.equal(new URL(desktop.get('openProfile').href).searchParams.get('xhwid'), null);
+  assert.equal(desktop.get('hwidBadge').hidden, false);
+
+  const android = setup('android');
+  android.change('clientSelect', 'clashfest');
+  assert.match(android.get('installBtn').href, /\/download\/clashfest\/android-arm64$/);
+  assert.match(android.get('openProfile').href, /^clashfest:\/\/install-config\?/);
+  assert.equal(android.get('alternativeLinks').children.length, 2);
+  android.change('clientSelect', 'cmfa');
+  assert.match(android.get('openProfile').href, /^clashmeta:\/\/install-config\?/);
+  assert.equal(android.get('hwidBadge').hidden, true);
+  assert.equal(android.option('slothclash').disabled, true, 'desktop-only client hidden on Android');
+});
+
+test('Linux terminal offers every GitHub-backed client, including new ones', () => {
+  const view = setup('linux');
+  for (const id of ['slothclash', 'verge', 'clashparty']) {
+    view.change('clientSelect', id);
+    assert.equal(view.get('terminalInstall').hidden, false, id);
+    assert.match(view.get('terminalCommand').textContent, new RegExp('install-linux\\.sh ' + id + '$'));
+  }
+});
+
+test('no import link without a platform; manual hint stays visible without one-tap import', () => {
+  const unknown = setup('unknown');
+  assert.equal(unknown.get('openProfile').hidden, true);
+  assert.equal(unknown.get('connectStep').dataset.import, 'manual');
+  const mac = setup('macos');
+  assert.equal(mac.get('connectStep').dataset.import, 'manual');
+  mac.change('clientSelect', 'koala');
+  assert.equal(mac.get('connectStep').dataset.import, 'link');
+  assert.match(html, /\.step\[data-import="link"\] #openHint/);
+});
+
+test('copy failure is reported instead of claiming success', async () => {
+  const view = setup('windows', {}, { copyFails: true });
+  await view.get('copySecondary').events.click();
+  assert.match(view.get('copyFeedback').textContent, /Не удалось/);
+  await view.get('copyTerminal').events.click();
+  assert.match(view.get('terminalFeedback').textContent, /Не удалось/);
 });
