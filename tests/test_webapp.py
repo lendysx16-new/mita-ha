@@ -146,6 +146,7 @@ class AdminAPITests(unittest.TestCase):
                 self.assertEqual(app.get_settings().get("contact_email", ""), "")
         self.reload_mock.assert_not_called()
 
+    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_outbound_settings_validate_and_require_restart(self):
         egress = {
             "proxies": [{"name": "sing-box", "host": "127.0.0.1", "port": 1080}],
@@ -154,6 +155,7 @@ class AdminAPITests(unittest.TestCase):
         status, data = self.call("PUT", "/api/settings", {"egress": egress})
         self.assertEqual(status, 200)
         self.assertTrue(data["restart_required"])
+        self.assertTrue(self.call("GET", "/api/state")[1]["outbound_enabled"])
         self.reload_mock.assert_not_called()
         config = app.build_mita_config(app.get_users(), app.get_settings())
         self.assertEqual(config["egress"]["rules"][0]["domainNames"], ["example.com"])
@@ -167,6 +169,20 @@ class AdminAPITests(unittest.TestCase):
         status, _ = self.call("PUT", "/api/settings", {"egress": {"proxies": [], "rules": []}})
         self.assertEqual(status, 200)
         self.assertEqual(app.build_mita_config(app.get_users(), app.get_settings())["egress"]["rules"], [])
+
+    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "0"})
+    def test_home_assistant_ignores_and_hides_restored_outbound(self):
+        settings = app.get_settings()
+        settings["egress"] = {"rules": [{"domainNames": ["example.com"], "action": "REJECT"}]}
+        app.write_json(app.SETTINGS_PATH, settings)
+
+        self.assertNotIn("egress", app.build_mita_config(app.get_users(), settings))
+        _, state = self.call("GET", "/api/state")
+        self.assertFalse(state["outbound_enabled"])
+        self.assertNotIn("egress", state["settings"])
+        status, _ = self.call("PUT", "/api/settings", {"egress": {"rules": []}})
+        self.assertEqual(status, 400)
+        self.assertEqual(app.get_settings()["egress"], settings["egress"])
 
     def test_settings_without_log_change_does_not_reload(self):
         status, _ = self.call("PUT", "/api/settings", {"public_mieru_port": 443})

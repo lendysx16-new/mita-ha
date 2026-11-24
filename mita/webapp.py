@@ -639,10 +639,14 @@ def normalize_contact_email(value):
     return address
 
 
+def is_standalone():
+    return os.environ.get("MITA_STANDALONE") == "1"
+
+
 def initialize():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     options = load_options()
-    if os.environ.get("MITA_STANDALONE") == "1":
+    if is_standalone():
         options.setdefault("public_mieru_host", os.environ.get("MITA_PUBLIC_HOST", "localhost"))
         options.setdefault("public_mieru_port", int(os.environ.get("MITA_PUBLIC_PORT", "2022")))
         options.setdefault("subscription_base_url", os.environ.get(
@@ -906,7 +910,7 @@ def build_mita_config(users, settings):
         "loggingLevel": settings.get("log_level", "INFO"),
         "dns": {"dualStack": dns_policy},
     }
-    if "egress" in settings:
+    if is_standalone() and "egress" in settings:
         config["egress"] = normalize_egress(settings["egress"])
     return config
 
@@ -1545,7 +1549,15 @@ class AdminHandler(CommonHandler):
         self.send_bytes(HTTPStatus.OK, "text/html; charset=utf-8", PAGE, headers=ADMIN_PAGE_HEADERS)
 
     def route_get_state(self):
-        return HTTPStatus.OK, {"users": [public_user(u) for u in get_users()], "settings": get_settings()}
+        settings = get_settings()
+        outbound_enabled = is_standalone()
+        if not outbound_enabled:
+            settings.pop("egress", None)
+        return HTTPStatus.OK, {
+            "users": [public_user(u) for u in get_users()],
+            "settings": settings,
+            "outbound_enabled": outbound_enabled,
+        }
 
     def route_get_traffic(self):
         try:
@@ -1695,6 +1707,8 @@ class AdminHandler(CommonHandler):
                 settings["contact_email"] = normalize_contact_email(body["contact_email"])
 
             if "egress" in body:
+                if not is_standalone():
+                    raise ValueError("outbound is only available on standalone Linux")
                 settings["egress"] = normalize_egress(body["egress"])
             egress_changed = settings.get("egress") != previous.get("egress")
 
@@ -1707,6 +1721,8 @@ class AdminHandler(CommonHandler):
             else:
                 write_json(SETTINGS_PATH, settings)
 
+        if not is_standalone():
+            settings.pop("egress", None)
         return HTTPStatus.OK, {
             "settings": settings,
             "restart_required": egress_changed,
@@ -1818,7 +1834,7 @@ class Server(ThreadingHTTPServer):
 
 
 def serve():
-    admin_host = "127.0.0.1" if os.environ.get("MITA_STANDALONE") == "1" else "0.0.0.0"
+    admin_host = "127.0.0.1" if is_standalone() else "0.0.0.0"
     admin = Server((admin_host, ADMIN_PORT), AdminHandler)
     sub = Server(("0.0.0.0", SUB_PORT), SubscriptionHandler)
 

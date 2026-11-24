@@ -454,7 +454,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
           </div></div>
           <div class="card-actions"><button id="saveSettings" class="btn" type="submit">Save connection</button></div>
         </form>
-        <form class="card" id="outboundForm">
+        <form class="card" id="outboundForm" hidden>
           <div class="card-header"><div><h2>Outbound</h2><p class="card-subtitle">Route destinations through SOCKS5, connect directly, or block them. Rules run top to bottom. Restart Mita after saving.</p></div></div>
           <div class="card-body">
             <label>Outbound configuration (JSON)<textarea id="outboundConfig" rows="12" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
@@ -949,7 +949,10 @@ function fillSettings(s) {
   $('#contactEmail').value = s.contact_email || '';
   $('#logLevel').value = s.log_level || 'INFO';
   $('#postgresDsn').value = s.postgres_dsn || '';
-  $('#outboundConfig').value = JSON.stringify(s.egress || {proxies: [], rules: []}, null, 2);
+  const outboundEnabled = state.outbound_enabled === true;
+  $('#outboundForm').hidden = !outboundEnabled;
+  $('#outboundConfig').value = outboundEnabled
+    ? JSON.stringify(s.egress || {proxies: [], rules: []}, null, 2) : '';
 }
 function resetAddUserForm() {
   $('#username').value = '';
@@ -968,6 +971,7 @@ async function load() {
   const data = await api.state();
   state.users = data.users || [];
   state.settings = data.settings || {};
+  state.outbound_enabled = data.outbound_enabled === true;
   renderStats();
   renderUsers();
   renderDeviceDirectory();

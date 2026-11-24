@@ -1,8 +1,3 @@
-## 3.40.0.2
-
-- Added server-side SOCKS5 outbound routing by domain suffix or IP range. Save the rules in Settings → Outbound, then restart Mita.
-- Added an optional sing-box service to the Linux Compose setup.
-
 ## 3.40.0.1
 
 - Updated the bundled Mita core to 3.40.0 for amd64 and aarch64. The release fixes private IP checks on outbound traffic and a race in per-user metrics.

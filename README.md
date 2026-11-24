@@ -78,9 +78,8 @@ same tables does not synchronize changes and mixes their snapshot histories.
 
 ## Route selected destinations through an outbound proxy
 
-Open **Settings → Outbound** in the Mita admin UI on Home Assistant or Linux.
-Save the JSON configuration, then restart the HA add-on or run
-`docker compose restart mita` on Linux. Changes take effect after restart.
+Open **Settings → Outbound** in the standalone Linux admin UI.
+Save the JSON configuration, then run `docker compose restart mita`. Changes take effect after restart.
 Use empty `proxies` and `rules` arrays to remove all custom routing.
 
 Rules are evaluated in order. `domainNames` entries match the domain and its
@@ -107,8 +106,4 @@ docker compose --profile sing-box up -d
 ```
 
 Use the sing-box example in the Mita Outbound editor to route specific domains
-through that SOCKS5 listener. On Home Assistant, point Mita at a reachable
-SOCKS5 listener from a separately installed sing-box instance. The add-on's
-loopback address reaches only the Mita container. If the listener is remote,
-require SOCKS5 authentication and limit network access to the Mita host.
-SOCKS5 credentials alone do not encrypt the connection.
+through that SOCKS5 listener.

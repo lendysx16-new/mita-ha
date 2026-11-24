@@ -48,7 +48,7 @@ function setup(overrides = {}) {
     dataset: {tab}, classList: { active: false, toggle(name,value) { if(name==='active')this.active=value; } },
     setAttribute() {},
   }));
-  const state = { users: [{
+  const state = { outbound_enabled: overrides.outboundEnabled, users: [{
     username: 'alice', allow_private_ip: false, allow_loopback_ip: false,
     legacy_enabled: true, device_limit: 2, subscription_url: 'https://vpn.example/sub/SECRET_TOKEN',
     devices: [{id: '0123456789abcdef', name: 'Laptop', hwid: 'sensitive-hwid',
@@ -235,4 +235,13 @@ test('users on the placeholder password are flagged with a reset shortcut', asyn
   state.users[0].default_password = false;
   await ctx.load();
   assert.equal(element('#detailPasswordWarning').hidden, true);
+});
+
+test('outbound editor is available only in standalone Linux mode', async () => {
+  for (const enabled of [false, true]) {
+    const {ctx, element} = setup({outboundEnabled: enabled});
+    await ctx.load();
+    ctx.fillSettings({});
+    assert.equal(element('#outboundForm').hidden, !enabled);
+  }
 });
