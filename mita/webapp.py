@@ -857,6 +857,21 @@ def parse_password(body):
     return value, ""
 
 
+def normalize_egress_domain(value, wildcard=False):
+    if not isinstance(value, str):
+        raise ValueError("domain or proxy host must be a string")
+    if wildcard and value == "*":
+        return value
+    value = value.lower().removesuffix(".")
+    labels = value.split(".")
+    if len(value) > 253 or any(
+        not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+        for label in labels
+    ):
+        raise ValueError("invalid domain or proxy host (use ASCII or punycode)")
+    return value
+
+
 def normalize_egress(value, *, destination_limit=256):
     """Validate the supported subset of Mita's native egress schema."""
     def object_fields(item, allowed, label):
@@ -868,20 +883,6 @@ def normalize_egress(value, *, destination_limit=256):
         if not isinstance(values, list) or len(values) > limit:
             raise ValueError(f"{key} must be an array with at most {limit} entries")
         return values
-
-    def domain(value, wildcard=False):
-        if not isinstance(value, str):
-            raise ValueError("domain or proxy host must be a string")
-        if wildcard and value == "*":
-            return value
-        value = value.lower().removesuffix(".")
-        labels = value.split(".")
-        if len(value) > 253 or any(
-            not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
-            for label in labels
-        ):
-            raise ValueError("invalid domain or proxy host (use ASCII or punycode)")
-        return value
 
     object_fields(value, {"proxies", "rules"}, "Outbound")
     proxies = []
@@ -904,7 +905,7 @@ def normalize_egress(value, *, destination_limit=256):
         try:
             host = str(ipaddress.ip_address(host))
         except ValueError:
-            host = domain(host)
+            host = normalize_egress_domain(host)
         entry = {"name": name, "protocol": protocol, "host": host, "port": port}
         if "socks5Authentication" in proxy:
             auth = proxy["socks5Authentication"]
@@ -921,7 +922,7 @@ def normalize_egress(value, *, destination_limit=256):
     rules = []
     for rule in items(value, "rules", 128):
         object_fields(rule, {"domainNames", "ipRanges", "action", "proxyNames"}, "Rule")
-        domains = [domain(v, wildcard=True) for v in items(rule, "domainNames", destination_limit)]
+        domains = [normalize_egress_domain(v, wildcard=True) for v in items(rule, "domainNames", destination_limit)]
         ranges = []
         for value in items(rule, "ipRanges", destination_limit):
             if not isinstance(value, str) or (value != "*" and "/" not in value):
@@ -991,7 +992,8 @@ def sing_box_config(settings):
 
 
 GEO_REFRESH_INTERVAL = 24 * 60 * 60
-GEO_MAX_BYTES = 1024 * 1024
+GEO_MAX_BYTES = 4 * 1024 * 1024
+GEO_DESTINATION_LIMIT = 16384
 
 
 class NoGeoRedirects(urllib.request.HTTPRedirectHandler):
@@ -1046,17 +1048,32 @@ def parse_geo_source(source):
             values = rule[key]
             if isinstance(values, str):
                 values = [values]
-            if not isinstance(values, list) or not values or any(
-                not isinstance(item, str) or not item.strip() for item in values
-            ):
-                raise ValueError("Geo rule entries must be nonempty strings")
+            if not isinstance(values, list):
+                skipped.add(f"invalid {key} entries")
+                continue
             for value in values:
-                if key == "domain_suffix" and value.strip().startswith("."):
+                if key == "domain_suffix" and isinstance(value, str) and value.strip().startswith("."):
                     skipped.add("subdomain-only suffixes")
-                else:
-                    target.append(value.strip())
-            if len(target) > 16384:
-                raise ValueError("Geo rule set exceeds 16384 entries per selector")
+                    continue
+                try:
+                    if not isinstance(value, str):
+                        raise ValueError()
+                    value = value.strip()
+                    if key == "domain_suffix":
+                        if not value.isascii():
+                            raise ValueError()
+                        value = normalize_egress_domain(value)
+                    else:
+                        if "/" not in value:
+                            raise ValueError()
+                        network = ipaddress.ip_network(value, strict=False)
+                        if network.prefixlen == 0:
+                            raise ValueError()
+                        value = str(network)
+                except ValueError:
+                    skipped.add("invalid domain suffixes" if key == "domain_suffix" else "invalid CIDRs")
+                    continue
+                target.append(value)
     if not domains and not ip_ranges:
         raise ValueError("Geo rule set has no compatible domain suffixes or CIDRs")
     return domains, ip_ranges, sorted(skipped)
@@ -1072,7 +1089,7 @@ def download_geo_sources(urls):
         except (OSError, ValueError, HTTPException) as exc:
             raise ValueError("could not download GitHub Geo rule set") from exc
         if len(payload) > GEO_MAX_BYTES:
-            raise ValueError("GitHub Geo rule set exceeds 1 MiB")
+            raise ValueError("GitHub Geo rule set exceeds 4 MiB")
         try:
             source = json.loads(payload)
         except (ValueError, RecursionError) as exc:
@@ -1088,6 +1105,33 @@ def download_geo_sources(urls):
     }
 
 
+def limit_geo_snapshot(snapshot, domains, ip_ranges):
+    """Fill the remaining capacity with distinct remote entries in source order."""
+    limited = {}
+    skipped = set(snapshot.get("skipped", []))
+    for key, manual, label in (
+        ("domains", domains, "domain suffixes"), ("ip_ranges", ip_ranges, "CIDRs"),
+    ):
+        if key == "domains":
+            seen = {normalize_egress_domain(value) for value in manual}
+        else:
+            seen = {str(ipaddress.ip_network(value, strict=False)) for value in manual}
+        imported = []
+        overflow = 0
+        for value in snapshot.get(key, []):
+            if value in seen:
+                continue
+            seen.add(value)
+            if len(seen) <= GEO_DESTINATION_LIMIT:
+                imported.append(value)
+            else:
+                overflow += 1
+        if overflow:
+            skipped.add(f"{overflow} {label} beyond the {GEO_DESTINATION_LIMIT} entry limit")
+        limited[key] = imported
+    return dict(limited, skipped=sorted(skipped))
+
+
 def refresh_geo_sources():
     with LOCK:
         bridge = get_settings().get("sing_box") or {}
@@ -1098,7 +1142,10 @@ def refresh_geo_sources():
     with LOCK:
         settings = get_settings()
         current = settings.get("sing_box")
-        if current != bridge or current.get("geo_snapshot") == downloaded:
+        if current != bridge:
+            return
+        downloaded = limit_geo_snapshot(downloaded, current["domains"], current.get("ip_ranges", []))
+        if current.get("geo_snapshot") == downloaded:
             return
         current["geo_snapshot"] = downloaded
         current["geo_updated_at"] = utc_now()
@@ -1124,8 +1171,14 @@ def managed_egress(settings):
     if any(proxy["name"] == SING_BOX_PROXY_NAME for proxy in egress["proxies"]):
         raise ValueError(f"{SING_BOX_PROXY_NAME} is reserved while built-in sing-box is enabled")
     snapshot = bridge.get("geo_snapshot", {})
-    domains = list(dict.fromkeys(bridge["domains"] + snapshot.get("domains", [])))
-    ip_ranges = list(dict.fromkeys(bridge.get("ip_ranges", []) + snapshot.get("ip_ranges", [])))
+    domains = list(dict.fromkeys(
+        normalize_egress_domain(value)
+        for value in bridge["domains"] + snapshot.get("domains", [])
+    ))
+    ip_ranges = list(dict.fromkeys(
+        str(ipaddress.ip_network(value, strict=False)) if "/" in value else value
+        for value in bridge.get("ip_ranges", []) + snapshot.get("ip_ranges", [])
+    ))
     managed = normalize_egress({
         "proxies": [{
             "name": SING_BOX_PROXY_NAME,
@@ -1139,7 +1192,7 @@ def managed_egress(settings):
             "action": "PROXY",
             "proxyNames": [SING_BOX_PROXY_NAME],
         }],
-    }, destination_limit=16384)
+    }, destination_limit=GEO_DESTINATION_LIMIT)
     rule = managed["rules"][0]
     if "*" in rule["domainNames"] or any(
         value == "*" or ipaddress.ip_network(value).prefixlen == 0
@@ -2091,7 +2144,7 @@ class AdminHandler(CommonHandler):
     def route_sing_box(self):
         if not sing_box_available():
             raise ApiError(HTTPStatus.NOT_FOUND, "built-in sing-box is only available in the Linux image")
-        body = self.read_json(max_bytes=1024 * 1024)
+        body = self.read_json(max_bytes=6 * 1024 * 1024)
         outbound = body.get("outbound")
         disabling = outbound is None and body.get("enabled") is False
         if not disabling:
@@ -2117,6 +2170,7 @@ class AdminHandler(CommonHandler):
                     "ip_ranges": ip_ranges, "password": password,
                 }
                 if urls:
+                    snapshot = limit_geo_snapshot(snapshot, domains, ip_ranges)
                     updated.update(geo_urls=urls, geo_snapshot=snapshot, geo_updated_at=utc_now())
                 settings["sing_box"] = updated
                 managed_egress(settings)

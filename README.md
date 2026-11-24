@@ -143,7 +143,11 @@ request sent directly to an IP in the given network:
 Use source JSON rather than binary `.dat` or `.srs` files. In mixed
 GeoSite lists, compatible suffixes are imported and skipped exact-domain,
 regex, keyword, subdomain-only, and compound rules are reported.
-A list without any compatible selectors is rejected. GeoIP matches destination IPs sent by clients. Mita does not
+A list without any compatible selectors is rejected. Invalid domain suffixes
+such as names with underscores or Unicode are skipped; use ASCII punycode
+for internationalized names. Each managed rule supports 16,384 distinct
+domains and 16,384 distinct CIDRs. Manual and locally imported entries take
+priority over GitHub entries; overflow is reported in Skipped. GeoIP matches destination IPs sent by clients. Mita does not
 resolve incoming domain names solely to evaluate GeoIP rules. Lists are
 snapshots and can be replaced by clearing the corresponding field and
 importing an updated file. Save and restart Mita to apply. The imported

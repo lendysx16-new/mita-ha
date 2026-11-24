@@ -299,6 +299,21 @@ class AdminAPITests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.parse_geo_source({"version": 3, "rules": [{"domain_regex": [".*"]}]})
 
+    def test_geo_import_skips_bad_domains_and_limits_after_manual_entries(self):
+        domains, ip_ranges, skipped = app.parse_geo_source({
+            "version": 3, "rules": [{
+                "domain_suffix": ["_dmarc.example.com", "пример.рф", "FIRST.example.",
+                                  "second.example", "third.example"],
+            }],
+        })
+        self.assertEqual(domains, ["first.example", "second.example", "third.example"])
+        self.assertIn("invalid domain suffixes", skipped)
+        snapshot = {"domains": domains, "ip_ranges": ip_ranges, "skipped": skipped}
+        with mock.patch.object(app, "GEO_DESTINATION_LIMIT", 2):
+            limited = app.limit_geo_snapshot(snapshot, ["FIRST.example", "manual.example"], [])
+        self.assertEqual(limited["domains"], [])
+        self.assertIn("2 domain suffixes beyond the 2 entry limit", limited["skipped"])
+
     def test_sing_box_supervisor_backs_off_and_resumes_quick_checks(self):
         app.write_json(app.SETTINGS_PATH, {"sing_box": {"outbound": {"type": "socks"}}})
         stop = mock.Mock()

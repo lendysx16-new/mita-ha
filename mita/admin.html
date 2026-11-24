@@ -462,8 +462,8 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
               <label class="span-2">Provider outbound (JSON)<textarea id="singBoxConfig" rows="8" required spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
               <label class="span-2">Domains (one per line)<textarea id="singBoxDomains" rows="3" spellcheck="false" placeholder="example.com" autocapitalize="off"></textarea></label>
               <label class="span-2">IP networks (one CIDR per line)<textarea id="singBoxIPRanges" rows="3" spellcheck="false" placeholder="198.51.100.0/24" autocapitalize="off"></textarea></label>
-              <label class="span-2">Import GeoSite / GeoIP<input id="singBoxGeoFiles" type="file" accept=".json,application/json" multiple><span id="singBoxImportStatus" class="field-help" role="status"></span><span class="field-help">sing-box source rule sets with domain_suffix or ip_cidr. Imported entries are added to the fields above. Unsupported selectors are listed in the import result.</span></label>
-              <label class="span-2">GitHub Geo lists (one URL per line)<textarea id="singBoxGeoUrls" rows="3" spellcheck="false" placeholder="https://raw.githubusercontent.com/owner/repo/main/geosite.json" autocapitalize="off"></textarea><span class="field-help">Checked daily. Restart Mita to apply an updated list.</span><span id="singBoxGeoStatus" class="field-help"></span></label>
+              <label class="span-2">Import GeoSite / GeoIP<input id="singBoxGeoFiles" type="file" accept=".json,application/json" multiple><span id="singBoxImportStatus" class="field-help" role="status"></span><span class="field-help">sing-box source rule sets with domain_suffix or ip_cidr. Imported entries are added to the fields above. Limit: 16,384 unique domains and 16,384 unique CIDRs per managed rule, including GitHub entries.</span></label>
+              <label class="span-2">GitHub Geo lists (one URL per line)<textarea id="singBoxGeoUrls" rows="3" spellcheck="false" placeholder="https://raw.githubusercontent.com/owner/repo/main/geosite.json" autocapitalize="off"></textarea><span class="field-help">Checked daily. Within the 16,384-per-list limit, manual and file entries take priority over GitHub entries. Restart Mita to apply changes.</span><span id="singBoxGeoStatus" class="field-help"></span></label>
             </div>
           </div>
           <div class="card-actions">
@@ -1115,6 +1115,15 @@ $('#connectionForm').addEventListener('submit', async e => {
   }), 'Connection settings saved');
   if (ok) fillSettings(state.settings);
 });
+const GEO_DESTINATION_LIMIT = 16384;
+
+function normalizeGeoDomain(value) {
+  if (typeof value !== 'string' || /[^\x00-\x7F]/.test(value)) return null;
+  const domain = value.trim().toLowerCase().replace(/\.$/, '');
+  const label = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+  return domain.length <= 253 && domain.split('.').every(part => label.test(part)) ? domain : null;
+}
+
 function readGeoRuleSet(source) {
   if (!source || ![1, 2, 3, 4].includes(source.version) || !Array.isArray(source.rules) || !source.rules.length) {
     throw new Error('Expected a sing-box source rule set with a version and rules array.');
@@ -1138,13 +1147,17 @@ function readGeoRuleSet(source) {
         continue;
       }
       const values = Array.isArray(rule[key]) ? rule[key] : [rule[key]];
-      if (!values.length || values.some(value => typeof value !== 'string' || !value.trim())) {
-        throw new Error('Geo rule entries must be nonempty strings.');
-      }
-      for (const value of values.map(value => value.trim())) {
-        if (key === 'ip_cidr') ipRanges.push(value);
-        else if (value.startsWith('.')) skipped.add('subdomain-only suffixes');
-        else domains.push(value);
+      for (const value of values) {
+        if (key === 'ip_cidr') {
+          if (typeof value === 'string' && value.trim()) ipRanges.push(value.trim());
+          else skipped.add('invalid CIDRs');
+        } else if (typeof value === 'string' && value.trim().startsWith('.')) {
+          skipped.add('subdomain-only suffixes');
+        } else {
+          const domain = normalizeGeoDomain(value);
+          if (domain) domains.push(domain);
+          else skipped.add('invalid domain suffixes');
+        }
       }
     }
   }
@@ -1161,13 +1174,25 @@ $('#singBoxGeoFiles').addEventListener('change', async e => {
     let bytes = 0;
     const lists = await Promise.all(files.map(file => {
       bytes += file.size;
-      if (bytes > 1024 * 1024) throw new Error('Choose rule sets totaling at most 1 MiB.');
+      if (bytes > 4 * 1024 * 1024) throw new Error('Choose rule sets totaling at most 4 MiB.');
       return file.text().then(text => readGeoRuleSet(JSON.parse(text)));
     }));
-    for (const [field, key] of [['#singBoxDomains', 'domains'], ['#singBoxIPRanges', 'ipRanges']]) {
-      $(field).value = [...new Set([...destinationLines(field), ...lists.flatMap(list => list[key])])].join('\n');
-    }
     const skipped = [...new Set(lists.flatMap(list => list.skipped))].sort();
+    for (const [field, key, label] of [
+      ['#singBoxDomains', 'domains', 'domain suffixes'], ['#singBoxIPRanges', 'ipRanges', 'CIDRs'],
+    ]) {
+      const existing = destinationLines(field);
+      const seen = new Set(existing.map(value => key === 'domains' ? normalizeGeoDomain(value) || value : value));
+      let overflow = 0;
+      for (const value of lists.flatMap(list => list[key])) {
+        if (seen.has(value)) continue;
+        seen.add(value);
+        if (seen.size <= GEO_DESTINATION_LIMIT) existing.push(value);
+        else overflow++;
+      }
+      if (overflow) skipped.push(overflow + ' ' + label + ' beyond the ' + GEO_DESTINATION_LIMIT + ' entry limit');
+      $(field).value = existing.join('\n');
+    }
     $('#singBoxImportStatus').textContent = skipped.length ? 'Skipped: ' + skipped.join(', ') : '';
   } catch (error) {
     toast(error.message, 'error');
