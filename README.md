@@ -108,6 +108,35 @@ these backups as confidential because the provider config may contain keys.
 The **Disable** button removes the managed rule and stops the listener.
 Restart Mita after disabling so it applies the remaining rules.
 
+#### Import GeoSite and GeoIP lists
+
+Use **Import GeoSite / GeoIP** in the built-in sing-box form to select
+sing-box source rule-set JSON files. Supported rules contain a single
+`domain_suffix` (GeoSite) or `ip_cidr` (GeoIP) selector. The source files are
+read in the browser and imported as editable domain and network lists.
+You can also enter domains and CIDRs manually, or use an IP-only rule.
+
+For example, this source file matches a domain and its subdomains, or a
+request sent directly to an IP in the given network:
+
+```json
+{
+  "version": 3,
+  "rules": [
+    {"domain_suffix": ["example.com"]},
+    {"ip_cidr": ["198.51.100.0/24"]}
+  ]
+}
+```
+
+Use source JSON rather than binary `.dat` or `.srs` files. Imports reject
+exact-domain, regex, and compound rules because Mita would match them
+differently. GeoIP matches destination IPs sent by clients. Mita does not
+resolve incoming domain names solely to evaluate GeoIP rules. Lists are
+snapshots and can be replaced by clearing the corresponding field and
+importing an updated file. Save and restart Mita to apply. The imported
+destinations are included in PostgreSQL backups.
+
 ### Optional sing-box service on Linux
 
 Copy `sing-box/config.example.json` to `sing-box/config.json`. Keep its SOCKS5

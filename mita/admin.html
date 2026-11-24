@@ -125,7 +125,7 @@ code { font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }
 .form-grid > .span-2 { grid-column: 1 / -1; }
 label:not(.check) { display: flex; flex-direction: column; gap: 7px; font-size: 12px; font-weight: 580; }
 label input, label select, label textarea { font-weight: 400; }
-input:not([type="checkbox"]), select, #outboundConfig, #singBoxConfig, #singBoxDomains { width: 100%; min-width: 0; min-height: 40px; border: 1px solid var(--input); border-radius: var(--radius-sm); background: var(--card); padding: 9px 11px; box-shadow: 0 1px 2px rgba(0,0,0,.025); }
+input:not([type="checkbox"]), select, #outboundConfig, #singBoxConfig, #singBoxDomains, #singBoxIPRanges { width: 100%; min-width: 0; min-height: 40px; border: 1px solid var(--input); border-radius: var(--radius-sm); background: var(--card); padding: 9px 11px; box-shadow: 0 1px 2px rgba(0,0,0,.025); }
 input::placeholder { color: var(--muted-foreground); opacity: .75; }
 input:not([type="checkbox"]):hover, select:hover { border-color: var(--ring); }
 input:not([type="checkbox"]):focus, select:focus { border-color: var(--ring); outline: 2px solid color-mix(in srgb, var(--ring) 18%, transparent); outline-offset: 0; }
@@ -306,7 +306,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
-#outboundConfig, #singBoxConfig, #singBoxDomains {
+#outboundConfig, #singBoxConfig, #singBoxDomains, #singBoxIPRanges {
   box-sizing: border-box;
   width: 100%;
   resize: vertical;
@@ -455,12 +455,14 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
           <div class="card-actions"><button id="saveSettings" class="btn" type="submit">Save connection</button></div>
         </form>
         <form class="card" id="singBoxForm" hidden>
-          <div class="card-header"><div><h2>Built-in sing-box</h2><p class="card-subtitle">Paste one sing-box outbound object and enter the domains to route through it.</p></div></div>
+          <div class="card-header"><div><h2>Built-in sing-box</h2><p class="card-subtitle">Paste one sing-box outbound object and choose destinations to route through it.</p></div></div>
           <div class="card-body">
             <p id="singBoxStatus" role="status"></p>
             <div class="form-grid">
               <label class="span-2">Provider outbound (JSON)<textarea id="singBoxConfig" rows="8" required spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
-              <label class="span-2">Domains (one per line)<textarea id="singBoxDomains" rows="3" required spellcheck="false" placeholder="example.com" autocapitalize="off"></textarea></label>
+              <label class="span-2">Domains (one per line)<textarea id="singBoxDomains" rows="3" spellcheck="false" placeholder="example.com" autocapitalize="off"></textarea></label>
+              <label class="span-2">IP networks (one CIDR per line)<textarea id="singBoxIPRanges" rows="3" spellcheck="false" placeholder="198.51.100.0/24" autocapitalize="off"></textarea></label>
+              <label class="span-2">Import GeoSite / GeoIP<input id="singBoxGeoFiles" type="file" accept=".json,application/json" multiple><span class="field-help">sing-box source rule sets with domain_suffix or ip_cidr. Imported entries are added to the fields above.</span></label>
             </div>
           </div>
           <div class="card-actions">
@@ -970,6 +972,7 @@ function fillSettings(s) {
     ? 'Local SOCKS5 is running.' : (bridge ? 'Local SOCKS5 is stopped.' : 'Not configured.');
   $('#singBoxConfig').value = bridge ? JSON.stringify(bridge.outbound, null, 2) : '';
   $('#singBoxDomains').value = bridge ? bridge.domains.join('\n') : '';
+  $('#singBoxIPRanges').value = bridge ? (bridge.ip_ranges || []).join('\n') : '';
   $('#disableSingBox').hidden = !bridge;
   $('#enableSingBox').textContent = bridge ? 'Update sing-box' : 'Set up sing-box';
   const outboundEnabled = state.outbound_enabled === true;
@@ -1105,11 +1108,62 @@ $('#connectionForm').addEventListener('submit', async e => {
   }), 'Connection settings saved');
   if (ok) fillSettings(state.settings);
 });
+function readGeoRuleSet(source) {
+  if (!source || ![1, 2, 3, 4].includes(source.version) || !Array.isArray(source.rules) || !source.rules.length) {
+    throw new Error('Expected a sing-box source rule set with a version and rules array.');
+  }
+  const domains = [];
+  const ipRanges = [];
+  for (const rule of source.rules) {
+    const keys = Object.keys(rule || {}).filter(key => key !== 'type');
+    if (!rule || (rule.type !== undefined && rule.type !== 'default') || keys.length !== 1 ||
+        !['domain_suffix', 'ip_cidr'].includes(keys[0])) {
+      throw new Error('Each rule must contain only domain_suffix or ip_cidr. Exact domains, regex and compound rules cannot be imported.');
+    }
+    const values = Array.isArray(rule[keys[0]]) ? rule[keys[0]] : [rule[keys[0]]];
+    if (!values.length || values.some(value => typeof value !== 'string' || !value.trim())) {
+      throw new Error('Geo rule entries must be nonempty strings.');
+    }
+    if (keys[0] === 'domain_suffix') {
+      if (values.some(value => value.startsWith('.'))) {
+        throw new Error('Subdomain-only suffixes cannot be imported without changing what they match.');
+      }
+      for (const value of values) domains.push(value);
+    } else {
+      for (const value of values) ipRanges.push(value);
+    }
+  }
+  return {domains, ipRanges};
+}
+
+const destinationLines = field => $(field).value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+
+$('#singBoxGeoFiles').addEventListener('change', async e => {
+  const input = e.target;
+  const files = Array.from(input.files);
+  try {
+    let bytes = 0;
+    const lists = await Promise.all(files.map(file => {
+      bytes += file.size;
+      if (bytes > 1024 * 1024) throw new Error('Choose rule sets totaling at most 1 MiB.');
+      return file.text().then(text => readGeoRuleSet(JSON.parse(text)));
+    }));
+    for (const [field, key] of [['#singBoxDomains', 'domains'], ['#singBoxIPRanges', 'ipRanges']]) {
+      $(field).value = [...new Set([...destinationLines(field), ...lists.flatMap(list => list[key])])].join('\n');
+    }
+  } catch (error) {
+    toast(error.message, 'error');
+  } finally {
+    input.value = '';
+  }
+});
+
 $('#singBoxForm').addEventListener('submit', async e => {
   e.preventDefault();
   const ok = await mutate($('#enableSingBox'), () => api.saveSingBox({
     outbound: JSON.parse($('#singBoxConfig').value),
-    domains: $('#singBoxDomains').value.split(/\r?\n/).map(value => value.trim()).filter(Boolean),
+    domains: destinationLines('#singBoxDomains'),
+    ip_ranges: destinationLines('#singBoxIPRanges'),
   }), 'sing-box started. Restart Mita to apply the routing rule.');
   if (ok) fillSettings(state.settings);
 });

@@ -800,7 +800,7 @@ def parse_password(body):
     return value, ""
 
 
-def normalize_egress(value):
+def normalize_egress(value, *, destination_limit=256):
     """Validate the supported subset of Mita's native egress schema."""
     def object_fields(item, allowed, label):
         if not isinstance(item, dict) or set(item) - allowed:
@@ -862,9 +862,9 @@ def normalize_egress(value):
     rules = []
     for rule in items(value, "rules", 128):
         object_fields(rule, {"domainNames", "ipRanges", "action", "proxyNames"}, "Rule")
-        domains = [domain(v, wildcard=True) for v in items(rule, "domainNames", 256)]
+        domains = [domain(v, wildcard=True) for v in items(rule, "domainNames", destination_limit)]
         ranges = []
-        for value in items(rule, "ipRanges", 256):
+        for value in items(rule, "ipRanges", destination_limit):
             if not isinstance(value, str) or (value != "*" and "/" not in value):
                 raise ValueError("IP ranges must be CIDR strings or *")
             ranges.append("*" if value == "*" else str(ipaddress.ip_network(value, strict=False)))
@@ -938,18 +938,23 @@ def managed_egress(settings):
         return egress
     if any(proxy["name"] == SING_BOX_PROXY_NAME for proxy in egress["proxies"]):
         raise ValueError(f"{SING_BOX_PROXY_NAME} is reserved while built-in sing-box is enabled")
-    egress["proxies"].append({
-        "name": SING_BOX_PROXY_NAME,
-        "host": "127.0.0.1",
-        "port": SING_BOX_PORT,
-        "socks5Authentication": {"user": "mita", "password": bridge["password"]},
-    })
-    egress["rules"].insert(0, {
-        "domainNames": bridge["domains"],
-        "action": "PROXY",
-        "proxyNames": [SING_BOX_PROXY_NAME],
-    })
-    return normalize_egress(egress)
+    managed = normalize_egress({
+        "proxies": [{
+            "name": SING_BOX_PROXY_NAME,
+            "host": "127.0.0.1",
+            "port": SING_BOX_PORT,
+            "socks5Authentication": {"user": "mita", "password": bridge["password"]},
+        }],
+        "rules": [{
+            "domainNames": bridge["domains"],
+            "ipRanges": bridge.get("ip_ranges", []),
+            "action": "PROXY",
+            "proxyNames": [SING_BOX_PROXY_NAME],
+        }],
+    }, destination_limit=16384)
+    egress["proxies"].extend(managed["proxies"])
+    egress["rules"] = managed["rules"] + egress["rules"]
+    return egress
 
 
 class SingBoxBridge:
@@ -1032,7 +1037,8 @@ def admin_settings(settings):
         settings.pop("sing_box", None)
     elif settings.get("sing_box"):
         settings["sing_box"] = {
-            key: settings["sing_box"][key] for key in ("domains", "outbound")
+            key: settings["sing_box"][key] for key in ("domains", "outbound", "ip_ranges")
+            if key in settings["sing_box"]
         }
     return settings
 
@@ -1566,12 +1572,12 @@ class CommonHandler(BaseHTTPRequestHandler):
             headers=headers,
         )
 
-    def read_json(self):
+    def read_json(self, max_bytes=65536):
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except (TypeError, ValueError) as exc:
             raise ValueError("invalid Content-Length") from exc
-        if length < 0 or length > 65536:
+        if length < 0 or length > max_bytes:
             raise ValueError("request size is invalid")
         raw = self.rfile.read(length) if length else b"{}"
         try:
@@ -1833,7 +1839,7 @@ class AdminHandler(CommonHandler):
     def route_sing_box(self):
         if not sing_box_available():
             raise ApiError(HTTPStatus.NOT_FOUND, "built-in sing-box is only available in the Linux image")
-        body = self.read_json()
+        body = self.read_json(max_bytes=1024 * 1024)
         with LOCK:
             settings = get_settings()
             previous = settings.get("sing_box")
@@ -1843,13 +1849,23 @@ class AdminHandler(CommonHandler):
                 settings.pop("sing_box", None)
             else:
                 validate_sing_box_outbound(outbound)
-                domains = body.get("domains")
-                rule = normalize_egress({"rules": [{"domainNames": domains, "action": "DIRECT"}]})
-                domains = rule["rules"][0]["domainNames"]
-                if "*" in domains:
-                    raise ValueError("enter explicit domains for the managed sing-box rule")
+                rule = normalize_egress({"rules": [{
+                    "domainNames": body.get("domains", []),
+                    "ipRanges": body.get("ip_ranges", []),
+                    "action": "DIRECT",
+                }]}, destination_limit=16384)["rules"][0]
+                domains = list(dict.fromkeys(rule["domainNames"]))
+                ip_ranges = list(dict.fromkeys(rule["ipRanges"]))
+                if "*" in domains or any(
+                    value == "*" or ipaddress.ip_network(value).prefixlen == 0
+                    for value in ip_ranges
+                ):
+                    raise ValueError("enter explicit domains or IP ranges for the managed sing-box rule")
                 password = previous["password"] if previous else secrets.token_urlsafe(24)
-                updated = {"outbound": outbound, "domains": domains, "password": password}
+                updated = {
+                    "outbound": outbound, "domains": domains,
+                    "ip_ranges": ip_ranges, "password": password,
+                }
                 settings["sing_box"] = updated
                 managed_egress(settings)
             SING_BOX.replace(updated, previous, lambda: write_json(SETTINGS_PATH, settings))

@@ -197,6 +197,7 @@ class AdminAPITests(unittest.TestCase):
         with mock.patch.object(app.SING_BOX, "replace", side_effect=persist) as replace:
             status, result = self.call("PUT", "/api/sing-box", {
                 "outbound": outbound, "domains": ["Example.COM"],
+                "ip_ranges": ["198.51.100.42/24"],
             })
             self.assertEqual(status, 200)
             self.assertTrue(result["restart_required"])
@@ -204,6 +205,7 @@ class AdminAPITests(unittest.TestCase):
             settings = app.get_settings()
             config = app.build_mita_config(app.get_users(), settings)["egress"]
             self.assertEqual(config["rules"][0]["domainNames"], ["example.com"])
+            self.assertEqual(config["rules"][0]["ipRanges"], ["198.51.100.0/24"])
             self.assertEqual(config["rules"][0]["proxyNames"], [app.SING_BOX_PROXY_NAME])
             auth = config["proxies"][0]["socks5Authentication"]
             self.assertEqual(auth["password"], settings["sing_box"]["password"])
