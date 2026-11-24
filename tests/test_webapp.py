@@ -331,6 +331,55 @@ class AdminAPITests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertNotIn("sing_box", app.get_settings())
 
+    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
+    @mock.patch.object(app, "sing_box_available", return_value=True)
+    def test_named_domain_lists_can_route_to_built_in_sing_box(self, _available):
+        outbound = {"type": "trojan", "server": "provider.example", "server_port": 443, "password": "p"}
+        def persist(updated, previous, save):
+            save()
+        lists = {
+            "proxies": [{"name": "nl", "host": "203.0.113.10", "port": 1080}],
+            "rules": [
+                {"name": "  Streaming ", "domainNames": ["video.example"], "action": "PROXY",
+                 "proxyNames": [app.SING_BOX_PROXY_NAME]},
+                {"name": "Work", "domainNames": ["corp.example"], "action": "PROXY", "proxyNames": ["nl"]},
+                {"domainNames": ["ads.example"], "action": "REJECT"},
+            ],
+        }
+        # Without the built-in sing-box a list cannot use it.
+        status, data = self.call("PUT", "/api/settings", {"egress": lists})
+        self.assertEqual(status, 400)
+        self.assertIn("'Streaming' uses outbound 'managed-sing-box'", data["error"])
+
+        with mock.patch.object(app.SING_BOX, "replace", side_effect=persist):
+            # sing-box with no destinations of its own is just an outbound.
+            self.assertEqual(self.call("PUT", "/api/sing-box", {"outbound": outbound})[0], 200)
+            self.assertEqual(self.call("PUT", "/api/settings", {"egress": lists})[0], 200)
+            stored = app.get_settings()["egress"]["rules"]
+            self.assertEqual([r.get("name") for r in stored], ["Streaming", "Work", None])
+
+            config = app.build_mita_config(app.get_users(), app.get_settings())["egress"]
+            self.assertTrue(all("name" not in rule for rule in config["rules"]))
+            self.assertEqual([r["domainNames"] for r in config["rules"]],
+                             [["video.example"], ["corp.example"], ["ads.example"]])
+            self.assertEqual(sorted(p["name"] for p in config["proxies"]), [app.SING_BOX_PROXY_NAME, "nl"])
+
+            # Disabling sing-box while a list still uses it is refused.
+            status, data = self.call("PUT", "/api/sing-box", {"enabled": False})
+            self.assertEqual(status, 400)
+            self.assertIn("managed-sing-box", data["error"])
+            self.assertIn("sing_box", app.get_settings())
+
+        for bad in ("x" * 65, "line\nbreak", 7):
+            body = {"egress": {"rules": [{"name": bad, "domainNames": ["a.example"], "action": "DIRECT"}]}}
+            self.assertEqual(self.call("PUT", "/api/settings", body)[0], 400, bad)
+
+        many = [f"d{i}.example" for i in range(app.EGRESS_RULE_DESTINATION_LIMIT)]
+        body = {"egress": {"rules": [{"name": "Big", "domainNames": many, "action": "DIRECT"}]}}
+        self.assertEqual(self.call("PUT", "/api/settings", body)[0], 200)
+        body["egress"]["rules"][0]["domainNames"].append("one-more.example")
+        self.assertEqual(self.call("PUT", "/api/settings", body)[0], 400)
+
     @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "0"})
     def test_managed_sing_box_is_unavailable_on_home_assistant(self):
         status, _ = self.call("PUT", "/api/sing-box", {"enabled": False})

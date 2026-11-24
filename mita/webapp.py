@@ -872,8 +872,18 @@ def normalize_egress_domain(value, wildcard=False):
     return value
 
 
-def normalize_egress(value, *, destination_limit=256):
-    """Validate the supported subset of Mita's native egress schema."""
+# Per-rule limit for admin-defined domain lists (each rule holds one list).
+EGRESS_RULE_DESTINATION_LIMIT = 4096
+EGRESS_RULE_NAME_MAX = 64
+
+
+def normalize_egress(value, *, destination_limit=EGRESS_RULE_DESTINATION_LIMIT, extra_proxy_names=()):
+    """Validate the supported subset of Mita's native egress schema.
+
+    Rules may carry an optional admin-facing "name"; build_mita_config strips it.
+    extra_proxy_names are outbounds defined elsewhere (the built-in sing-box) that
+    rules may reference.
+    """
     def object_fields(item, allowed, label):
         if not isinstance(item, dict) or set(item) - allowed:
             raise ValueError(f"{label}: invalid object or unknown field")
@@ -921,7 +931,13 @@ def normalize_egress(value, *, destination_limit=256):
 
     rules = []
     for rule in items(value, "rules", 128):
-        object_fields(rule, {"domainNames", "ipRanges", "action", "proxyNames"}, "Rule")
+        object_fields(rule, {"name", "domainNames", "ipRanges", "action", "proxyNames"}, "Rule")
+        rule_name = rule.get("name", "")
+        if not isinstance(rule_name, str) or len(rule_name.strip()) > EGRESS_RULE_NAME_MAX or any(
+            ord(char) < 32 or ord(char) == 127 for char in rule_name
+        ):
+            raise ValueError(f"list names must be at most {EGRESS_RULE_NAME_MAX} characters without control characters")
+        rule_name = rule_name.strip()
         domains = [normalize_egress_domain(v, wildcard=True) for v in items(rule, "domainNames", destination_limit)]
         ranges = []
         for value in items(rule, "ipRanges", destination_limit):
@@ -935,11 +951,18 @@ def normalize_egress(value, *, destination_limit=256):
             raise ValueError("rule action must be PROXY, DIRECT, or REJECT")
         references = items(rule, "proxyNames", 32)
         if action == "PROXY":
-            if not references or any(not isinstance(ref, str) or ref not in names for ref in references):
+            if not references:
                 raise ValueError("PROXY rule must reference defined proxies")
+            for ref in references:
+                if not isinstance(ref, str) or (ref not in names and ref not in extra_proxy_names):
+                    label = f" {rule_name!r}" if rule_name else ""
+                    raise ValueError(f"rule{label} uses outbound {ref!r}, which is not defined")
         elif references:
             raise ValueError("only PROXY rules may reference proxies")
-        rules.append({"domainNames": domains, "ipRanges": ranges, "action": action, "proxyNames": references})
+        entry = {"domainNames": domains, "ipRanges": ranges, "action": action, "proxyNames": references}
+        if rule_name:
+            entry = {"name": rule_name, **entry}
+        rules.append(entry)
     return {"proxies": proxies, "rules": rules}
 
 
@@ -1163,9 +1186,14 @@ def geo_refresh_worker():
             print("[web] GitHub Geo update failed; keeping the previous lists", flush=True)
 
 
+def egress_extra_proxy_names(settings):
+    """Outbounds admin rules may use besides their own SOCKS5 proxies."""
+    return (SING_BOX_PROXY_NAME,) if settings.get("sing_box") else ()
+
+
 def managed_egress(settings):
-    egress = normalize_egress(settings.get("egress", {}))
     bridge = settings.get("sing_box")
+    egress = normalize_egress(settings.get("egress", {}), extra_proxy_names=egress_extra_proxy_names(settings))
     if bridge is None:
         return egress
     if any(proxy["name"] == SING_BOX_PROXY_NAME for proxy in egress["proxies"]):
@@ -1186,14 +1214,15 @@ def managed_egress(settings):
             "port": SING_BOX_PORT,
             "socks5Authentication": {"user": "mita", "password": bridge["password"]},
         }],
+        # Without its own destinations sing-box is just an outbound that lists use.
         "rules": [{
             "domainNames": domains,
             "ipRanges": ip_ranges,
             "action": "PROXY",
             "proxyNames": [SING_BOX_PROXY_NAME],
-        }],
+        }] if domains or ip_ranges else [],
     }, destination_limit=GEO_DESTINATION_LIMIT)
-    rule = managed["rules"][0]
+    rule = managed["rules"][0] if managed["rules"] else {"domainNames": [], "ipRanges": []}
     if "*" in rule["domainNames"] or any(
         value == "*" or ipaddress.ip_network(value).prefixlen == 0
         for value in rule["ipRanges"]
@@ -1407,7 +1436,10 @@ def build_mita_config(users, settings):
         "dns": {"dualStack": dns_policy},
     }
     if standalone and ("egress" in settings or settings.get("sing_box")):
-        config["egress"] = managed_egress(settings)
+        egress = managed_egress(settings)
+        # List names are admin-facing only; Mita's schema has no such field.
+        egress["rules"] = [{k: v for k, v in rule.items() if k != "name"} for rule in egress["rules"]]
+        config["egress"] = egress
     return config
 
 
@@ -2258,7 +2290,7 @@ class AdminHandler(CommonHandler):
         return HTTPStatus.OK, {"restart_required": True}
 
     def route_update_settings(self):
-        body = self.read_json()
+        body = self.read_json(max_bytes=4 * 1024 * 1024)  # domain lists can be large
         with LOCK:
             settings = get_settings()
             previous = copy.deepcopy(settings)
@@ -2290,7 +2322,8 @@ class AdminHandler(CommonHandler):
             if "egress" in body:
                 if not is_standalone():
                     raise ValueError("outbound is only available on standalone Linux")
-                settings["egress"] = normalize_egress(body["egress"])
+                settings["egress"] = normalize_egress(
+                    body["egress"], extra_proxy_names=egress_extra_proxy_names(settings))
                 validate_outbound_assignments(get_users(), managed_egress(settings))
             egress_changed = settings.get("egress") != previous.get("egress")
 

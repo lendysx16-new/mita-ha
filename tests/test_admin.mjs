@@ -328,3 +328,84 @@ test('account outbound select offers only live outbounds and keeps the current c
   ctx.openUser('alice');
   assert.doesNotMatch(element('#detailDeviceUsers').innerHTML, /data-pending-outbounds/);
 });
+
+test('outbounds and routing policies render and policies are built from the editor', async () => {
+  const {ctx, element, state} = setup({outboundEnabled: true});
+  state.sing_box_available = true;
+  state.sing_box_running = true;
+  state.settings.sing_box = {outbound: {type: 'trojan'}, domains: [], ip_ranges: []};
+  state.settings.egress = {
+    proxies: [{name: 'nl', host: '203.0.113.10', port: 1080, socks5Authentication: {user: 'u', password: 'SECRET'}},
+      {name: 'spare', host: 'proxy.example', port: 1081}],
+    rules: [{name: 'Streaming <b>', domainNames: ['video.example', 'cdn.example'], ipRanges: ['198.51.100.0/24'], action: 'PROXY', proxyNames: ['nl']},
+      {domainNames: ['ads.example'], ipRanges: [], action: 'REJECT', proxyNames: []}],
+  };
+  state.users[0].proxy_outbound = 'nl';
+  await ctx.load();
+  assert.equal(element('.tab[data-tab="outboundsTab"]').hidden, false);
+  assert.equal(element('.tab[data-tab="routingTab"]').hidden, false);
+  const outbounds = element('#outboundRows').innerHTML;
+  assert.match(outbounds, /203\.0\.113\.10:1080/);
+  assert.match(outbounds, /User u/);
+  assert.doesNotMatch(outbounds, /SECRET/);
+  assert.match(outbounds, /1 policy · 1 account/);
+  assert.match(outbounds, /data-routing="delete-outbound" data-index="0" disabled/, 'used outbound cannot be deleted');
+  assert.match(outbounds, /data-routing="delete-outbound" data-index="1" title/, 'unused outbound can be deleted');
+  assert.match(outbounds, /managed-sing-box[\s\S]*running/);
+  const lists = element('#listRows').innerHTML;
+  assert.match(lists, /Streaming &lt;b&gt;/);
+  assert.match(lists, /2 domains · 1 network/);
+  assert.match(lists, />Block</);
+  assert.match(lists, /Unnamed policy/);
+  assert.match(lists, /data-step="-1" disabled/);
+
+  const fields = {name: {value: ''}, target: {value: '', innerHTML: ''}, domains: {value: ''}, ipRanges: {value: ''}};
+  fields.name.focus = () => {};
+  Object.assign(element('#listEditor'), {elements: fields, querySelector: () => ({textContent: ''})});
+  ctx.openListEditor(-1);
+  assert.match(fields.target.innerHTML, /value="proxy:nl"[\s\S]*value="proxy:spare"[\s\S]*value="proxy:managed-sing-box"[\s\S]*value="DIRECT"[\s\S]*value="REJECT"/);
+  fields.name.value = ' Work ';
+  fields.target.value = 'proxy:managed-sing-box';
+  fields.domains.value = 'corp.example\n\n corp.example \nmail.example';
+  const egress = ctx.listFromEditor();
+  assert.deepEqual(JSON.parse(JSON.stringify(egress.rules[2])), {
+    name: 'Work', domainNames: ['corp.example', 'mail.example'], ipRanges: [],
+    action: 'PROXY', proxyNames: ['managed-sing-box'],
+  });
+  fields.target.value = 'DIRECT';
+  assert.equal(ctx.listFromEditor().rules[2].action, 'DIRECT');
+  fields.domains.value = '';
+  assert.throws(() => ctx.listFromEditor(), /at least one domain/);
+
+  ctx.openListEditor(0);
+  assert.equal(fields.target.value, 'proxy:nl');
+  assert.equal(fields.domains.value, 'video.example\ncdn.example');
+  // A policy with several outbounds (set in JSON) keeps them when edited in the form.
+  state.settings.egress.rules[0].proxyNames = ['nl', 'spare'];
+  await ctx.load();
+  ctx.openListEditor(0);
+  assert.equal(fields.target.value, 'keep-proxies');
+  assert.match(fields.target.innerHTML, /nl, spare \(set in JSON\)/);
+  fields.name.value = 'Renamed';
+  assert.deepEqual([...ctx.listFromEditor().rules[0].proxyNames], ['nl', 'spare']);
+  fields.target.value = 'proxy:spare';
+  assert.deepEqual([...ctx.listFromEditor().rules[0].proxyNames], ['spare']);
+});
+
+test('outbounds and routing tabs are hidden on Home Assistant', async () => {
+  const {ctx, element} = setup({outboundEnabled: false});
+  await ctx.load();
+  assert.equal(element('.tab[data-tab="outboundsTab"]').hidden, true);
+  assert.equal(element('.tab[data-tab="routingTab"]').hidden, true);
+});
+
+test('outbounds and routing are separate tabs; policies only pick saved outbounds', () => {
+  const outboundsTab = /<div id="outboundsTab"[\s\S]*?(?=<div id="routingTab")/.exec(html)?.[0] || '';
+  const routingTab = /<div id="routingTab"[\s\S]*?(?=<div id="confTab")/.exec(html)?.[0] || '';
+  assert.match(outboundsTab, /id="outboundEditor"/);
+  assert.match(outboundsTab, /id="singBoxForm"/);
+  assert.doesNotMatch(outboundsTab, /id="listEditor"/);
+  assert.match(routingTab, /id="listEditor"/);
+  assert.match(routingTab, /<select name="target" required>/);
+  assert.doesNotMatch(routingTab, /id="outboundEditor"|name="host"/);
+});

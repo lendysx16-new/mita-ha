@@ -314,6 +314,28 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
   font-family: monospace;
 }
 #outboundForm pre { overflow: auto; }
+
+/* Routing */
+.routing-editor { display: grid; gap: 14px; padding: 18px 22px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--muted) 30%, var(--card)); }
+.routing-editor textarea { width: 100%; min-width: 0; border: 1px solid var(--input); border-radius: var(--radius-sm); background: var(--card); padding: 9px 11px; font: 12px/1.5 var(--mono); resize: vertical; }
+.editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.routing-table td:first-child { white-space: nowrap; }
+.routing-table .row-actions { white-space: nowrap; }
+.routing-table .row-actions .btn + .btn { margin-left: 4px; }
+.list-preview { display: block; max-width: 360px; margin-top: 2px; color: var(--muted-foreground); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.target-badge { font-family: var(--mono); font-weight: 560; }
+.routing-restart { margin-bottom: 16px; }
+.routing-restart code { display: inline; padding: 1px 6px; background: var(--card); border-radius: 4px; }
+#routingJson > summary { cursor: pointer; list-style: none; border-bottom: 0; }
+#routingJson > summary::-webkit-details-marker { display: none; }
+#routingJson > summary h2::before { content: "▸ "; color: var(--muted-foreground); }
+#routingJson[open] > summary { border-bottom: 1px solid var(--border); }
+#routingJson[open] > summary h2::before { content: "▾ "; }
+@media (max-width: 700px) {
+  .routing-editor { padding: 16px; }
+  .routing-table .row-actions { white-space: normal; }
+  .list-preview { max-width: 100%; }
+}
 </style>
 </head>
 <body>
@@ -325,6 +347,8 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
       <a class="tab active" href="#/users" data-tab="usersTab" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>Users</a>
       <a class="tab" href="#/devices" data-tab="devicesTab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>Devices</a>
       <a class="tab" href="#/traffic" data-tab="trafficTab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="m7 16 4-5 4 3 5-7"/></svg>Traffic</a>
+      <a class="tab" href="#/outbounds" data-tab="outboundsTab" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg>Outbounds</a>
+      <a class="tab" href="#/routing" data-tab="routingTab" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M8 6h3a3 3 0 0 1 3 3v0a3 3 0 0 0 3 3M8 18h3a3 3 0 0 0 3-3v0a3 3 0 0 1 3-3"/></svg>Routing</a>
       <a class="tab" href="#/settings" data-tab="confTab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2" fill="var(--card)"/><circle cx="15" cy="17" r="2" fill="var(--card)"/></svg>Settings</a>
     </nav>
     <div class="sidebar-footer"><div class="connection"><span class="status-dot"></span>Local admin panel</div><small class="muted">Home Assistant Ingress</small></div>
@@ -443,6 +467,83 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
         </section>
       </div>
 
+      <div id="outboundsTab" class="tab-panel settings-stack" aria-label="Outbounds">
+        <div class="status-line routing-restart" data-state="warn" role="status">Changes are saved right away. Restart Mita to apply them: <code>docker compose restart mita</code></div>
+        <section class="card" id="outboundsCard">
+          <div class="card-header">
+            <div><h2>Outbounds</h2><p class="card-subtitle">Saved destinations for routed traffic: your SOCKS5 proxies, plus the built-in sing-box once it is set up. Bind them to domains in the <a href="#/routing">Routing</a> tab.</p></div>
+            <button id="addOutbound" class="btn" type="button">+ Add outbound</button>
+          </div>
+          <form id="outboundEditor" class="routing-editor" hidden autocomplete="off">
+            <div class="form-grid">
+              <label>Name<input name="name" required maxlength="64" pattern="[A-Za-z0-9_.\-]+" title="Letters, digits, _ . or -" placeholder="e.g. nl-proxy" spellcheck="false"><span class="field-help" data-name-help>Used to pick this outbound in a routing policy or for an account. It cannot be renamed later.</span></label>
+              <label>Host<input name="host" required placeholder="203.0.113.10 or proxy.example.com" spellcheck="false" autocapitalize="off"></label>
+              <label>Port<input name="port" type="number" required min="1" max="65535" inputmode="numeric" placeholder="1080"></label>
+              <label>Username (optional)<input name="user" maxlength="255" autocomplete="off" spellcheck="false"></label>
+              <label class="span-2">Password (optional)<input name="password" type="password" maxlength="255" autocomplete="new-password"><span class="field-help" data-password-help hidden>Leave empty to keep the current password. Clear the username to remove authentication.</span></label>
+            </div>
+            <div class="editor-actions"><button class="btn btn-secondary" type="button" data-cancel-editor>Cancel</button><button class="btn" type="submit" data-save-outbound>Save outbound</button></div>
+          </form>
+          <div class="table-scroll"><table class="routing-table">
+            <thead><tr><th>Name</th><th>Address</th><th>Authentication</th><th>Used by</th><th><span class="sr-only">Actions</span></th></tr></thead>
+            <tbody id="outboundRows"></tbody>
+          </table></div>
+        </section>
+        <form class="card" id="singBoxForm" hidden>
+          <div class="card-header"><div><h2>Built-in sing-box</h2><p class="card-subtitle">Paste one sing-box outbound from your provider (VLESS, Shadowsocks, Trojan, Hysteria2, SOCKS). It then appears in Outbounds as <code>managed-sing-box</code> and can be picked for any list.</p></div></div>
+          <div class="card-body">
+            <p id="singBoxStatus" role="status"></p>
+            <div class="form-grid">
+              <label class="span-2">Provider outbound (JSON)<textarea id="singBoxConfig" rows="8" required spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
+              <label class="span-2">Extra domains (optional, one per line)<span class="field-help">Routed through sing-box before any list is checked. Prefer a domain list instead.</span><textarea id="singBoxDomains" rows="3" spellcheck="false" placeholder="example.com" autocapitalize="off"></textarea></label>
+              <label class="span-2">Extra IP networks (optional, one CIDR per line)<textarea id="singBoxIPRanges" rows="3" spellcheck="false" placeholder="198.51.100.0/24" autocapitalize="off"></textarea></label>
+              <label class="span-2">Import GeoSite / GeoIP<input id="singBoxGeoFiles" type="file" accept=".json,application/json" multiple><span id="singBoxImportStatus" class="field-help" role="status"></span><span class="field-help">sing-box source rule sets with domain_suffix or ip_cidr. Imported entries are added to the fields above. Limit: 16,384 unique domains and 16,384 unique CIDRs per managed rule, including GitHub entries.</span></label>
+              <label class="span-2">GitHub Geo lists (one URL per line)<textarea id="singBoxGeoUrls" rows="3" spellcheck="false" placeholder="https://raw.githubusercontent.com/owner/repo/main/geosite.json" autocapitalize="off"></textarea><span class="field-help">Checked daily. Within the 16,384-per-list limit, manual and file entries take priority over GitHub entries. Restart Mita to apply changes.</span><span id="singBoxGeoStatus" class="field-help"></span></label>
+            </div>
+          </div>
+          <div class="card-actions">
+            <button id="disableSingBox" class="btn btn-secondary" type="button" hidden>Disable</button>
+            <button id="enableSingBox" class="btn" type="submit">Set up sing-box</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="routingTab" class="tab-panel settings-stack" aria-label="Routing">
+        <div class="status-line routing-restart" data-state="warn" role="status">Changes are saved right away. Restart Mita to apply them: <code>docker compose restart mita</code></div>
+        <section class="card" id="listsCard">
+          <div class="card-header">
+            <div><h2>Routing policies</h2><p class="card-subtitle">Each policy is a list of domains and networks bound to one saved outbound, or sent directly, or blocked. Policies are checked top to bottom and the first match wins; unmatched traffic connects directly.</p></div>
+            <button id="addList" class="btn" type="button">+ Add policy</button>
+          </div>
+          <form id="listEditor" class="routing-editor" hidden autocomplete="off">
+            <div class="form-grid">
+              <label>Name<input name="name" required maxlength="64" placeholder="e.g. Streaming" spellcheck="false"></label>
+              <label>Outbound<select name="target" required></select><span class="field-help">Pick a saved outbound. Add or change outbounds in the <a href="#/outbounds">Outbounds</a> tab.</span></label>
+              <label class="span-2">Domains (one per line)<textarea name="domains" rows="6" spellcheck="false" autocapitalize="off" placeholder="example.com&#10;example.org"></textarea><span class="field-help">A domain also matches its subdomains.</span></label>
+              <label class="span-2">IP networks (one CIDR per line)<textarea name="ipRanges" rows="3" spellcheck="false" autocapitalize="off" placeholder="198.51.100.0/24"></textarea></label>
+              <label class="span-2">Import GeoSite / GeoIP<input name="geoFiles" type="file" accept=".json,application/json" multiple><span class="field-help" data-import-status role="status"></span><span class="field-help">sing-box source rule sets. Domain suffixes and CIDRs are added to the fields above; other selectors are skipped.</span></label>
+            </div>
+            <div class="editor-actions"><button class="btn btn-secondary" type="button" data-cancel-editor>Cancel</button><button class="btn" type="submit" data-save-list>Save policy</button></div>
+          </form>
+          <div class="table-scroll"><table class="routing-table">
+            <thead><tr><th>#</th><th>Policy</th><th>Destinations</th><th>Outbound</th><th><span class="sr-only">Actions</span></th></tr></thead>
+            <tbody id="listRows"></tbody>
+          </table></div>
+        </section>
+        <form class="card" id="outboundForm" hidden>
+          <details id="routingJson"><summary class="card-header"><div><h2>Advanced: edit as JSON</h2><p class="card-subtitle">The same outbounds and lists in Mita's egress format. Saving replaces everything above.</p></div></summary>
+          <div class="card-body">
+            <label>Outbound configuration (JSON)<textarea id="outboundConfig" rows="12" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
+            <details><summary>Example with sing-box</summary><pre>{
+  "proxies": [{"name": "sing-box", "host": "127.0.0.1", "port": 1080}],
+  "rules": [{"domainNames": ["example.com"], "action": "PROXY", "proxyNames": ["sing-box"]}]
+}</pre></details>
+          </div>
+          <div class="card-actions"><button id="saveOutbound" class="btn" type="submit">Save JSON</button></div>
+          </details>
+        </form>
+      </div>
+
       <div id="confTab" class="tab-panel settings-stack" aria-label="Settings">
         <form class="card" id="connectionForm">
           <div class="card-header"><div><h2>Public connection</h2><p class="card-subtitle">Host and subscription URL shared with clients.</p></div></div>
@@ -453,34 +554,6 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
             <label class="span-2">Contact email (optional)<input id="contactEmail" type="email" maxlength="254" placeholder="support@example.com" autocomplete="email" spellcheck="false"><span class="field-help">Shown on the public subscription page only when set. Leave blank to hide it.</span></label>
           </div></div>
           <div class="card-actions"><button id="saveSettings" class="btn" type="submit">Save connection</button></div>
-        </form>
-        <form class="card" id="singBoxForm" hidden>
-          <div class="card-header"><div><h2>Built-in sing-box</h2><p class="card-subtitle">Paste one sing-box outbound object and choose destinations to route through it.</p></div></div>
-          <div class="card-body">
-            <p id="singBoxStatus" role="status"></p>
-            <div class="form-grid">
-              <label class="span-2">Provider outbound (JSON)<textarea id="singBoxConfig" rows="8" required spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
-              <label class="span-2">Domains (one per line)<textarea id="singBoxDomains" rows="3" spellcheck="false" placeholder="example.com" autocapitalize="off"></textarea></label>
-              <label class="span-2">IP networks (one CIDR per line)<textarea id="singBoxIPRanges" rows="3" spellcheck="false" placeholder="198.51.100.0/24" autocapitalize="off"></textarea></label>
-              <label class="span-2">Import GeoSite / GeoIP<input id="singBoxGeoFiles" type="file" accept=".json,application/json" multiple><span id="singBoxImportStatus" class="field-help" role="status"></span><span class="field-help">sing-box source rule sets with domain_suffix or ip_cidr. Imported entries are added to the fields above. Limit: 16,384 unique domains and 16,384 unique CIDRs per managed rule, including GitHub entries.</span></label>
-              <label class="span-2">GitHub Geo lists (one URL per line)<textarea id="singBoxGeoUrls" rows="3" spellcheck="false" placeholder="https://raw.githubusercontent.com/owner/repo/main/geosite.json" autocapitalize="off"></textarea><span class="field-help">Checked daily. Within the 16,384-per-list limit, manual and file entries take priority over GitHub entries. Restart Mita to apply changes.</span><span id="singBoxGeoStatus" class="field-help"></span></label>
-            </div>
-          </div>
-          <div class="card-actions">
-            <button id="disableSingBox" class="btn btn-secondary" type="button" hidden>Disable</button>
-            <button id="enableSingBox" class="btn" type="submit">Set up sing-box</button>
-          </div>
-        </form>
-        <form class="card" id="outboundForm" hidden>
-          <div class="card-header"><div><h2>Outbound</h2><p class="card-subtitle">Route destinations through SOCKS5, connect directly, or block them. Rules run top to bottom. Restart Mita after saving.</p></div></div>
-          <div class="card-body">
-            <label>Outbound configuration (JSON)<textarea id="outboundConfig" rows="12" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
-            <details><summary>Example with sing-box</summary><pre>{
-  "proxies": [{"name": "sing-box", "host": "127.0.0.1", "port": 1080}],
-  "rules": [{"domainNames": ["example.com"], "action": "PROXY", "proxyNames": ["sing-box"]}]
-}</pre></details>
-          </div>
-          <div class="card-actions"><button id="saveOutbound" class="btn" type="submit">Save outbound</button></div>
         </form>
         <form class="card" id="serverForm">
           <div class="card-header"><div><h2>Server settings</h2><p class="card-subtitle">Log verbosity, PostgreSQL log forwarding and backups.</p></div></div>
@@ -665,15 +738,18 @@ const VIEWS = {
   userDetailTab: {slug: 'users', title: 'User details', description: 'Subscription link, devices and access for this account.'},
   devicesTab: {slug: 'devices', title: 'Devices', description: 'Every registered HWID across all users.'},
   trafficTab: {slug: 'traffic', title: 'Traffic', description: 'Per-user and per-device transfer statistics.'},
+  outboundsTab: {slug: 'outbounds', title: 'Outbounds', description: 'SOCKS5 proxies and the built-in sing-box that routing policies can use.'},
+  routingTab: {slug: 'routing', title: 'Routing', description: 'Domain lists bound to saved outbounds, checked top to bottom.'},
   confTab: {slug: 'settings', title: 'Settings', description: 'Public connection, logging and backups.'},
 };
+const ROUTING_TABS = ['outboundsTab', 'routingTab'];  // standalone Linux only
 const currentUser = () => state.users.find(u => u.username === state.user) || null;
 
 function hashFor(id) {
   return id === 'userDetailTab' && state.user ? '#/users/' + encodeURIComponent(state.user) : '#/' + VIEWS[id].slug;
 }
 function setTab(id) {
-  if (!VIEWS[id] || (id === 'userDetailTab' && !currentUser())) id = 'usersTab';
+  if (!VIEWS[id] || (id === 'userDetailTab' && !currentUser()) || (ROUTING_TABS.includes(id) && !state.outbound_enabled)) id = 'usersTab';
   if (id !== 'userDetailTab') state.user = null;
   state.tab = id;
   const view = VIEWS[id];
@@ -1027,6 +1103,8 @@ async function load() {
   renderStats();
   renderUsers();
   renderDeviceDirectory();
+  renderRouting();
+  if (ROUTING_TABS.includes(state.tab) && !state.outbound_enabled) setTab('usersTab');
   if (state.user) {
     if (currentUser()) renderUserDetail();
     else if (state.tab === 'userDetailTab') setTab('usersTab');
@@ -1269,11 +1347,278 @@ $('#disableSingBox').onclick = async () => {
   }), 'sing-box stopped. Restart Mita to apply the routing change.');
   if (ok) fillSettings(state.settings);
 };
+/* ---------- Routing: outbounds and domain lists ---------- */
+// Both are stored as Mita's egress config ({proxies, rules}); every change saves the
+// whole object through the same endpoint as the JSON editor.
+const SING_BOX_OUTBOUND = 'managed-sing-box';
+const routingEdit = {outbound: null, list: null};  // index being edited, -1 for new
+
+function currentEgress() {
+  const egress = JSON.parse(JSON.stringify(state.settings.egress || {}));
+  return {proxies: egress.proxies || [], rules: egress.rules || []};
+}
+const uniqueLines = text => [...new Set(String(text || '').split(/\r?\n/).map(v => v.trim()).filter(Boolean))];
+const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
+
+function outboundNames(egress = currentEgress()) {
+  const names = egress.proxies.map(p => p.name);
+  if (state.settings.sing_box) names.push(SING_BOX_OUTBOUND);
+  return names;
+}
+// A policy saved from the JSON editor may list several outbounds; the form keeps
+// that set as one option instead of silently narrowing it to the first.
+const KEEP_PROXIES = 'keep-proxies';
+function ruleTargetValue(rule) {
+  if (rule.action !== 'PROXY') return rule.action;
+  const names = rule.proxyNames || [];
+  return names.length > 1 ? KEEP_PROXIES : 'proxy:' + names[0];
+}
+function ruleTargetLabel(rule) {
+  if (rule.action === 'DIRECT') return 'Direct';
+  if (rule.action === 'REJECT') return 'Block';
+  return (rule.proxyNames || []).join(', ');
+}
+function outboundUsage(name, egress = currentEgress()) {
+  const lists = egress.rules.filter(rule => rule.action === 'PROXY' && (rule.proxyNames || []).includes(name)).length;
+  const accounts = state.users.filter(u => u.proxy_outbound === name).length;
+  return {lists, accounts};
+}
+function usageText({lists, accounts}) {
+  const parts = [];
+  if (lists) parts.push(plural(lists, 'policy', 'policies'));
+  if (accounts) parts.push(plural(accounts, 'account', 'accounts'));
+  return parts.join(' · ') || '—';
+}
+
+function renderRouting() {
+  const enabled = state.outbound_enabled === true;
+  for (const id of ROUTING_TABS) $('.tab[data-tab="' + id + '"]').hidden = !enabled;
+  if (!enabled) return;
+  const egress = currentEgress();
+  const bridge = state.settings.sing_box;
+
+  const outboundRows = egress.proxies.map((proxy, index) => {
+    const usage = outboundUsage(proxy.name, egress);
+    const used = usage.lists || usage.accounts;
+    const auth = proxy.socks5Authentication;
+    return html`<tr>
+      <td data-label="Name"><span class="target-badge">${proxy.name}</span></td>
+      <td data-label="Address"><code>${proxy.host}:${proxy.port}</code></td>
+      <td data-label="Authentication">${auth ? 'User ' + auth.user : 'None'}</td>
+      <td data-label="Used by">${usageText(usage)}</td>
+      <td class="row-actions">
+        <button type="button" class="btn btn-secondary btn-sm" data-routing="edit-outbound" data-index="${index}">Edit</button>
+        <button type="button" class="btn btn-danger btn-sm" data-routing="delete-outbound" data-index="${index}"${attr('disabled', used)} title="${used ? 'Move its policies and accounts to another outbound first' : 'Delete outbound'}">Delete</button>
+      </td></tr>`;
+  });
+  if (bridge || state.sing_box_available) {
+    outboundRows.push(html`<tr>
+      <td data-label="Name"><span class="target-badge">${SING_BOX_OUTBOUND}</span></td>
+      <td data-label="Address">${bridge ? html`Built-in sing-box · <span class="badge ${state.sing_box_running ? 'badge-subtle' : 'badge-warning'}">${state.sing_box_running ? 'running' : 'stopped'}</span>` : 'Built-in sing-box · not set up'}</td>
+      <td data-label="Authentication">${bridge ? (bridge.outbound && bridge.outbound.type || '') : '—'}</td>
+      <td data-label="Used by">${bridge ? usageText(outboundUsage(SING_BOX_OUTBOUND, egress)) : '—'}</td>
+      <td class="row-actions"><button type="button" class="btn btn-secondary btn-sm" data-routing="configure-sing-box">${bridge ? 'Configure' : 'Set up'}</button></td></tr>`);
+  }
+  setHTML($('#outboundRows'), outboundRows.length ? outboundRows
+    : html`<tr><td colspan="5" class="table-empty">No outbounds yet. Add a SOCKS5 proxy, then bind it to domains in Routing.</td></tr>`);
+
+  const extra = bridge ? (bridge.domains || []).length + (bridge.ip_ranges || []).length : 0;
+  const listRows = egress.rules.map((rule, index) => {
+    const domains = rule.domainNames || [];
+    const ranges = rule.ipRanges || [];
+    const preview = [...domains, ...ranges].slice(0, 4).join(', ') + (domains.length + ranges.length > 4 ? ', …' : '');
+    return html`<tr>
+      <td data-label="#">${index + 1}</td>
+      <td data-label="Policy"><strong>${rule.name || 'Unnamed policy'}</strong></td>
+      <td data-label="Destinations">${[domains.length ? plural(domains.length, 'domain', 'domains') : '', ranges.length ? plural(ranges.length, 'network', 'networks') : ''].filter(Boolean).join(' · ')}<span class="list-preview" title="${preview}">${preview}</span></td>
+      <td data-label="Outbound"><span class="badge ${rule.action === 'REJECT' ? 'badge-warning' : 'badge-subtle'} target-badge">${ruleTargetLabel(rule)}</span></td>
+      <td class="row-actions">
+        <button type="button" class="btn btn-secondary btn-sm" data-routing="move-list" data-index="${index}" data-step="-1"${attr('disabled', index === 0)} aria-label="Move up" title="Move up">↑</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-routing="move-list" data-index="${index}" data-step="1"${attr('disabled', index === egress.rules.length - 1)} aria-label="Move down" title="Move down">↓</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-routing="edit-list" data-index="${index}">Edit</button>
+        <button type="button" class="btn btn-danger btn-sm" data-routing="delete-list" data-index="${index}">Delete</button>
+      </td></tr>`;
+  });
+  if (extra) {
+    listRows.unshift(html`<tr>
+      <td data-label="#">0</td>
+      <td data-label="Policy"><strong>sing-box extra domains</strong><span class="list-preview">Built in, always checked first</span></td>
+      <td data-label="Destinations">${plural(extra, 'entry', 'entries')}</td>
+      <td data-label="Outbound"><span class="badge badge-subtle target-badge">${SING_BOX_OUTBOUND}</span></td>
+      <td class="row-actions"><button type="button" class="btn btn-secondary btn-sm" data-routing="configure-sing-box">Configure</button></td></tr>`);
+  }
+  setHTML($('#listRows'), listRows.length ? listRows
+    : html`<tr><td colspan="5" class="table-empty">No policies yet. All traffic connects directly.</td></tr>`);
+}
+
+function closeRoutingEditor(kind) {
+  routingEdit[kind] = null;
+  const form = $(kind === 'outbound' ? '#outboundEditor' : '#listEditor');
+  form.hidden = true;
+  if (typeof form.reset === 'function') form.reset();
+}
+function openOutboundEditor(index) {
+  closeRoutingEditor('list');
+  const form = $('#outboundEditor');
+  const proxy = index >= 0 ? currentEgress().proxies[index] : null;
+  routingEdit.outbound = index;
+  const f = form.elements;
+  f.name.value = proxy ? proxy.name : '';
+  f.name.readOnly = Boolean(proxy);
+  f.host.value = proxy ? proxy.host : '';
+  f.port.value = proxy ? proxy.port : '';
+  f.user.value = proxy && proxy.socks5Authentication ? proxy.socks5Authentication.user : '';
+  f.password.value = '';
+  form.querySelector('[data-password-help]').hidden = !(proxy && proxy.socks5Authentication);
+  form.hidden = false;
+  (proxy ? f.host : f.name).focus();
+}
+function routeTargets(egress) {
+  return [...outboundNames(egress).map(name => ({value: 'proxy:' + name, label: name})),
+    {value: 'DIRECT', label: 'Direct (no proxy)'}, {value: 'REJECT', label: 'Block'}];
+}
+function openListEditor(index) {
+  closeRoutingEditor('outbound');
+  const form = $('#listEditor');
+  const egress = currentEgress();
+  const rule = index >= 0 ? egress.rules[index] : null;
+  routingEdit.list = index;
+  const f = form.elements;
+  const targets = routeTargets(egress);
+  const selected = rule ? ruleTargetValue(rule) : targets[0].value;
+  if (selected === KEEP_PROXIES) targets.unshift({value: KEEP_PROXIES, label: rule.proxyNames.join(', ') + ' (set in JSON)'});
+  setHTML(f.target, targets.map(t => html`<option value="${t.value}"${attr('selected', t.value === selected)}>${t.label}</option>`));
+  f.target.value = selected;
+  f.name.value = rule ? rule.name || '' : '';
+  f.domains.value = rule ? (rule.domainNames || []).join('\n') : '';
+  f.ipRanges.value = rule ? (rule.ipRanges || []).join('\n') : '';
+  form.querySelector('[data-import-status]').textContent = '';
+  form.hidden = false;
+  f.name.focus();
+}
+
+async function saveEgress(egress, button, success) {
+  const ok = await mutate(button, () => api.saveSettings({egress}), success + ' Restart Mita to apply.');
+  if (ok) fillSettings(state.settings);
+  return ok;
+}
+
+function outboundFromEditor() {
+  const f = $('#outboundEditor').elements;
+  const egress = currentEgress();
+  const index = routingEdit.outbound;
+  const previous = index >= 0 ? egress.proxies[index] : null;
+  const name = f.name.value.trim();
+  if (!previous && outboundNames(egress).includes(name)) throw new Error('An outbound named ' + name + ' already exists.');
+  const proxy = {name, host: f.host.value.trim(), port: Number(f.port.value)};
+  const user = f.user.value.trim();
+  const password = f.password.value;
+  if (user) {
+    const kept = previous && previous.socks5Authentication && previous.socks5Authentication.user === user
+      ? previous.socks5Authentication.password : '';
+    if (!password && !kept) throw new Error('Enter the SOCKS5 password for ' + user + '.');
+    proxy.socks5Authentication = {user, password: password || kept};
+  } else if (password) {
+    throw new Error('Enter a username for the SOCKS5 password.');
+  }
+  if (previous) egress.proxies[index] = proxy; else egress.proxies.push(proxy);
+  return egress;
+}
+function listFromEditor() {
+  const f = $('#listEditor').elements;
+  const egress = currentEgress();
+  const domains = uniqueLines(f.domains.value);
+  const ipRanges = uniqueLines(f.ipRanges.value);
+  if (!domains.length && !ipRanges.length) throw new Error('Add at least one domain or IP network.');
+  const target = f.target.value;
+  const previous = routingEdit.list >= 0 ? egress.rules[routingEdit.list] : null;
+  const keep = target === KEEP_PROXIES && previous;
+  const rule = {name: f.name.value.trim(), domainNames: domains, ipRanges,
+    action: keep || target.startsWith('proxy:') ? 'PROXY' : target,
+    proxyNames: keep ? [...previous.proxyNames] : target.startsWith('proxy:') ? [target.slice(6)] : []};
+  if (routingEdit.list >= 0) egress.rules[routingEdit.list] = rule; else egress.rules.push(rule);
+  return egress;
+}
+
+$('#addOutbound').onclick = () => openOutboundEditor(-1);
+$('#addList').onclick = () => openListEditor(-1);
+$('#outboundEditor').addEventListener('submit', async e => {
+  e.preventDefault();
+  let egress;
+  try { egress = outboundFromEditor(); } catch (error) { toast(error.message, 'error'); return; }
+  if (await saveEgress(egress, e.submitter || $('#outboundEditor').querySelector('[data-save-outbound]'), 'Outbound saved.')) closeRoutingEditor('outbound');
+});
+$('#listEditor').addEventListener('submit', async e => {
+  e.preventDefault();
+  let egress;
+  try { egress = listFromEditor(); } catch (error) { toast(error.message, 'error'); return; }
+  if (await saveEgress(egress, e.submitter || $('#listEditor').querySelector('[data-save-list]'), 'Policy saved.')) closeRoutingEditor('list');
+});
+$('#listEditor').addEventListener('change', async e => {
+  if (e.target.name !== 'geoFiles') return;
+  const input = e.target;
+  const f = $('#listEditor').elements;
+  try {
+    const files = Array.from(input.files);
+    if (files.reduce((sum, file) => sum + file.size, 0) > 4 * 1024 * 1024) throw new Error('Choose rule sets totaling at most 4 MiB.');
+    const lists = await Promise.all(files.map(file => file.text().then(text => readGeoRuleSet(JSON.parse(text)))));
+    f.domains.value = uniqueLines([f.domains.value, ...lists.flatMap(l => l.domains)].join('\n')).join('\n');
+    f.ipRanges.value = uniqueLines([f.ipRanges.value, ...lists.flatMap(l => l.ipRanges)].join('\n')).join('\n');
+    const skipped = [...new Set(lists.flatMap(l => l.skipped))].sort();
+    $('#listEditor').querySelector('[data-import-status]').textContent = skipped.length ? 'Skipped: ' + skipped.join(', ') : 'Imported.';
+  } catch (error) {
+    toast(error.message, 'error');
+  } finally {
+    input.value = '';
+  }
+});
+async function onRoutingClick(e) {
+  if (e.target.closest('[data-cancel-editor]')) {
+    closeRoutingEditor(e.target.closest('#outboundEditor') ? 'outbound' : 'list');
+    return;
+  }
+  const button = e.target.closest('[data-routing]');
+  if (!button) return;
+  const index = Number(button.dataset.index);
+  const egress = currentEgress();
+  switch (button.dataset.routing) {
+    case 'edit-outbound': openOutboundEditor(index); break;
+    case 'edit-list': openListEditor(index); break;
+    case 'configure-sing-box':
+      if (state.tab !== 'outboundsTab') setTab('outboundsTab');
+      $('#singBoxForm').scrollIntoView({behavior: 'smooth', block: 'start'});
+      break;
+    case 'delete-outbound': {
+      const proxy = egress.proxies[index];
+      if (!await confirmAction('Delete outbound ' + proxy.name + '?', 'Routing policies and accounts can no longer use it.', 'Delete')) return;
+      egress.proxies.splice(index, 1);
+      await saveEgress(egress, button, 'Outbound deleted.');
+      break;
+    }
+    case 'delete-list': {
+      const rule = egress.rules[index];
+      if (!await confirmAction('Delete policy ' + (rule.name || index + 1) + '?', 'Its destinations will fall through to the next policy.', 'Delete')) return;
+      egress.rules.splice(index, 1);
+      await saveEgress(egress, button, 'Policy deleted.');
+      break;
+    }
+    case 'move-list': {
+      const target = index + Number(button.dataset.step);
+      if (target < 0 || target >= egress.rules.length) return;
+      [egress.rules[index], egress.rules[target]] = [egress.rules[target], egress.rules[index]];
+      await saveEgress(egress, button, 'Policy order saved.');
+      break;
+    }
+  }
+}
+$('#outboundsTab').addEventListener('click', onRoutingClick);
+$('#routingTab').addEventListener('click', onRoutingClick);
+
 $('#outboundForm').addEventListener('submit', async e => {
   e.preventDefault();
   await mutate($('#saveOutbound'), () => api.saveSettings({
     egress: JSON.parse($('#outboundConfig').value),
-  }), 'Outbound saved. Restart Mita to apply the rules.');
+  }), 'Routing JSON saved. Restart Mita to apply the rules.');
 });
 $('#serverForm').addEventListener('submit', async e => {
   e.preventDefault();
