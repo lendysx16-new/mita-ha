@@ -483,6 +483,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
               <summary>Import from subscription URL</summary>
               <div class="form-grid">
                 <label class="span-2">HTTPS subscription URL<input id="outboundSubscriptionUrl" type="password" maxlength="4096" autocomplete="off" spellcheck="false"></label>
+                <label class="span-2">Request headers (optional)<textarea id="outboundSubscriptionHeaders" rows="5" maxlength="4096" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="User-Agent: Your client&#10;X-Device-OS: iOS"></textarea><span class="field-help">One header per line as Name: value. Used only to load this subscription.</span></label>
                 <div class="span-2"><button id="loadOutboundSubscription" class="btn btn-secondary" type="button">Load servers</button></div>
                 <label id="outboundSubscriptionGroupField" hidden>Group<select id="outboundSubscriptionGroup"></select></label>
                 <label id="outboundSubscriptionServerField" hidden>Server<select id="outboundSubscriptionServer"></select></label>
@@ -644,7 +645,7 @@ const api = {
   deleteUser: username => request(userPath(username), {method: 'DELETE'}),
   updateUser: (username, body) => request(userPath(username), {method: 'PATCH', body}),
   removeDevice: (username, id) => request(userPath(username, 'devices', id), {method: 'DELETE'}),
-  outboundSubscription: url => request('api/outbound-subscription', {method: 'POST', body: {url}}),
+  outboundSubscription: (url, headers) => request('api/outbound-subscription', {method: 'POST', body: {url, headers}}),
   addOutbound: body => request('api/outbounds', {method: 'POST', body}),
   updateOutbound: (name, body) => request('api/outbounds/' + encodeURIComponent(name), {method: 'PUT', body}),
   deleteOutbound: name => request('api/outbounds/' + encodeURIComponent(name), {method: 'DELETE'}),
@@ -1473,6 +1474,7 @@ function clearOutboundSubscription() {
   subscriptionSuggestedName = '';
   $('#outboundSubscription').open = false;
   $('#outboundSubscriptionUrl').value = '';
+  $('#outboundSubscriptionHeaders').value = '';
   $('#outboundSubscriptionGroupField').hidden = true;
   $('#outboundSubscriptionServerField').hidden = true;
   $('#outboundSubscriptionGroup').value = '';
@@ -1503,7 +1505,7 @@ $('#loadOutboundSubscription').onclick = async () => {
   status.textContent = 'Loading servers…';
   button.disabled = true;
   try {
-    const result = await api.outboundSubscription(url);
+    const result = await api.outboundSubscription(url, $('#outboundSubscriptionHeaders').value);
     if (load !== subscriptionLoad) return;
     subscriptionServers = result.servers;
     const groups = [...new Set(subscriptionServers.flatMap(server => server.groups))];

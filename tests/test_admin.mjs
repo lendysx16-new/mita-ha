@@ -526,6 +526,7 @@ test('subscription groups filter concrete servers and only the chosen config is 
   ctx.fetch = async (_url, request) => {
     assert.equal(request.method, 'POST');
     assert.equal(JSON.parse(request.body).url, 'https://provider.example/sub?token=secret');
+    assert.equal(JSON.parse(request.body).headers, 'User-Agent: My client\nX-Device-OS: iOS');
     return {ok: true, json: async () => ({servers: [
       makeServer('A <script>', 0, 'a.example'),
       makeServer('B Asia', 1, 'b.example'),
@@ -534,6 +535,7 @@ test('subscription groups filter concrete servers and only the chosen config is 
   element('#outboundEditor').elements = {name: {value: '', focus() {}}, config: {value: '', focus() {}}};
   ctx.openOutboundEditor('');
   element('#outboundSubscriptionUrl').value = 'https://provider.example/sub?token=secret';
+  element('#outboundSubscriptionHeaders').value = 'User-Agent: My client\nX-Device-OS: iOS';
   await element('#loadOutboundSubscription').onclick();
   const options = element('#outboundSubscriptionServer');
   assert.match(options.innerHTML, /A &lt;script&gt;/);
@@ -549,4 +551,5 @@ test('subscription groups filter concrete servers and only the chosen config is 
   assert.equal(JSON.parse(fields.config.value).server, 'b.example');
   ctx.closeRoutingEditor('outbound');
   assert.equal(element('#outboundSubscriptionUrl').value, '');
+  assert.equal(element('#outboundSubscriptionHeaders').value, '');
 });

@@ -104,12 +104,15 @@ outbound before it is saved. Outbounds cannot be renamed, and one that a
 policy, **Everything else** or an account still uses cannot be deleted.
 
 To choose a server from a provider subscription, open **Add outbound → Import
-from subscription URL** and click **Load servers**. Filter by a named group
+from subscription URL**. If your provider requires custom request headers,
+paste them as one `Name: value` pair per line before clicking **Load servers**.
+Mita uses these headers only for this import and drops them if redirected
+to another host or port. Filter by a named group
 when the subscription includes groups, choose a server, then save it as an
 outbound. The importer supports public HTTPS subscriptions with plain or
 base64-encoded share links, sing-box JSON outbounds, and compatible Clash
 proxy entries. Groups are filters; the saved outbound points to the server
-you chose. The subscription URL and other entries are discarded after
+you chose. The subscription URL, headers, and other entries are discarded after
 import. To pick an updated server later, load the subscription again.
 
 The **Status** column shows whether each outbound actually works: Mita fetches

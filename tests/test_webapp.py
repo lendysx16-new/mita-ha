@@ -124,7 +124,7 @@ proxy-groups:
             fetch.assert_not_called()
             status, preview = self.call("POST", "/api/outbound-subscription", {"url": url})
         self.assertEqual(status, 200)
-        fetch.assert_called_once_with(url)
+        fetch.assert_called_once_with(url, {})
         self.assertEqual(preview["skipped"], 1)
         self.assertEqual([node["name"] for node in preview["servers"]], ["EU-A", "EU-B"])
         self.assertEqual([preview["groups"][i] for i in preview["servers"][1]["groups"]], ["Europe", "Main"])
@@ -154,6 +154,32 @@ proxy-groups:
             with mock.patch.object(app.socket, "getaddrinfo", return_value=[(0, 0, 0, "", (ip, 443))]):
                 with self.assertRaisesRegex(ValueError, "public addresses"):
                     app.public_subscription_address("provider.example", 443)
+
+    def test_subscription_headers_are_validated_and_dropped_on_cross_origin_redirect(self):
+        headers = app.parse_subscription_headers(
+            "User-Agent: My client\r\nX-Device-OS: iOS\r\nAuthorization: Bearer secret"
+        )
+        self.assertEqual(headers["user-agent"], "My client")
+        self.assertEqual(headers["x-device-os"], "iOS")
+        for text in ("Host: other.example", "Transfer-Encoding: chunked", "Content-Length: 99",
+                     "X-Bad: control\x00", "User-Agent: A\nuser-agent: B", "missing separator"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                app.parse_subscription_headers(text)
+
+        first, second, third = (mock.Mock() for _ in range(3))
+        first.getresponse.return_value.status = 302
+        first.getresponse.return_value.getheader.return_value = "/next"
+        second.getresponse.return_value.status = 307
+        second.getresponse.return_value.getheader.return_value = "https://cdn.example/sub"
+        third.getresponse.return_value.status = 200
+        third.getresponse.return_value.read1.side_effect = [b"subscription", b""]
+        with mock.patch.object(app, "SubscriptionHTTPSConnection", side_effect=[first, second, third]):
+            self.assertEqual(app.fetch_outbound_subscription("https://provider.example/start", headers), "subscription")
+        self.assertEqual(first.request.call_args.kwargs["headers"]["user-agent"], "My client")
+        self.assertEqual(second.request.call_args.kwargs["headers"]["authorization"], "Bearer secret")
+        self.assertEqual(third.request.call_args.kwargs["headers"], {
+            "user-agent": "Mita-Outbound", "accept-encoding": "identity",
+        })
 
     def test_add_user_and_generate_password(self):
         status, data = self.call("POST", "/api/users", {"username": "second"})

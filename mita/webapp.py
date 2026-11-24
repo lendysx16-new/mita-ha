@@ -1320,9 +1320,44 @@ class SubscriptionHTTPSConnection(HTTPSConnection):
             raise
 
 
-def fetch_outbound_subscription(url):
+SUBSCRIPTION_HEADER_LIMIT = 4096
+SUBSCRIPTION_RESERVED_HEADERS = {
+    "host", "connection", "proxy-connection", "keep-alive", "proxy-authenticate",
+    "proxy-authorization", "transfer-encoding", "te", "trailer", "upgrade",
+    "content-length", "accept-encoding", "expect",
+}
+
+
+def parse_subscription_headers(text):
+    if not isinstance(text, str) or len(text) > SUBSCRIPTION_HEADER_LIMIT:
+        raise ValueError("subscription headers must be text up to 4096 characters")
+    headers = {}
+    for number, line in enumerate(text.replace("\r\n", "\n").split("\n"), 1):
+        if not line.strip(" \t"):
+            continue
+        name, separator, value = line.partition(":")
+        if not separator or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
+            raise ValueError(f"invalid subscription header name on line {number}")
+        name = name.lower()
+        if name in SUBSCRIPTION_RESERVED_HEADERS:
+            raise ValueError(f"subscription header on line {number} is managed by Mita")
+        if name in headers:
+            raise ValueError(f"duplicate subscription header on line {number}")
+        value = value.strip(" \t")
+        if any(ord(char) < 32 or 127 <= ord(char) < 160 or ord(char) > 255 for char in value):
+            raise ValueError(f"invalid subscription header value on line {number}")
+        headers[name] = value
+    if len(headers) > 32:
+        raise ValueError("provide at most 32 subscription headers")
+    return headers
+
+
+def fetch_outbound_subscription(url, headers=None):
     if not isinstance(url, str) or len(url) > 4096:
         raise ValueError("enter an HTTPS subscription URL")
+    request_headers = {"accept-encoding": "identity", "user-agent": "Mita-Outbound"}
+    custom_headers = headers or {}
+    previous_origin = None
     deadline = time.monotonic() + 15
     for _ in range(4):
         if any(ord(char) <= 32 or ord(char) == 127 for char in url):
@@ -1336,6 +1371,10 @@ def fetch_outbound_subscription(url):
         if (parsed.scheme != "https" or not host or parsed.username is not None
                 or parsed.fragment or "%" in host or not 1 <= port <= 65535):
             raise ValueError("enter an HTTPS subscription URL without embedded credentials or fragment")
+        origin = (host, port)
+        if previous_origin is not None and origin != previous_origin:
+            custom_headers = {}
+        previous_origin = origin
         target = parsed.path or "/"
         if parsed.query:
             target += "?" + parsed.query
@@ -1344,7 +1383,7 @@ def fetch_outbound_subscription(url):
             raise ValueError("subscription request timed out")
         connection = SubscriptionHTTPSConnection(host, port, timeout=min(5, timeout))
         try:
-            connection.request("GET", target, headers={"Accept-Encoding": "identity", "User-Agent": "Mita-Outbound"})
+            connection.request("GET", target, headers={**request_headers, **custom_headers})
             response = connection.getresponse()
             if response.status in (301, 302, 303, 307, 308):
                 location = response.getheader("Location")
@@ -3511,9 +3550,12 @@ class AdminHandler(CommonHandler):
 
     def route_outbound_subscription(self):
         self.require_sing_box()
-        body = self.read_json(max_bytes=8192)
+        body = self.read_json(max_bytes=32768)
         url = body.get("url")
-        result = parse_subscription_servers(fetch_outbound_subscription(url.strip() if isinstance(url, str) else url))
+        headers = parse_subscription_headers(body.get("headers", ""))
+        result = parse_subscription_servers(
+            fetch_outbound_subscription(url.strip() if isinstance(url, str) else url, headers)
+        )
         self.send_json(HTTPStatus.OK, result, headers={"Cache-Control": "no-store"})
 
     def route_add_outbound(self):
