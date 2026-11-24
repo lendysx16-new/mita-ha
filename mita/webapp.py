@@ -271,14 +271,15 @@ def log_db_worker():
             time.sleep(2)
             continue
 
-        if active_dsn != dsn:
+        route = (dsn, settings.get("postgres_outbound") or "")
+        if active_dsn != route:  # reconnect when the DSN or the outbound changes
             if conn is not None:
                 try:
                     conn.close()
                 except Exception:
                     pass
             conn = None
-            active_dsn = dsn
+            active_dsn = route
 
         try:
             if conn is None or conn.closed:
@@ -411,12 +412,68 @@ PG_CONNECT_OPTIONS = {
 }
 
 
-def pg_connect(dsn):
-    return psycopg2.connect(dsn, **PG_CONNECT_OPTIONS)
+PG_FORWARD_PORT = 1179  # sing-box loopback port forwarding to the database through an outbound
+
+
+class PgRouteError(Exception):
+    """The database connection is set to go through an outbound that is not available."""
+
+
+def parse_pg_dsn(dsn):
+    """host/port/hostaddr of a libpq connection string (URI or key=value)."""
+    dsn = dsn.strip()
+    params = {}
+    if re.match(r"postgres(ql)?://", dsn):
+        parsed = urllib.parse.urlsplit(dsn)
+        netloc = parsed.netloc.rsplit("@", 1)[-1]
+        if netloc.startswith("["):  # [IPv6]:port
+            host, _, rest = netloc[1:].partition("]")
+            port = rest.lstrip(":")
+        else:
+            host, _, port = netloc.rpartition(":") if netloc.count(":") == 1 else (netloc, "", "")
+        params.update(host=urllib.parse.unquote(host), port=port)
+        for key, values in urllib.parse.parse_qs(parsed.query).items():
+            params[key] = values[-1]
+    else:
+        for match in re.finditer(r"(\w+)\s*=\s*('(?:[^'\\]|\\.)*'|\S+)", dsn):
+            value = match.group(2)
+            params[match.group(1)] = value[1:-1].replace("\\'", "'") if value.startswith("'") else value
+    return params
+
+
+def pg_forward_target(dsn):
+    """(host, port) of the database in a DSN, for the sing-box port forward."""
+    params = parse_pg_dsn(dsn or "")
+    host = str(params.get("hostaddr") or params.get("host") or "").strip()
+    if not host or "," in host or host.startswith("/"):
+        raise ValueError("connecting through an outbound needs one TCP host in the PostgreSQL connection")
+    try:
+        port = int(params.get("port") or 5432)
+    except ValueError as exc:
+        raise ValueError("the PostgreSQL port is not a number") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("the PostgreSQL port must be between 1 and 65535")
+    return host, port
+
+
+def pg_connect(dsn, direct=False):
+    """Connect to PostgreSQL, through the chosen outbound when one is set.
+
+    Through an outbound, libpq connects to the local sing-box forward (hostaddr/port)
+    while still using the DSN host name for TLS verification.
+    """
+    via = "" if direct else (get_settings().get("postgres_outbound") or "")
+    if not via:
+        return psycopg2.connect(dsn, **PG_CONNECT_OPTIONS)
+    if not SING_BOX.running():
+        raise PgRouteError(f"sing-box is not running, so the PostgreSQL connection through {via!r} is unavailable")
+    return psycopg2.connect(dsn, hostaddr="127.0.0.1", port=PG_FORWARD_PORT, **PG_CONNECT_OPTIONS)
 
 
 def db_error_text(exc, dsn):
     """A driver error for the admin panel: type and first line, never the DSN or password."""
+    if isinstance(exc, PgRouteError):
+        return str(exc)
     driver_error = getattr(psycopg2, "Error", None)
     if not (isinstance(driver_error, type) and isinstance(exc, driver_error)):
         return type(exc).__name__  # anything else may carry secrets in its text
@@ -587,7 +644,7 @@ def install_backup_archive(payload, dsn):
 def restore_postgres_backup(dsn, backup_id):
     if psycopg2 is None:
         raise RuntimeError("psycopg2 is not installed")
-    with contextlib.closing(pg_connect(dsn)) as connection:
+    with contextlib.closing(pg_connect(dsn, direct=True)) as connection:
         with connection.cursor() as cur:
             cur.execute(
                 """
@@ -614,7 +671,9 @@ def backup_db_worker():
     next_backup_at = 0.0
     reason = "startup"
     while True:
-        dsn = str(get_settings().get("postgres_dsn", "") or "").strip()
+        current = get_settings()
+        dsn = str(current.get("postgres_dsn", "") or "").strip()
+        route = (dsn, current.get("postgres_outbound") or "")
         set_backup_status(enabled=bool(dsn))
         if not dsn:
             active_dsn = None
@@ -623,8 +682,8 @@ def backup_db_worker():
             set_backup_status(connected=False, last_error="")
             time.sleep(30)
             continue
-        if dsn != active_dsn:
-            active_dsn = dsn
+        if route != active_dsn:  # a new DSN or outbound: back up right away
+            active_dsn = route
             next_backup_at = 0.0
             reason = "startup"
             set_backup_status(connected=False, last_error="")
@@ -1771,10 +1830,20 @@ def ensure_router_password(settings):
     settings.setdefault("router_password", secrets.token_urlsafe(24))
 
 
+def validate_postgres_outbound(settings):
+    via = settings.get("postgres_outbound") or ""
+    if not via or not (settings.get("postgres_dsn") or "").strip():
+        return  # without a connection string the choice has no effect
+    if via not in egress_extra_proxy_names(settings):
+        raise ValueError(f"the PostgreSQL connection uses outbound {via!r}, which is not defined")
+    pg_forward_target(settings.get("postgres_dsn") or "")
+
+
 def managed_egress(settings):
     """The egress config Mita runs: everything to the router, plus one proxy per outbound."""
     routing_policies(settings)
     routing_final(settings)
+    validate_postgres_outbound(settings)
     proxies = [{"name": ROUTER_NAME, "protocol": "SOCKS5_PROXY_PROTOCOL", "host": "127.0.0.1", "port": ROUTER_PORT,
                 "socks5Authentication": {"user": "mita", "password": router_password(settings)}}]
     for entry in outbound_entries(settings):
@@ -1809,6 +1878,12 @@ def sing_box_config(settings):
         outbounds.append(dict(entry["outbound"], tag=f"out-{i}"))
         rules.append({"inbound": [f"probe-{i}"], "outbound": f"out-{i}"})
     outbounds.append({"type": "direct", "tag": "direct"})
+    via_db = settings.get("postgres_outbound") or ""
+    if via_db and (settings.get("postgres_dsn") or "").strip():
+        host, port = pg_forward_target(settings.get("postgres_dsn") or "")
+        inbounds.append({"type": "direct", "tag": "postgres", "listen": "127.0.0.1", "listen_port": PG_FORWARD_PORT,
+                         "network": "tcp", "override_address": host, "override_port": port})
+        rules.append({"inbound": ["postgres"], "outbound": f"out-{index[via_db]}"})
     groups = [("router", None)] + [(f"via-{i}", i) for i in range(len(entries))]
     # Clients may connect by IP; sniffing recovers the host name for domain rules.
     rules.append({"inbound": [tag for tag, _ in groups], "action": "sniff"})
@@ -2201,6 +2276,7 @@ def public_outbound(entry):
 def admin_settings(settings):
     settings = settings.copy()
     settings.pop("router_password", None)
+    settings["postgres_outbound"] = settings.get("postgres_outbound") or ""
     settings["outbounds"] = [public_outbound(entry) for entry in outbound_entries(settings)]
     settings["routing_final"] = settings.get("routing_final") or "direct"
 
@@ -3294,6 +3370,11 @@ class AdminHandler(CommonHandler):
                 settings["postgres_dsn"] = postgres_dsn
             if "contact_email" in body:
                 settings["contact_email"] = normalize_contact_email(body["contact_email"])
+            if "postgres_outbound" in body:
+                via = body["postgres_outbound"] or ""
+                if not isinstance(via, str):
+                    raise ValueError("postgres_outbound must be an outbound name or empty")
+                settings["postgres_outbound"] = via
 
             if "geo_sources" in body:
                 settings["geo_sources"] = normalize_geo_sources(body["geo_sources"])
@@ -3312,7 +3393,8 @@ class AdminHandler(CommonHandler):
             if "routing_final" in body:
                 settings["routing_final"] = normalize_routing_final(body["routing_final"], settings)
             routing_changed = any(
-                key in body for key in ("egress", "geo_sources", "routing_final"))
+                key in body for key in ("egress", "geo_sources", "routing_final", "postgres_outbound")) or (
+                "postgres_dsn" in body and bool(settings.get("postgres_outbound")))
             if routing_changed:
                 validate_outbound_assignments(get_users(), managed_egress(settings))
 

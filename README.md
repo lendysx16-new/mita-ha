@@ -174,6 +174,15 @@ minutes on errors) and keeps the newest 30. A snapshot contains `users.json`
 outbounds and routing), `mita-server.json` and the traffic metrics, but no logs.
 Treat the database as confidential.
 
+**Connect via** under Settings sends backups and log forwarding through one of
+your outbounds instead of directly, for example when the direct path to the
+database drops large packets (small queries work, backups hang). sing-box then
+forwards `127.0.0.1:1179` to the database host and port from the connection
+string through that outbound; TLS to the database still verifies its real host
+name. This needs a single TCP host in the connection string, and an outbound in
+use there cannot be deleted. A stalled connection gives up after about a minute,
+and the backup status shows the database error.
+
 To restore into a new installation, set `MITA_POSTGRES_DSN` in `.env` and run,
 before the first start:
 

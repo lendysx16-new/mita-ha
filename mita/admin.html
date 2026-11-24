@@ -555,6 +555,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
             <div class="form-grid">
               <label>Log level<select id="logLevel"><option>FATAL</option><option>ERROR</option><option>WARN</option><option>INFO</option><option>DEBUG</option><option>TRACE</option></select></label>
               <label class="span-2">PostgreSQL connection<input id="postgresDsn" type="password" autocomplete="off" spellcheck="false" maxlength="4096" placeholder="postgresql://user:password@host:5432/database"><span class="field-help">Leave empty to disable database logging. Logs are buffered in /data/mita.log until a connection is configured.</span></label>
+              <label>Connect via<select id="postgresOutbound"><option value="">Direct</option></select><span class="field-help">Send backups and logs through one of your outbounds, e.g. when the direct path to the database drops large packets. TLS to the database still checks its real host name.</span></label>
             </div>
             <div id="logDbStatus" class="status-line muted" role="status">Checking database logging…</div>
             <p class="field-help">When PostgreSQL is configured, Mita saves up to 30 compressed backups: on startup and every 24 hours. Backups contain user passwords and subscription tokens; protect database access.</p>
@@ -1054,6 +1055,12 @@ function fillSettings(s) {
   $('#contactEmail').value = s.contact_email || '';
   $('#logLevel').value = s.log_level || 'INFO';
   $('#postgresDsn').value = s.postgres_dsn || '';
+  const dbVia = s.postgres_outbound || '';
+  const dbChoices = ['', ...(s.outbounds || []).map(o => o.name)];
+  if (dbVia && !dbChoices.includes(dbVia)) dbChoices.push(dbVia);
+  setHTML($('#postgresOutbound'), dbChoices.map(name =>
+    html`<option value="${name}"${attr('selected', name === dbVia)}>${name || 'Direct'}</option>`));
+  $('#postgresOutbound').value = dbVia;
   // Filled here (on load and after saves), not on every refresh, so polling never
   // overwrites a URL that is being typed.
   const geoForm = $('#geoSourcesForm');
@@ -1624,6 +1631,7 @@ $('#serverForm').addEventListener('submit', async e => {
   const ok = await mutate($('#saveConf'), () => api.saveSettings({
     log_level: $('#logLevel').value,
     postgres_dsn: $('#postgresDsn').value.trim(),
+    postgres_outbound: $('#postgresOutbound').value,
   }), 'Server settings saved');
   if (ok) { fillSettings(state.settings); loadStatuses(); }
 });

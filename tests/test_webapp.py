@@ -13,6 +13,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -491,6 +492,59 @@ class AdminAPITests(unittest.TestCase):
         app.write_json(app.applied_outbounds_path(), ["nl"])
         app.load_applied_proxy_outbounds()
         self.assertEqual((app.APPLIED_PROXY_OUTBOUNDS, app.APPLIED_EGRESS), ({"nl"}, None))
+
+    def test_postgres_can_connect_through_an_outbound(self):
+        replace = self.routing()
+        self.add_outbound("nl")
+        dsn = "postgresql://mita:secret@db.example:6432/mita?sslmode=verify-full"
+        status, data = self.call("PUT", "/api/settings", {"postgres_dsn": dsn, "postgres_outbound": "nl"})
+        self.assertEqual(status, 200, data)
+        config = replace.call_args[0][0]
+        self.assertIn({"type": "direct", "tag": "postgres", "listen": "127.0.0.1", "listen_port": app.PG_FORWARD_PORT,
+                       "network": "tcp", "override_address": "db.example", "override_port": 6432}, config["inbounds"])
+        self.assertIn({"inbound": ["postgres"], "outbound": "out-0"}, config["route"]["rules"])
+        self.assertEqual(self.call("GET", "/api/state")[1]["settings"]["postgres_outbound"], "nl")
+
+        driver = SimpleNamespace(connect=mock.Mock(return_value="conn"))
+        with mock.patch.object(app, "psycopg2", driver):
+            with mock.patch.object(app.SING_BOX, "running", return_value=False):
+                with self.assertRaises(app.PgRouteError) as caught:
+                    app.pg_connect(dsn)
+                self.assertIn("sing-box is not running", app.db_error_text(caught.exception, dsn))
+            with mock.patch.object(app.SING_BOX, "running", return_value=True):
+                app.pg_connect(dsn)
+            driver.connect.assert_called_once_with(dsn, hostaddr="127.0.0.1", port=app.PG_FORWARD_PORT,
+                                                   **app.PG_CONNECT_OPTIONS)
+            driver.connect.reset_mock()
+            app.pg_connect(dsn, direct=True)  # restore runs before sing-box
+            driver.connect.assert_called_once_with(dsn, **app.PG_CONNECT_OPTIONS)
+
+        status, data = self.call("DELETE", "/api/outbounds/nl")
+        self.assertEqual(status, 400)
+        self.assertIn("PostgreSQL connection uses outbound 'nl'", data["error"])
+        self.assertEqual(self.call("PUT", "/api/settings", {"postgres_outbound": "missing"})[0], 400)
+        status, data = self.call("PUT", "/api/settings", {"postgres_dsn": "postgresql://u:p@/m?host=/run/postgresql"})
+        self.assertEqual(status, 400)
+        self.assertIn("one TCP host", data["error"])
+        # Without a connection string the choice has no effect and does not block saving.
+        self.assertEqual(self.call("PUT", "/api/settings", {"postgres_dsn": ""})[0], 200)
+        self.assertNotIn("postgres", [i["tag"] for i in replace.call_args[0][0]["inbounds"]])
+        self.assertEqual(self.call("PUT", "/api/settings", {"postgres_outbound": ""})[0], 200)
+        self.assertEqual(self.call("DELETE", "/api/outbounds/nl")[0], 200)
+
+    def test_dsn_host_and_port_parsing(self):
+        cases = {
+            "postgresql://u:p%40ss@db.example:5433/mita?sslmode=require": ("db.example", 5433),
+            "postgresql://u:p@db.example/mita": ("db.example", 5432),
+            "postgres://u:p@[2001:db8::1]:6432/x": ("2001:db8::1", 6432),
+            "host=db.example port=6543 user=u password='a b' dbname=m": ("db.example", 6543),
+            "postgresql://u:p@db/x?hostaddr=10.0.0.5": ("10.0.0.5", 5432),
+        }
+        for dsn, expected in cases.items():
+            self.assertEqual(app.pg_forward_target(dsn), expected, dsn)
+        for bad in ("host=a,b dbname=x", "postgresql://u:p@/m?host=/var/run/postgresql", "", "host=db port=99999"):
+            with self.assertRaises(ValueError, msg=bad):
+                app.pg_forward_target(bad)
 
     def test_router_keeps_running_until_mita_stops_using_it(self):
         replace = self.routing()

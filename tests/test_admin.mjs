@@ -504,3 +504,16 @@ test('restart bar and Geo sources reflect the server state', async () => {
   assert.equal(restarted, 'POST');
   assert.match(element('#msg').textContent, /Mita restarted/);
 });
+
+test('PostgreSQL "Connect via" lists Direct and the saved outbounds', async () => {
+  const {ctx, element, state} = setup({outboundEnabled: true});
+  state.settings.outbounds = [{name: 'nl', port: 1081, outbound: {type: 'trojan', server: 't', server_port: 443}}];
+  state.settings.postgres_outbound = 'nl';
+  await ctx.load();
+  ctx.fillSettings(state.settings);
+  assert.match(element('#postgresOutbound').innerHTML, /<option value="">Direct<\/option>[\s\S]*<option value="nl" selected>nl<\/option>/);
+  assert.equal(element('#postgresOutbound').value, 'nl');
+  ctx.fillSettings({outbounds: [], postgres_outbound: ''});
+  assert.equal(element('#postgresOutbound').value, '');
+  assert.ok(html.includes("postgres_outbound: $('#postgresOutbound').value"));
+});
