@@ -85,141 +85,84 @@ proxy routes at the Linux server. The database stores snapshots, so use it for
 migration or recovery with one active instance. Running HA and Linux against the
 same tables does not synchronize changes and mixes their snapshot histories.
 
-## Route selected destinations through an outbound proxy
+## Route traffic through outbounds (standalone Linux)
 
-The standalone Linux admin UI configures this in two tabs. Build or update
-the Linux image with `docker compose up -d --build mita`; it bundles sing-box.
-Changes are saved right away and applied with the **Restart Mita** button at
-the top of both tabs. It runs `mita stop` and `mita start` inside the
-container, so active connections drop for a few seconds while the admin panel
-and sing-box keep running. The button turns prominent when saved changes are
-waiting for a restart.
+On standalone Linux, the bundled sing-box decides where traffic goes. Mita
+sends every connection to sing-box's loopback router port; sing-box applies
+your routing policies and sends each connection to one of your outbounds,
+directly, or blocks it. Build or update the image with
+`docker compose up -d --build mita`. Routing stays off (Mita connects directly)
+until you add an outbound or a policy.
 
-1. **Outbounds**: add your provider servers. Paste a share link
-   (`hysteria2://` / `hy2://`, `vless://` including REALITY, `vmess://`,
-   `trojan://`, `ss://`, `tuic://`, `socks5://`, `http://`) or one sing-box
-   outbound JSON object, and give it a name. Every outbound runs inside one
-   sing-box process, which listens on an authenticated loopback SOCKS5 port per
-   outbound (from `127.0.0.1:1081` up); Mita sends routed traffic there.
-   sing-box checks each outbound before it is saved. Editing an outbound
-   restarts only sing-box; a new outbound becomes usable after
-   **Restart Mita**. An outbound that a policy or an account still
-   uses cannot be deleted, and outbounds cannot be renamed. If sing-box exits,
-   it is restarted with increasing delays up to one minute.
-   The **Status** column shows whether each outbound actually works: Mita
-   fetches `https://www.gstatic.com/generate_204` through the outbound's
-   loopback port (so through sing-box and the provider server) and shows the
-   latency or the error. It checks on save, every five minutes, and when you
-   press **Test**. A failed check does not block saving. Set
-   `MITA_OUTBOUND_PROBE_URL` in `.env` to probe a different http(s) URL.
-2. **Routing**: create policies. Each policy is a list of domains, CIDRs
-   and/or up to eight GeoSite / GeoIP categories, bound to one saved
-   outbound, or sent directly, or blocked. Write categories as
-   `geosite:<name>` (domains) or `geoip:<name>` (IP networks), for example
-   `geosite:youtube`, `geosite:telegram` + `geoip:telegram`,
-   `geosite:category-ads-all`. Names come from
-   [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat/tree/sing/geo)
-   (`sing` branch); a GitHub link to any other sing-box source `.json` works
-   too. A wrong name fails on save with "HTTP 404 (no such category?)".
-   Under **Geo sources** you can instead point `geosite:` and/or `geoip:` at a
-   v2ray `geosite.dat` / `geoip.dat` link on GitHub (release downloads work) or
-   jsDelivr, for example Runet Freedom's
-   `https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat`
-   for `geosite:ru-blocked`. The files are cached in `/data/geo-cache` and
-   refreshed daily; `geosite:<name>@<attribute>` keeps only entries with that
-   attribute. As with JSON lists, only domain suffixes and CIDRs are used. Policies are checked top to bottom
-   (reorder them with the arrows) and the first match wins; unmatched traffic
-   connects directly. Categories are downloaded on save and refreshed daily.
-   A policy holds up to 4,096 domains and 4,096 networks of its own (16,384
-   with category entries), and a GeoSite / GeoIP file can also be imported into
-   it. Changes apply after **Restart Mita**. **Advanced: edit as
-   JSON** shows the policies in Mita's egress format.
+### Outbounds tab
 
-Rules are evaluated in order. `domainNames` entries match the domain and its
-subdomains when the client sends a hostname. If the client sends an IP, use
-`ipRanges` with CIDRs. `"*"` matches all entries of that kind. A rule's
-`action` is `PROXY`, `DIRECT` or `REJECT`. A `PROXY` rule references one or
-more outbound names in `proxyNames`; an optional `name` and `geoUrls` are kept
-for the admin UI only. Unmatched destinations go directly. For a plain SOCKS5
-proxy without sing-box, add it to `proxies` in the JSON editor (`name`, `host`,
-`port`, optional `"socks5Authentication": {"user": "...", "password": "..."}`).
+Add your provider servers. Paste a share link (`hysteria2://` / `hy2://`,
+`vless://` including REALITY, `vmess://`, `trojan://`, `ss://`, `tuic://`,
+`socks5://`, `http://`) or one sing-box outbound JSON object, and give it a
+name (the link's own name is used if you leave it empty). sing-box checks the
+outbound before it is saved. Outbounds cannot be renamed, and one that a
+policy, **Everything else** or an account still uses cannot be deleted.
+
+The **Status** column shows whether each outbound actually works: Mita fetches
+`https://www.gstatic.com/generate_204` through the outbound and shows the
+latency or the error. It checks on save, every five minutes, and when you press
+**Test**; a failed check does not block saving. Set `MITA_OUTBOUND_PROBE_URL`
+in `.env` to probe a different http(s) URL. If sing-box exits, it is restarted
+with increasing delays up to one minute; while it is down, routed traffic fails.
+
+### Routing tab
+
+Each **policy** sends its domains, CIDRs and GeoSite / GeoIP categories to one
+saved outbound, directly, or blocks them. Policies are checked top to bottom
+(reorder them with the arrows); the first match wins. **Everything else**
+decides what happens to traffic no policy matched (direct by default). Saving
+a policy restarts only sing-box, so it applies within a second without touching
+Mita; active connections through sing-box are reset.
+
+- Domains match the domain and its subdomains. A policy holds up to 4,096
+  domains and 4,096 networks of its own.
+- Categories are written `geosite:<name>` (domains) or `geoip:<name>` (IP
+  networks), up to eight per policy, for example `geosite:youtube`,
+  `geosite:telegram` + `geoip:telegram`, `geosite:category-ads-all`. Names come
+  from [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat/tree/sing/geo)
+  (`sing` branch); a GitHub link to any sing-box source `.json` works too. A
+  wrong name fails on save with "HTTP 404 (no such category?)".
+- Categories are stored as local sing-box rule sets without losing anything:
+  exact domains, suffixes, keywords and regular expressions all apply, and
+  there is no entry limit. They are downloaded on save and refreshed daily;
+  sing-box picks up refreshed files without a restart.
+- **Geo sources** can point `geosite:` and/or `geoip:` at a v2ray `.dat` file
+  on GitHub (release downloads work) or jsDelivr instead, for example Runet
+  Freedom's
+  `https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat`
+  for `geosite:ru-blocked`; `geosite:<name>@<attribute>` keeps only entries with
+  that attribute. Files are cached in `/data/geo-cache` (not in backups).
+- **Import GeoSite / GeoIP file** copies the suffixes and CIDRs of a local
+  sing-box source file into the policy's own fields once.
+- Clients that connect by IP are sniffed (TLS SNI / HTTP Host) so domain rules
+  still apply. **Generated sing-box route** shows the rules sing-box runs.
+
+### Restart Mita and per-account outbounds
+
+Policy changes never need a Mita restart. Mita itself only needs one when
+outbounds are added or removed, so that they can be chosen for an account, or
+when routing is turned on for the first time. The **Restart Mita** button at
+the top of both tabs then turns prominent; it runs `mita stop` and `mita start`
+inside the container, so connections drop for a few seconds while the admin
+panel and sing-box keep running.
+
+In a user's settings, **Outbound for PROXY** makes every policy that sends
+traffic to an outbound use the chosen outbound instead for that account and its
+HWID devices; direct, blocked and **Everything else = direct** traffic is
+unchanged. Client subscription URLs and configs stay the same.
 
 Outbound configs, policies and their credentials are included in PostgreSQL
-backups. Treat these backups as confidential because the provider configs
-contain keys. An installation that used the earlier single built-in sing-box
-is moved automatically on start: it becomes the outbound `managed-sing-box`,
-and its domains and GitHub lists become the first routing policy.
+backups; treat them as confidential. Settings from earlier versions are moved
+automatically on start: the single built-in sing-box becomes the outbound
+`managed-sing-box`, SOCKS5 proxies from the old JSON editor become `socks`
+outbounds, and a catch-all `*` policy becomes **Everything else**.
 
-#### Choose an outbound for an account
-
-Add outbounds in the **Outbounds** tab. Restart Mita after adding an outbound
-or changing a routing policy. In the user's settings, select **Outbound for
-PROXY**. The selection applies to new connections from the account and its
-HWID devices. **Routing rule default** clears the override.
-
-All users share the same server-side GeoSite, GeoIP and other routing rules.
-Only a matched `PROXY` rule uses the selected outbound. `DIRECT`, `REJECT`
-and unmatched destinations keep their existing behavior. Client subscription
-URLs and configs stay the same. Clear any account selections before deleting
-the referenced outbound. This feature is available in the standalone Linux
-image.
-
-#### Import GeoSite and GeoIP lists
-
-Use **Import GeoSite / GeoIP** in the built-in sing-box form to select
-sing-box source rule-set JSON files. Supported rules contain a single
-`domain_suffix` (GeoSite) or `ip_cidr` (GeoIP) selector. The source files are
-read in the browser and imported as editable domain and network lists.
-You can also enter domains and CIDRs manually, or use an IP-only rule.
-
-For example, this source file matches a domain and its subdomains, or a
-request sent directly to an IP in the given network:
-
-```json
-{
-  "version": 3,
-  "rules": [
-    {"domain_suffix": ["example.com"]},
-    {"ip_cidr": ["198.51.100.0/24"]}
-  ]
-}
-```
-
-Use source JSON rather than binary `.dat` or `.srs` files. In mixed
-GeoSite lists, compatible suffixes are imported and skipped exact-domain,
-regex, keyword, subdomain-only, and compound rules are reported.
-A list without any compatible selectors is rejected. Invalid domain suffixes
-such as names with underscores or Unicode are skipped; use ASCII punycode
-for internationalized names. Each managed rule supports 16,384 distinct
-domains and 16,384 distinct CIDRs. Manual and locally imported entries take
-priority over GitHub entries; overflow is reported in Skipped. GeoIP matches destination IPs sent by clients. Mita does not
-resolve incoming domain names solely to evaluate GeoIP rules. Lists are
-snapshots and can be replaced by clearing the corresponding field and
-importing an updated file. Save and restart Mita to apply. The imported
-destinations are included in PostgreSQL backups.
-
-To track a GitHub list, paste up to four public GitHub file links or Raw JSON
-URLs into **GitHub Geo lists**. Saving downloads and validates the files.
-The running Linux service checks again every 24 hours. Successful changes
-replace the downloaded entries and preserve your manually entered lists.
-A failed download or invalid update keeps the last working snapshot.
-Restart Mita to apply a downloaded update. Links pinned to a commit or tag
-keep using that revision, while links to a branch follow its updates.
-[Example GeoIP source on GitHub](https://github.com/MetaCubeX/meta-rules-dat/blob/sing/geo/geoip/cn.json).
-
-### Optional sing-box service on Linux
-
-Copy `sing-box/config.example.json` to `sing-box/config.json`. Keep its SOCKS5
-inbound bound to `127.0.0.1:1080`. Replace the example SOCKS5 password with
-a random password and use the same credentials in the Mita outbound proxy.
-The example also uses placeholder VLESS settings. Replace them with your provider
-settings or use a different sing-box outbound such as Shadowsocks, Trojan or
-Hysteria2. Set `route.final` to that outbound’s tag. Keep endpoint credentials in this local file.
-
-```sh
-docker compose --profile sing-box run --rm --no-deps sing-box check -c /etc/sing-box/config.json
-docker compose --profile sing-box up -d
-```
-
-Define a SOCKS5 proxy at `127.0.0.1:1080` under the **Outbounds** tab and
-include its `socks5Authentication` credentials.
+An external sing-box (the `sing-box` Compose profile with
+`sing-box/config.example.json`) still works: keep its SOCKS5 inbound on
+`127.0.0.1:1080` with a password and add it in the Outbounds tab as
+`socks5://user:password@127.0.0.1:1080`.

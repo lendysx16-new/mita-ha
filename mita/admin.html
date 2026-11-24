@@ -125,7 +125,7 @@ code { font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }
 .form-grid > .span-2 { grid-column: 1 / -1; }
 label:not(.check) { display: flex; flex-direction: column; gap: 7px; font-size: 12px; font-weight: 580; }
 label input, label select, label textarea { font-weight: 400; }
-input:not([type="checkbox"]), select, #outboundConfig { width: 100%; min-width: 0; min-height: 40px; border: 1px solid var(--input); border-radius: var(--radius-sm); background: var(--card); padding: 9px 11px; box-shadow: 0 1px 2px rgba(0,0,0,.025); }
+input:not([type="checkbox"]), select { width: 100%; min-width: 0; min-height: 40px; border: 1px solid var(--input); border-radius: var(--radius-sm); background: var(--card); padding: 9px 11px; box-shadow: 0 1px 2px rgba(0,0,0,.025); }
 input::placeholder { color: var(--muted-foreground); opacity: .75; }
 input:not([type="checkbox"]):hover, select:hover { border-color: var(--ring); }
 input:not([type="checkbox"]):focus, select:focus { border-color: var(--ring); outline: 2px solid color-mix(in srgb, var(--ring) 18%, transparent); outline-offset: 0; }
@@ -306,14 +306,6 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
-#outboundConfig {
-  box-sizing: border-box;
-  width: 100%;
-  resize: vertical;
-  font: inherit;
-  font-family: monospace;
-}
-#outboundForm pre { overflow: auto; }
 
 /* Routing */
 .routing-editor { display: grid; gap: 14px; padding: 18px 22px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--muted) 30%, var(--card)); }
@@ -335,11 +327,14 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
 .restart-bar .btn { margin-left: auto; }
 .restart-bar:empty { display: none; }
 .routing-restart code { display: inline; padding: 1px 6px; background: var(--card); border-radius: 4px; }
-#routingJson > summary { cursor: pointer; list-style: none; border-bottom: 0; }
-#routingJson > summary::-webkit-details-marker { display: none; }
-#routingJson > summary h2::before { content: "▸ "; color: var(--muted-foreground); }
-#routingJson[open] > summary { border-bottom: 1px solid var(--border); }
-#routingJson[open] > summary h2::before { content: "▾ "; }
+#routePreview > summary { cursor: pointer; list-style: none; border-bottom: 0; }
+#routePreview > summary::-webkit-details-marker { display: none; }
+#routePreview > summary h2::before { content: "▸ "; color: var(--muted-foreground); }
+#routePreview[open] > summary { border-bottom: 1px solid var(--border); }
+#routePreview[open] > summary h2::before { content: "▾ "; }
+.route-preview { max-height: 420px; overflow: auto; margin: 0; padding: 12px; border-radius: var(--radius-sm); background: var(--secondary); font: 11px/1.5 var(--mono); }
+.final-row { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
+.final-row label { min-width: 220px; }
 @media (max-width: 700px) {
   .routing-editor { padding: 16px; }
   .routing-table .row-actions { white-space: normal; }
@@ -502,7 +497,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
         <div class="status-line restart-bar" id="restartBarRouting" role="status"></div>
         <section class="card" id="listsCard">
           <div class="card-header">
-            <div><h2>Routing policies</h2><p class="card-subtitle">Each policy is a list of domains and networks bound to one saved outbound, or sent directly, or blocked. Policies are checked top to bottom and the first match wins; unmatched traffic connects directly.</p></div>
+            <div><h2>Routing policies</h2><p class="card-subtitle">sing-box routes all traffic: each policy sends its domains, networks and GeoSite / GeoIP categories to one saved outbound, directly, or blocks them. Policies are checked top to bottom; the first match wins. Saving applies instantly, without restarting Mita.</p></div>
             <button id="addList" class="btn" type="button">+ Add policy</button>
           </div>
           <form id="listEditor" class="routing-editor" hidden autocomplete="off">
@@ -520,6 +515,11 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
             <thead><tr><th>#</th><th>Policy</th><th>Destinations</th><th>Outbound</th><th><span class="sr-only">Actions</span></th></tr></thead>
             <tbody id="listRows"></tbody>
           </table></div>
+          <form id="finalForm" class="card-actions final-row">
+            <label>Everything else<select name="target" id="routingFinal"></select></label>
+            <span class="field-help">Traffic no policy matched.</span>
+            <button id="saveFinal" class="btn btn-secondary" type="submit">Save</button>
+          </form>
         </section>
         <form class="card" id="geoSourcesForm" autocomplete="off">
           <div class="card-header"><div><h2>Geo sources</h2><p class="card-subtitle">Where <code>geosite:</code> and <code>geoip:</code> categories come from. Leave a field empty to use MetaCubeX categories; set a v2ray <code>.dat</code> link to read categories from it instead, for example Runet Freedom's <code>geosite:ru-blocked</code>.</p></div></div>
@@ -532,18 +532,11 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
           </div>
           <div class="card-actions"><button id="saveGeoSources" class="btn" type="submit">Save Geo sources</button></div>
         </form>
-        <form class="card" id="outboundForm" hidden>
-          <details id="routingJson"><summary class="card-header"><div><h2>Advanced: edit as JSON</h2><p class="card-subtitle">The same outbounds and lists in Mita's egress format. Saving replaces everything above.</p></div></summary>
-          <div class="card-body">
-            <label>Outbound configuration (JSON)<textarea id="outboundConfig" rows="12" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
-            <details><summary>Example with sing-box</summary><pre>{
-  "proxies": [{"name": "sing-box", "host": "127.0.0.1", "port": 1080}],
-  "rules": [{"domainNames": ["example.com"], "action": "PROXY", "proxyNames": ["sing-box"]}]
-}</pre></details>
-          </div>
-          <div class="card-actions"><button id="saveOutbound" class="btn" type="submit">Save JSON</button></div>
+        <section class="card" id="routePreviewCard">
+          <details id="routePreview"><summary class="card-header"><div><h2>Generated sing-box route</h2><p class="card-subtitle">Read-only: the routing rules sing-box runs, built from the policies above.</p></div></summary>
+            <div class="card-body"><pre id="routePreviewJson" class="route-preview">Routing is off until you add an outbound or a policy.</pre></div>
           </details>
-        </form>
+        </section>
       </div>
 
       <div id="confTab" class="tab-panel settings-stack" aria-label="Settings">
@@ -1071,10 +1064,7 @@ function fillSettings(s) {
   if (geoForm.elements) {
     for (const kind of ['geosite', 'geoip']) geoForm.elements[kind].value = (s.geo_sources || {})[kind] || '';
   }
-  const outboundEnabled = state.outbound_enabled === true;
-  $('#outboundForm').hidden = !outboundEnabled;
-  $('#outboundConfig').value = outboundEnabled
-    ? JSON.stringify(s.egress || {proxies: [], rules: []}, null, 2) : '';
+
 }
 function resetAddUserForm() {
   $('#username').value = '';
@@ -1101,6 +1091,8 @@ async function load() {
   state.outbound_health = data.outbound_health || {};
   state.restart_pending = data.restart_pending === true;
   state.geo_dat = data.geo_dat || {};
+  state.routing_active = data.routing_active === true;
+  state.sing_box_route = data.sing_box_route || null;
   renderStats();
   renderUsers();
   renderDeviceDirectory();
@@ -1317,21 +1309,15 @@ function geoLabel(url) {
 const uniqueLines = text => [...new Set(String(text || '').split(/\r?\n/).map(v => v.trim()).filter(Boolean))];
 const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
 
-function outboundNames(egress = currentEgress()) {
-  // SOCKS5 proxies set directly in the JSON editor stay usable alongside sing-box outbounds.
-  return [...savedOutbounds().map(o => o.name), ...egress.proxies.map(p => p.name)];
+function outboundNames() {
+  return savedOutbounds().map(o => o.name);
 }
 function protocolLabel(outbound) {
   const label = PROTOCOL_LABELS[outbound.type] || outbound.type;
   return outbound.tls && outbound.tls.reality && outbound.tls.reality.enabled ? label + ' REALITY' : label;
 }
-// A policy saved from the JSON editor may list several outbounds; the form keeps
-// that set as one option instead of silently narrowing it to the first.
-const KEEP_PROXIES = 'keep-proxies';
 function ruleTargetValue(rule) {
-  if (rule.action !== 'PROXY') return rule.action;
-  const names = rule.proxyNames || [];
-  return names.length > 1 ? KEEP_PROXIES : 'proxy:' + names[0];
+  return rule.action === 'PROXY' ? 'proxy:' + (rule.proxyNames || [])[0] : rule.action;
 }
 function ruleTargetLabel(rule) {
   if (rule.action === 'DIRECT') return 'Direct';
@@ -1372,21 +1358,21 @@ function renderSingBoxStatus() {
   if (!state.sing_box_available) {
     el.dataset.state = 'error';
     el.textContent = 'sing-box is not installed in this image. Rebuild with: docker compose up -d --build mita';
-  } else if (!count) {
+  } else if (!state.routing_active) {
     el.dataset.state = '';
-    el.textContent = 'sing-box starts when you add the first outbound.';
+    el.textContent = 'Routing is off: Mita connects directly. Add an outbound or a policy to route through sing-box.';
   } else {
-    el.dataset.state = state.sing_box_running ? 'ok' : 'warn';
+    el.dataset.state = state.sing_box_running ? 'ok' : 'error';
     el.textContent = state.sing_box_running
-      ? 'sing-box is running with ' + plural(count, 'outbound', 'outbounds') + '. A new outbound becomes usable in Routing after a Mita restart.'
-      : 'sing-box is not running; it is retried automatically. Check the outbound settings.';
+      ? 'sing-box routes all traffic' + (count ? ' with ' + plural(count, 'outbound', 'outbounds') : '') + '.'
+      : 'sing-box is not running, so routed traffic fails. It is restarted automatically; check the outbounds.';
   }
 }
 
 function renderRestartBars() {
   const text = state.restart_pending
-    ? 'Saved changes are waiting for a Mita restart. Active connections drop for a few seconds.'
-    : 'Mita runs the saved outbounds and routing.';
+    ? 'Mita needs a restart to pick up new or removed outbounds (for per-account outbounds). Active connections drop for a few seconds.'
+    : 'Mita is up to date. Policy changes apply instantly through sing-box.';
   for (const id of ['#restartBarOutbounds', '#restartBarRouting']) {
     const bar = $(id);
     bar.dataset.state = state.restart_pending ? 'warn' : 'ok';
@@ -1411,6 +1397,13 @@ function renderRouting() {
   if (!enabled) return;
   renderRestartBars();
   renderGeoSources();
+  const final = state.settings.routing_final || 'direct';
+  const finalTargets = [{value: 'direct', label: 'Direct (no proxy)'}, {value: 'block', label: 'Block'},
+    ...outboundNames().map(name => ({value: name, label: name}))];
+  setHTML($('#routingFinal'), finalTargets.map(t => html`<option value="${t.value}"${attr('selected', t.value === final)}>${t.label}</option>`));
+  if (document.activeElement !== $('#routingFinal')) $('#routingFinal').value = final;
+  $('#routePreviewJson').textContent = state.sing_box_route
+    ? JSON.stringify(state.sing_box_route, null, 2) : 'Routing is off until you add an outbound or a policy.';
   renderSingBoxStatus();
   $('#addOutbound').disabled = !state.sing_box_available;
   const egress = currentEgress();
@@ -1430,15 +1423,6 @@ function renderRouting() {
         ${deleteButton('data-routing="delete-outbound" data-name="' + esc(name) + '"', usage.lists || usage.accounts)}
       </td></tr>`;
   });
-  for (const proxy of egress.proxies) {
-    outboundRows.push(html`<tr>
-      <td data-label="Name"><span class="target-badge">${proxy.name}</span></td>
-      <td data-label="Protocol">SOCKS5 <span class="badge badge-subtle">JSON</span></td>
-      <td data-label="Server"><code>${proxy.host}:${proxy.port}</code></td>
-      <td data-label="Status"><span class="health" data-state="">Not checked (no sing-box)</span></td>
-      <td data-label="Used by">${usageText(outboundUsage(proxy.name, egress))}</td>
-      <td class="row-actions"><span class="field-help">Edit in Routing → JSON</span></td></tr>`);
-  }
   setHTML($('#outboundRows'), outboundRows.length ? outboundRows
     : html`<tr><td colspan="6" class="table-empty">No outbounds yet. Paste a share link from your provider, then bind it to domains in Routing.</td></tr>`);
 
@@ -1485,8 +1469,8 @@ function openOutboundEditor(name) {
   form.hidden = false;
   (saved ? f.config : f.name).focus();
 }
-function routeTargets(egress) {
-  return [...outboundNames(egress).map(name => ({value: 'proxy:' + name, label: name})),
+function routeTargets() {
+  return [...outboundNames().map(name => ({value: 'proxy:' + name, label: name})),
     {value: 'DIRECT', label: 'Direct (no proxy)'}, {value: 'REJECT', label: 'Block'}];
 }
 function openListEditor(index) {
@@ -1496,9 +1480,8 @@ function openListEditor(index) {
   const rule = index >= 0 ? egress.rules[index] : null;
   routingEdit.list = index;
   const f = form.elements;
-  const targets = routeTargets(egress);
+  const targets = routeTargets();
   const selected = rule ? ruleTargetValue(rule) : targets[0].value;
-  if (selected === KEEP_PROXIES) targets.unshift({value: KEEP_PROXIES, label: rule.proxyNames.join(', ') + ' (set in JSON)'});
   setHTML(f.target, targets.map(t => html`<option value="${t.value}"${attr('selected', t.value === selected)}>${t.label}</option>`));
   f.target.value = selected;
   f.name.value = rule ? rule.name || '' : '';
@@ -1511,7 +1494,7 @@ function openListEditor(index) {
 }
 
 async function saveEgress(egress, button, success) {
-  const ok = await mutate(button, () => api.saveSettings({egress}), success + ' Restart Mita to apply.');
+  const ok = await mutate(button, () => api.saveSettings({egress}), success + ' sing-box applied it.');
   if (ok) fillSettings(state.settings);
   return ok;
 }
@@ -1524,23 +1507,26 @@ function listFromEditor() {
   const geoUrls = uniqueLines(f.geoUrls ? f.geoUrls.value : '');
   if (!domains.length && !ipRanges.length && !geoUrls.length) throw new Error('Add a domain, an IP network or a GeoSite / GeoIP category.');
   const target = f.target.value;
-  const previous = routingEdit.list >= 0 ? egress.rules[routingEdit.list] : null;
-  const keep = target === KEEP_PROXIES && previous;
   const rule = {name: f.name.value.trim(), domainNames: domains, ipRanges,
-    action: keep || target.startsWith('proxy:') ? 'PROXY' : target,
-    proxyNames: keep ? [...previous.proxyNames] : target.startsWith('proxy:') ? [target.slice(6)] : []};
+    action: target.startsWith('proxy:') ? 'PROXY' : target,
+    proxyNames: target.startsWith('proxy:') ? [target.slice(6)] : []};
   if (geoUrls.length) rule.geoUrls = geoUrls;
   if (routingEdit.list >= 0) egress.rules[routingEdit.list] = rule; else egress.rules.push(rule);
   return egress;
 }
 
 $('#addOutbound').onclick = () => openOutboundEditor('');
+$('#finalForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  await mutate($('#saveFinal'), () => api.saveSettings({routing_final: $('#routingFinal').value}),
+    'Everything else saved; sing-box applied it.');
+});
 $('#geoSourcesForm').addEventListener('submit', async e => {
   e.preventDefault();
   const f = $('#geoSourcesForm').elements;
   await mutate($('#saveGeoSources'), () => api.saveSettings({
     geo_sources: {geosite: f.geosite.value.trim(), geoip: f.geoip.value.trim()},
-  }), 'Geo sources saved; categories re-read. Restart Mita to apply.');
+  }), 'Geo sources saved; categories re-read and applied.');
   fillSettings(state.settings);
 });
 $('#addList').onclick = () => openListEditor(-1);
@@ -1558,7 +1544,8 @@ $('#outboundEditor').addEventListener('submit', async e => {
   if (!ok) return;
   closeRoutingEditor('outbound');
   const name = result.outbound ? result.outbound.name : editing;
-  const saved = editing ? 'Outbound updated; sing-box restarted.' : 'Outbound added. Restart Mita to use it in Routing.';
+  const saved = editing ? 'Outbound updated; sing-box restarted.'
+    : 'Outbound added; policies can use it now.' + (result.restart_required ? ' Restart Mita to choose it for accounts.' : '');
   const health = result.health;
   // Saving keeps the outbound even when the check fails: the server may be down only briefly.
   toast(saved + ' ' + healthMessage(name, health), health && !health.ok ? 'error' : 'info');
@@ -1616,7 +1603,7 @@ async function onRoutingClick(e) {
     case 'delete-outbound': {
       const name = button.dataset.name;
       if (!await confirmAction('Delete outbound ' + name + '?', 'Routing policies and accounts can no longer use it.', 'Delete')) return;
-      await mutate(button, () => api.deleteOutbound(name), 'Outbound deleted. Restart Mita to apply.');
+      await mutate(button, () => api.deleteOutbound(name), 'Outbound deleted.');
       break;
     }
     case 'delete-list': {
@@ -1638,12 +1625,6 @@ async function onRoutingClick(e) {
 $('#outboundsTab').addEventListener('click', onRoutingClick);
 $('#routingTab').addEventListener('click', onRoutingClick);
 
-$('#outboundForm').addEventListener('submit', async e => {
-  e.preventDefault();
-  await mutate($('#saveOutbound'), () => api.saveSettings({
-    egress: JSON.parse($('#outboundConfig').value),
-  }), 'Routing JSON saved. Restart Mita to apply the rules.');
-});
 $('#serverForm').addEventListener('submit', async e => {
   e.preventDefault();
   const ok = await mutate($('#saveConf'), () => api.saveSettings({

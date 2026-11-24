@@ -237,13 +237,27 @@ test('users on the placeholder password are flagged with a reset shortcut', asyn
   assert.equal(element('#detailPasswordWarning').hidden, true);
 });
 
-test('outbound editor is available only in standalone Linux mode', async () => {
-  for (const enabled of [false, true]) {
-    const {ctx, element} = setup({outboundEnabled: enabled});
-    await ctx.load();
-    ctx.fillSettings({});
-    assert.equal(element('#outboundForm').hidden, !enabled);
-  }
+test('routing tab shows Everything else and the generated sing-box route', async () => {
+  const {ctx, element, state} = setup({outboundEnabled: true});
+  state.routing_active = true;
+  state.sing_box_running = true;
+  state.sing_box_available = true;
+  state.settings.outbounds = [{name: 'nl', port: 1081, outbound: {type: 'trojan', server: 't.example', server_port: 443}}];
+  state.settings.routing_final = 'nl';
+  state.sing_box_route = {final: 'direct', rules: [{inbound: ['router'], outbound: 'out-0'}]};
+  await ctx.load();
+  assert.match(element('#routingFinal').innerHTML, /value="direct"[\s\S]*value="block"[\s\S]*value="nl" selected/);
+  assert.match(element('#routePreviewJson').textContent, /"outbound": "out-0"/);
+  assert.match(element('#singBoxStatus').textContent, /sing-box routes all traffic with 1 outbound/);
+  state.sing_box_running = false;
+  await ctx.load();
+  assert.equal(element('#singBoxStatus').dataset.state, 'error');
+  state.routing_active = false;
+  state.sing_box_route = null;
+  await ctx.load();
+  assert.match(element('#singBoxStatus').textContent, /Routing is off/);
+  assert.match(element('#routePreviewJson').textContent, /Routing is off/);
+  assert.ok(html.includes('id="finalForm"'));
 });
 
 test('account settings show and save a named outbound only on standalone Linux', async () => {
@@ -340,7 +354,7 @@ test('outbounds and routing policies render and policies are built from the edit
   state.settings.geo_snapshots = {'https://raw.githubusercontent.com/o/r/main/g.json': {domains: 120, ip_ranges: 3},
     'https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/youtube.json': {domains: 10, ip_ranges: 0}};
   state.settings.egress = {
-    proxies: [{name: 'spare', host: 'proxy.example', port: 1080}],
+    proxies: [],
     rules: [{name: 'Streaming <b>', domainNames: ['video.example', 'cdn.example'], ipRanges: ['198.51.100.0/24'], action: 'PROXY', proxyNames: ['nl'],
              geoUrls: ['https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/youtube.json', 'https://raw.githubusercontent.com/o/r/main/g.json']},
       {domainNames: ['ads.example'], ipRanges: [], action: 'REJECT', proxyNames: []}],
@@ -349,7 +363,7 @@ test('outbounds and routing policies render and policies are built from the edit
   await ctx.load();
   assert.equal(element('.tab[data-tab="outboundsTab"]').hidden, false);
   assert.equal(element('.tab[data-tab="routingTab"]').hidden, false);
-  assert.match(element('#singBoxStatus').textContent, /running with 2 outbounds/);
+  assert.match(element('#singBoxStatus').textContent, /Routing is off|routes all traffic/);
   const outbounds = element('#outboundRows').innerHTML;
   assert.match(outbounds, /Hysteria2[\s\S]*hy\.example:8443/);
   assert.match(outbounds, /VLESS REALITY/);
@@ -357,7 +371,6 @@ test('outbounds and routing policies render and policies are built from the edit
   assert.match(outbounds, /1 policy · 1 account/);
   assert.match(outbounds, /data-routing="delete-outbound" data-name="nl" disabled/, 'used outbound cannot be deleted');
   assert.match(outbounds, /data-routing="delete-outbound" data-name="de" title/, 'unused outbound can be deleted');
-  assert.match(outbounds, /spare[\s\S]*SOCKS5[\s\S]*JSON/);
   const lists = element('#listRows').innerHTML;
   assert.match(lists, /Streaming &lt;b&gt;/);
   assert.match(lists, /2 domains · 1 network · geosite:youtube, https:\/\/raw\.githubusercontent\.com\/o\/r\/main\/g\.json \(133 entries\)/);
@@ -369,7 +382,7 @@ test('outbounds and routing policies render and policies are built from the edit
   fields.name.focus = () => {};
   Object.assign(element('#listEditor'), {elements: fields, querySelector: () => ({textContent: ''})});
   ctx.openListEditor(-1);
-  assert.match(fields.target.innerHTML, /value="proxy:nl"[\s\S]*value="proxy:de"[\s\S]*value="proxy:spare"[\s\S]*value="DIRECT"[\s\S]*value="REJECT"/);
+  assert.match(fields.target.innerHTML, /value="proxy:nl"[\s\S]*value="proxy:de"[\s\S]*value="DIRECT"[\s\S]*value="REJECT"/);
   fields.name.value = ' Work ';
   fields.target.value = 'proxy:de';
   fields.domains.value = 'corp.example\n\n corp.example \nmail.example';
@@ -390,16 +403,6 @@ test('outbounds and routing policies render and policies are built from the edit
   assert.equal(fields.target.value, 'proxy:nl');
   assert.equal(fields.domains.value, 'video.example\ncdn.example');
   assert.equal(fields.geoUrls.value, 'geosite:youtube\nhttps://raw.githubusercontent.com/o/r/main/g.json');
-  // A policy with several outbounds (set in JSON) keeps them when edited in the form.
-  state.settings.egress.rules[0].proxyNames = ['nl', 'spare'];
-  await ctx.load();
-  ctx.openListEditor(0);
-  assert.equal(fields.target.value, 'keep-proxies');
-  assert.match(fields.target.innerHTML, /nl, spare \(set in JSON\)/);
-  fields.name.value = 'Renamed';
-  assert.deepEqual([...ctx.listFromEditor().rules[0].proxyNames], ['nl', 'spare']);
-  fields.target.value = 'proxy:spare';
-  assert.deepEqual([...ctx.listFromEditor().rules[0].proxyNames], ['spare']);
 });
 
 test('outbound editor shows the saved sing-box JSON and the status explains a missing binary', async () => {
@@ -485,7 +488,7 @@ test('restart bar and Geo sources reflect the server state', async () => {
   await ctx.load();
   for (const id of ['#restartBarOutbounds', '#restartBarRouting']) {
     assert.equal(element(id).dataset.state, 'warn');
-    assert.match(element(id).innerHTML, /waiting for a Mita restart[\s\S]*data-routing="restart-mita"/);
+    assert.match(element(id).innerHTML, /needs a restart[\s\S]*data-routing="restart-mita"/);
   }
   assert.match(element('[data-dat-status="geosite"]').textContent, /^Downloaded .* · 3\.0 MiB\.$/);
   assert.equal(element('[data-dat-status="geoip"]').textContent, 'Using MetaCubeX geoip categories.');
@@ -494,7 +497,7 @@ test('restart bar and Geo sources reflect the server state', async () => {
   state.geo_dat = {};
   await ctx.load();
   assert.equal(element('#restartBarRouting').dataset.state, 'ok');
-  assert.match(element('#restartBarRouting').innerHTML, /Mita runs the saved outbounds and routing/);
+  assert.match(element('#restartBarRouting').innerHTML, /Policy changes apply instantly/);
   assert.equal(element('[data-dat-status="geosite"]').textContent, 'Not downloaded yet.');
 
   let restarted;
