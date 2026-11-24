@@ -521,7 +521,7 @@ test('PostgreSQL "Connect via" lists Direct and the saved outbounds', async () =
 test('subscription groups filter concrete servers and only the chosen config is loaded', async () => {
   const {ctx, element} = setup();
   const makeServer = (name, group, host) => ({
-    name, groups: [group], config: {type: 'trojan', server: host, server_port: 443, password: 'test'},
+    name, selector: name, groups: [group], config: {type: 'trojan', server: host, server_port: 443, password: 'test'},
   });
   ctx.fetch = async (_url, request) => {
     assert.equal(request.method, 'POST');
@@ -549,6 +549,7 @@ test('subscription groups filter concrete servers and only the chosen config is 
   const fields = element('#outboundEditor').elements;
   assert.equal(fields.name.value, 'B-Asia');
   assert.equal(JSON.parse(fields.config.value).server, 'b.example');
+  assert.equal(element('#outboundSubscriptionRefresh').checked, true);
   ctx.closeRoutingEditor('outbound');
   assert.equal(element('#outboundSubscriptionUrl').value, '');
   assert.equal(element('#outboundSubscriptionHeaders').value, '');

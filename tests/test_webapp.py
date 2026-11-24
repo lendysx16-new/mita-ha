@@ -202,6 +202,63 @@ proxy-groups:
             "user-agent": "Mita-Outbound", "accept-encoding": "identity",
         })
 
+    def test_outbound_subscription_refresh_keeps_selected_server_and_local_assignment(self):
+        restart = self.routing()
+        original_link = "trojan://secret@old.example:443#selected"
+        original = app.parse_subscription_servers(original_link)["servers"][0]
+        binding = {
+            "url": "https://provider.example/sub?token=private",
+            "headers": "X-Test: private-header",
+            "selector": original["selector"],
+        }
+        status, result = self.call("POST", "/api/outbounds", {
+            "name": "tracked", "config": original["config"], "subscription": binding,
+        })
+        self.assertEqual(status, 201)
+        self.assertIn("subscription", result["outbound"])
+        self.assertNotIn("private", json.dumps(result))
+
+        def make_due():
+            settings = app.get_settings()
+            settings["outbounds"][0]["subscription"]["checked_at"] = "2000-01-01T00:00:00Z"
+            app.write_json(app.SETTINGS_PATH, settings)
+
+        make_due()
+        previous = app.get_settings()["outbounds"][0]
+        restart.reset_mock()
+        latest = "trojan://updated@new.example:443#selected\ntrojan://other@other.example:443#different"
+        with mock.patch.object(app, "fetch_outbound_subscription", return_value=latest) as fetch:
+            app.refresh_outbound_subscriptions()
+            app.refresh_outbound_subscriptions()
+            fetch.assert_called_once_with(binding["url"], {"x-test": "private-header"})
+        restart.assert_called_once()
+        saved = app.get_settings()["outbounds"][0]
+        self.assertEqual(saved["outbound"]["server"], "new.example")
+        self.assertEqual(saved["port"], previous["port"])
+        self.assertEqual(saved["password"], previous["password"])
+
+        make_due()
+        restart.reset_mock()
+        with mock.patch.object(app, "fetch_outbound_subscription", return_value="trojan://other@other.example:443#different"):
+            app.refresh_outbound_subscriptions()
+        restart.assert_not_called()
+        current = app.get_settings()["outbounds"][0]
+        self.assertEqual(current["outbound"], saved["outbound"])
+        self.assertIn("not found", current["subscription"]["error"])
+
+        make_due()
+        with mock.patch.object(app, "fetch_outbound_subscription", return_value=original_link), mock.patch.object(
+            app, "apply_routing", side_effect=ValueError("rejected"),
+        ):
+            app.refresh_outbound_subscriptions()
+        current = app.get_settings()["outbounds"][0]
+        self.assertEqual(current["outbound"], saved["outbound"])
+        self.assertIn("Could not apply", current["subscription"]["error"])
+
+        status, _ = self.call("PUT", "/api/outbounds/tracked", {"config": current["outbound"], "subscription": None})
+        self.assertEqual(status, 200)
+        self.assertNotIn("subscription", app.get_settings()["outbounds"][0])
+
     def test_add_user_and_generate_password(self):
         status, data = self.call("POST", "/api/users", {"username": "second"})
         self.assertEqual(status, 201)

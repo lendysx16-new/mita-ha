@@ -1368,25 +1368,30 @@ def parse_subscription_headers(text):
     return headers
 
 
-def fetch_outbound_subscription(url, headers=None):
+def subscription_url_parts(url):
     if not isinstance(url, str) or len(url) > 4096:
         raise ValueError("enter an HTTPS subscription URL")
+    if any(ord(char) <= 32 or ord(char) == 127 for char in url):
+        raise ValueError("enter an HTTPS subscription URL without spaces")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port if parsed.port is not None else 443
+        host = parsed.hostname
+    except ValueError as exc:
+        raise ValueError("invalid subscription URL") from exc
+    if (parsed.scheme != "https" or not host or parsed.username is not None
+            or parsed.fragment or "%" in host or not 1 <= port <= 65535):
+        raise ValueError("enter an HTTPS subscription URL without embedded credentials or fragment")
+    return parsed, host, port
+
+
+def fetch_outbound_subscription(url, headers=None):
     request_headers = {"accept-encoding": "identity", "user-agent": "Mita-Outbound"}
     custom_headers = headers or {}
     previous_origin = None
     deadline = time.monotonic() + 15
     for _ in range(4):
-        if any(ord(char) <= 32 or ord(char) == 127 for char in url):
-            raise ValueError("enter an HTTPS subscription URL without spaces")
-        try:
-            parsed = urllib.parse.urlsplit(url)
-            port = parsed.port if parsed.port is not None else 443
-            host = parsed.hostname
-        except ValueError as exc:
-            raise ValueError("invalid subscription URL") from exc
-        if (parsed.scheme != "https" or not host or parsed.username is not None
-                or parsed.fragment or "%" in host or not 1 <= port <= 65535):
-            raise ValueError("enter an HTTPS subscription URL without embedded credentials or fragment")
+        parsed, host, port = subscription_url_parts(url)
         origin = (host, port)
         if previous_origin is not None and origin != previous_origin:
             custom_headers = {}
@@ -1505,6 +1510,19 @@ def read_clash_subscription(text):
         raise ValueError("Clash subscription YAML is invalid") from exc
 
 
+def validate_subscription_outbound(outbound):
+    pending = [outbound]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            for name, item in value.items():
+                if isinstance(name, str) and name.endswith(("_path", "_directory", "_file")) and item:
+                    raise ValueError("subscription outbounds cannot reference local files")
+                pending.append(item)
+        elif isinstance(value, list):
+            pending.extend(value)
+
+
 def parse_subscription_servers(text):
     """Return concrete servers and membership of groups defined in the subscription."""
     text = text.strip()
@@ -1575,18 +1593,131 @@ def parse_subscription_servers(text):
                 outbound, name = parse_outbound_config(entry)
                 if isinstance(entry, dict):
                     name = entry.get("tag")
+            validate_subscription_outbound(outbound)
         except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
             skipped += 1
             continue
         name = name if isinstance(name, str) and name.strip() else outbound["server"]
         servers.append({
             "name": name[:160],
+            "selector": hashlib.sha256(json.dumps([name, outbound["type"]]).encode()).hexdigest(),
             "groups": [index for index, children in enumerate(group_servers) if name in children],
             "config": outbound,
         })
     if not servers:
         raise ValueError("subscription contains no supported concrete servers")
     return {"servers": servers, "groups": [name[:160] for name in group_names], "skipped": skipped}
+
+
+SUBSCRIPTION_REFRESH_INTERVAL = 24 * 60 * 60
+SUBSCRIPTION_RETRY_INTERVAL = 60 * 60
+
+
+def subscription_binding(value):
+    if not isinstance(value, dict):
+        raise ValueError("invalid subscription selection")
+    url = value.get("url")
+    subscription_url_parts(url)
+    selector = value.get("selector")
+    if not isinstance(selector, str) or not re.fullmatch(r"[a-f0-9]{64}", selector):
+        raise ValueError("choose a server from the subscription first")
+    headers = value.get("headers", "")
+    parse_subscription_headers(headers)
+    return {"url": url, "headers": headers, "selector": selector,
+            "checked_at": utc_now(), "error": ""}
+
+
+def selected_subscription_config(result, binding, current):
+    candidates = [server["config"] for server in result["servers"] if server["selector"] == binding["selector"]]
+    if not candidates:
+        raise ValueError("Selected server was not found in the subscription")
+    if len(candidates) == 1:
+        return candidates[0]
+    if current in candidates:
+        return current
+    endpoint = (current["server"], current["server_port"])
+    matching = [config for config in candidates if (config["server"], config["server_port"]) == endpoint]
+    if len(matching) == 1:
+        return matching[0]
+    raise ValueError("Several subscription servers have the same name and protocol")
+
+
+def subscription_refresh_due(binding, now):
+    try:
+        elapsed = now.timestamp() - datetime.fromisoformat(binding["checked_at"]).timestamp()
+    except (ValueError, TypeError, KeyError, OverflowError):
+        return True
+    delay = SUBSCRIPTION_RETRY_INTERVAL if binding.get("error") else SUBSCRIPTION_REFRESH_INTERVAL
+    return elapsed >= delay
+
+
+def refresh_outbound_subscriptions(stop_event=None):
+    now = datetime.now(timezone.utc)
+    with LOCK:
+        pending = [entry for entry in outbound_entries(get_settings())
+                   if entry.get("subscription") and subscription_refresh_due(entry["subscription"], now)]
+    previews = {}
+    results = {}
+    for entry in pending:
+        if stop_event is not None and stop_event.is_set():
+            return
+        binding = entry["subscription"]
+        source = (binding["url"], binding["headers"])
+        if source not in previews:
+            try:
+                previews[source] = parse_subscription_servers(
+                    fetch_outbound_subscription(source[0], parse_subscription_headers(source[1]))
+                )
+            except (ValueError, OSError, HTTPException):
+                previews[source] = None
+        result = previews[source]
+        if result is None:
+            results[entry["name"]] = (entry, None, "Could not load the subscription")
+            continue
+        try:
+            results[entry["name"]] = (entry, selected_subscription_config(result, binding, entry["outbound"]), "")
+        except ValueError as exc:
+            results[entry["name"]] = (entry, None, str(exc))
+
+    if not results or (stop_event is not None and stop_event.is_set()):
+        return
+    with LOCK:
+        if stop_event is not None and stop_event.is_set():
+            return
+        previous = get_settings()
+        updated = copy.deepcopy(previous)
+        changed = False
+        checked_at = utc_now()
+        for candidate in outbound_entries(updated):
+            result = results.get(candidate["name"])
+            if result is None or result[0] != candidate:
+                continue  # The administrator changed or removed this outbound during the fetch.
+            _, config, error = result
+            candidate["subscription"].update(error=error, checked_at=checked_at)
+            if config is not None and config != candidate["outbound"]:
+                candidate["outbound"] = config
+                changed = True
+        if changed:
+            try:
+                apply_routing(updated, previous)
+                return
+            except (ValueError, OSError, StateError):
+                for candidate, old in zip(outbound_entries(updated), outbound_entries(previous)):
+                    if candidate["outbound"] != old["outbound"]:
+                        candidate["outbound"] = old["outbound"]
+                        candidate["subscription"]["error"] = "Could not apply the updated server configuration"
+        if updated != previous:
+            write_json(SETTINGS_PATH, updated)
+
+
+def subscription_refresh_worker(stop_event):
+    delay = 30
+    while not stop_event.wait(delay):
+        try:
+            refresh_outbound_subscriptions(stop_event)
+        except (KeyError, TypeError, ValueError, OSError, StateError):
+            print("[web] outbound subscription refresh could not finish", flush=True)
+        delay = 5 * 60
 
 
 def outbound_entries(settings):
@@ -2574,7 +2705,11 @@ def outbound_health_worker(stop_event):
 
 
 def public_outbound(entry):
-    return {"name": entry["name"], "outbound": entry["outbound"], "port": entry["port"]}
+    public = {"name": entry["name"], "outbound": entry["outbound"], "port": entry["port"]}
+    if entry.get("subscription"):
+        binding = entry["subscription"]
+        public["subscription"] = {key: binding.get(key) for key in ("checked_at", "error")}
+    return public
 
 
 def admin_settings(settings):
@@ -3558,7 +3693,7 @@ class AdminHandler(CommonHandler):
             raise ApiError(HTTPStatus.NOT_FOUND, "outbounds are only available in the Linux image")
 
     def outbound_from_body(self):
-        body = self.read_json(max_bytes=OUTBOUND_MAX_BYTES * 2)
+        body = self.read_json(max_bytes=OUTBOUND_MAX_BYTES * 3)
         outbound, suggested = parse_outbound_config(body.get("config"))
         return body, outbound, suggested
 
@@ -3593,6 +3728,8 @@ class AdminHandler(CommonHandler):
                 raise ValueError(f"an outbound named {name!r} already exists")
             entry = {"name": name, "outbound": outbound, "port": allocate_outbound_port(previous),
                      "password": secrets.token_urlsafe(24)}
+            if body.get("subscription") is not None:
+                entry["subscription"] = subscription_binding(body["subscription"])
             settings["outbounds"] = previous + [entry]
             self.apply_outbounds(settings, previous_settings)
             pending = restart_pending(settings)
@@ -3603,7 +3740,7 @@ class AdminHandler(CommonHandler):
 
     def route_update_outbound(self, name):
         self.require_sing_box()
-        _, outbound, _ = self.outbound_from_body()
+        body, outbound, _ = self.outbound_from_body()
         with LOCK:
             settings = get_settings()
             previous_settings = copy.deepcopy(settings)
@@ -3611,7 +3748,12 @@ class AdminHandler(CommonHandler):
             entry = next((e for e in previous if e["name"] == name), None)
             if entry is None:
                 raise ApiError(HTTPStatus.NOT_FOUND, "outbound not found")
+            same_config = entry["outbound"] == outbound
             entry = dict(entry, outbound=outbound)
+            if body.get("subscription") is not None:
+                entry["subscription"] = subscription_binding(body["subscription"])
+            elif "subscription" in body or not same_config:
+                entry.pop("subscription", None)
             settings["outbounds"] = [entry if e["name"] == name else e for e in previous]
             self.apply_outbounds(settings, previous_settings)
         # Same local port and credentials: only sing-box restarts, Mita keeps running.
@@ -3868,6 +4010,7 @@ def serve():
         threading.Thread(target=supervise_sing_box, args=(stop_bridge,), name="awgm-box-supervisor", daemon=True).start()
         threading.Thread(target=geo_refresh_worker, args=(stop_bridge,), name="github-geo-refresh", daemon=True).start()
         threading.Thread(target=outbound_health_worker, args=(stop_bridge,), name="outbound-health", daemon=True).start()
+        threading.Thread(target=subscription_refresh_worker, args=(stop_bridge,), name="outbound-subscriptions", daemon=True).start()
     print(f"[web] admin UI listening on {admin_host}:{ADMIN_PORT}", flush=True)
     print("[web] subscription server listening on 8099", flush=True)
     try:
