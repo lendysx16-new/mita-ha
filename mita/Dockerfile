@@ -23,12 +23,22 @@ FROM golang:1.25-bookworm AS mita-routed-builder
 WORKDIR /src
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl patch protobuf-compiler \
-    && rm -rf /var/lib/apt/lists/* \
-    && go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2
+    && rm -rf /var/lib/apt/lists/*
+# The Go module proxy occasionally drops downloads mid-stream, and GOPROXY's
+# "direct" fallback only applies to 404/410. Retry, and fetch every module in its
+# own cached layer so the patch/test/build step below needs no network.
+RUN for attempt in 1 2 3 4 5; do \
+      go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2 && exit 0; \
+      echo "protoc-gen-go install failed (attempt ${attempt}), retrying" >&2; sleep $((attempt * 5)); \
+    done; exit 1
 RUN curl -fL --retry 3 -o /tmp/mieru.tar.gz \
       https://codeload.github.com/enfein/mieru/tar.gz/9812207bb8aefc3dd4dcc6a5ce268bf5e28b6c54 \
     && tar -xzf /tmp/mieru.tar.gz --strip-components=1 \
     && rm /tmp/mieru.tar.gz
+RUN for attempt in 1 2 3 4 5; do \
+      go mod download && go mod verify && exit 0; \
+      echo "go mod download failed (attempt ${attempt}), retrying" >&2; sleep $((attempt * 5)); \
+    done; exit 1
 COPY upstream/per-user-outbound.patch /tmp/per-user-outbound.patch
 COPY upstream/user_outbound.go upstream/user_outbound_test.go pkg/socks5/
 RUN patch --batch --fuzz=0 -p1 < /tmp/per-user-outbound.patch \

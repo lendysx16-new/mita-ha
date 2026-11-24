@@ -295,3 +295,36 @@ test('Geo source import preserves suffix and CIDR selectors and rejects unsuppor
     {domain_suffix: ['example.com'], ip_cidr: ['198.51.100.0/24']},
   ]}), /no compatible/);
 });
+
+test('GeoIP import keeps valid networks and skips what the server would reject', () => {
+  const {ctx} = setup();
+  const parsed = ctx.readGeoRuleSet({version: 2, rules: [{ip_cidr: [
+    '1.0.1.0/24', ' 10.0.0.1/8 ', '2001:DB8::/32', '::ffff:192.0.2.0/120', '::/1',
+    '0.0.0.0/0', '::/0', 'nope', '1.2.3.4', '256.1.1.1/8', '1.2.3/24', '1.2.3.4/33',
+    '2001:db8::1::/64', '2001:db8:1:2:3:4:5:6:7/64', '1.2.3.4/24/1', 42,
+    '192.0.2.1::/64', '01.2.3.4/24', '::ffff:192.000.2.1/120', '1.2.3.4::5/64',
+  ]}]});
+  assert.deepEqual([...parsed.ipRanges],
+    ['1.0.1.0/24', '10.0.0.1/8', '2001:db8::/32', '::ffff:192.0.2.0/120', '::/1']);
+  assert.deepEqual([...parsed.skipped], ['invalid CIDRs']);
+  assert.throws(() => ctx.readGeoRuleSet({version: 2, rules: [{ip_cidr: ['0.0.0.0/0']}]}), /no compatible/);
+});
+
+test('account outbound select offers only live outbounds and keeps the current choice', async () => {
+  // `state` is the mocked /api/state response that load() reads.
+  const {ctx, element, state} = setup({outboundEnabled: true});
+  state.proxy_outbounds = ['east'];
+  state.pending_proxy_outbounds = ['north'];
+  state.users[0].proxy_outbound = 'west';
+  await ctx.load();
+  ctx.openUser('alice');
+  const details = element('#detailDeviceUsers').innerHTML;
+  assert.match(details, /<option value="east">east<\/option>/);
+  assert.match(details, /<option value="west" selected>west<\/option>/);
+  assert.doesNotMatch(details, /<option value="north"/);
+  assert.match(details, /Restart Mita before assigning: north/);
+  delete state.pending_proxy_outbounds;  // older backends omit the field
+  await ctx.load();
+  ctx.openUser('alice');
+  assert.doesNotMatch(element('#detailDeviceUsers').innerHTML, /data-pending-outbounds/);
+});

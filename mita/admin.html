@@ -658,7 +658,8 @@ function toggleTime(button) {
 }
 
 /* ---------- State & routing ---------- */
-const state = {users: [], settings: {}, tab: 'usersTab', user: null, returnTab: 'usersTab'};
+const state = {users: [], settings: {}, tab: 'usersTab', user: null, returnTab: 'usersTab',
+  proxy_outbounds: [], pending_proxy_outbounds: []};
 const VIEWS = {
   usersTab: {slug: 'users', title: 'Users', description: 'Manage access, credentials and subscriptions.'},
   userDetailTab: {slug: 'users', title: 'User details', description: 'Subscription link, devices and access for this account.'},
@@ -822,12 +823,21 @@ function renderUserDetail() {
       </div>
       ${state.outbound_enabled ? html`<label>Outbound for PROXY<select name="proxy_outbound">
         <option value=""${attr('selected', !u.proxy_outbound)}>Routing rule default</option>
-        ${state.proxy_outbounds.map(name => html`<option value="${name}"${attr('selected', name === u.proxy_outbound)}>${name}</option>`)}
-      </select><span class="field-help">Applies to this account and all its devices when a server rule selects PROXY.</span></label>` : ''}
+        ${outboundChoices(u).map(name => html`<option value="${name}"${attr('selected', name === u.proxy_outbound)}>${name}</option>`)}
+      </select><span class="field-help">Applies to this account and all its devices when a server rule selects PROXY.</span>${
+        state.pending_proxy_outbounds.length ? html`<span class="field-help" data-pending-outbounds>Restart Mita before assigning: ${state.pending_proxy_outbounds.join(', ')}</span>` : ''
+      }</label>` : ''}
       <button class="btn" type="submit">Save</button>
     </form>
     <p class="field-help device-settings-note">With legacy disabled, clients without X-HWID cannot fetch the subscription. Supported clients can still register a new HWID on their first refresh.</p>
     ${devices}`);
+}
+// Outbounds that are live in the running Mita, plus the account's current choice so
+// saving other settings never silently clears it.
+function outboundChoices(u) {
+  const names = [...state.proxy_outbounds];
+  if (u.proxy_outbound && !names.includes(u.proxy_outbound)) names.push(u.proxy_outbound);
+  return names;
 }
 async function saveDeviceSettings(form) {
   const username = form.dataset.deviceForm;
@@ -1011,6 +1021,7 @@ async function load() {
   state.settings = data.settings || {};
   state.outbound_enabled = data.outbound_enabled === true;
   state.proxy_outbounds = data.proxy_outbounds || [];
+  state.pending_proxy_outbounds = data.pending_proxy_outbounds || [];
   state.sing_box_available = data.sing_box_available === true;
   state.sing_box_running = data.sing_box_running === true;
   renderStats();
@@ -1130,6 +1141,39 @@ function normalizeGeoDomain(value) {
   return domain.length <= 253 && domain.split('.').every(part => label.test(part)) ? domain : null;
 }
 
+// Mirrors the server: an IPv4/IPv6 network in CIDR form, never a catch-all /0.
+function normalizeGeoCIDR(value) {
+  if (typeof value !== 'string') return null;
+  const match = /^([^/\s]+)\/(\d{1,3})$/.exec(value.trim());
+  if (!match) return null;
+  const [, address, prefixText] = match;
+  const prefix = Number(prefixText);
+  // Like Python's ipaddress: no leading zeros ("01" is rejected, "0" is fine).
+  const ipv4 = text => {
+    const octets = text.split('.');
+    return octets.length === 4 && octets.every(o => /^(?:0|[1-9]\d{0,2})$/.test(o) && Number(o) <= 255);
+  };
+  if (address.includes(':')) {
+    const halves = address.split('::');
+    if (halves.length > 2) return null;
+    const groups = halves.map(half => half ? half.split(':') : []);
+    const all = groups.flat();
+    let units = all.length;
+    // An embedded IPv4 address may only end the whole address (after any "::").
+    const tail = groups[groups.length - 1];
+    if (all.slice(0, -1).some(group => group.includes('.'))) return null;
+    if (tail.length && tail[tail.length - 1].includes('.')) {
+      if (!ipv4(all.pop())) return null;
+      units += 1;  // it fills two 16-bit groups
+    }
+    if (!all.every(group => /^[0-9a-f]{1,4}$/i.test(group))) return null;
+    if (halves.length === 2 ? units > 7 : units !== 8) return null;
+    return prefix >= 1 && prefix <= 128 ? address.toLowerCase() + '/' + prefix : null;
+  }
+  if (!ipv4(address)) return null;
+  return prefix >= 1 && prefix <= 32 ? address.split('.').map(Number).join('.') + '/' + prefix : null;
+}
+
 function readGeoRuleSet(source) {
   if (!source || ![1, 2, 3, 4].includes(source.version) || !Array.isArray(source.rules) || !source.rules.length) {
     throw new Error('Expected a sing-box source rule set with a version and rules array.');
@@ -1155,7 +1199,8 @@ function readGeoRuleSet(source) {
       const values = Array.isArray(rule[key]) ? rule[key] : [rule[key]];
       for (const value of values) {
         if (key === 'ip_cidr') {
-          if (typeof value === 'string' && value.trim()) ipRanges.push(value.trim());
+          const cidr = normalizeGeoCIDR(value);
+          if (cidr) ipRanges.push(cidr);
           else skipped.add('invalid CIDRs');
         } else if (typeof value === 'string' && value.trim().startsWith('.')) {
           skipped.add('subdomain-only suffixes');

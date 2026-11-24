@@ -196,6 +196,39 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(app.build_mita_config(app.get_users(), app.get_settings())["egress"]["rules"], [])
 
     @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
+    def test_outbound_added_after_start_needs_restart_before_assignment(self):
+        self.addCleanup(setattr, app, "APPLIED_PROXY_OUTBOUNDS", app.APPLIED_PROXY_OUTBOUNDS)
+        rule = {"domainNames": ["example.com"], "action": "PROXY", "proxyNames": ["default"]}
+        default = {"name": "default", "host": "127.0.0.1", "port": 1081}
+        west = {"name": "west", "host": "127.0.0.1", "port": 1082}
+        self.assertEqual(self.call("PUT", "/api/settings", {"egress": {"proxies": [default], "rules": [rule]}})[0], 200)
+        app.record_applied_proxy_outbounds(persist=True)  # `--init`, right before Mita starts
+        app.load_applied_proxy_outbounds()  # serve()
+        status, data = self.call("PUT", "/api/settings", {"egress": {"proxies": [default, west], "rules": [rule]}})
+        self.assertEqual((status, data["restart_required"]), (200, True))
+        app.load_applied_proxy_outbounds()  # only the web process restarted; Mita kept running
+
+        _, state = self.call("GET", "/api/state")
+        self.assertEqual((state["proxy_outbounds"], state["pending_proxy_outbounds"]), (["default"], ["west"]))
+        path = "/api/users/first"
+        status, data = self.call("PATCH", path, {"proxy_outbound": "west"})
+        self.assertEqual(status, 400)
+        self.assertIn("restart Mita", data["error"])
+        self.reload_mock.assert_not_called()
+        self.assertNotIn("proxy_outbound", app.get_users()[0])
+
+        self.assertEqual(self.call("PATCH", path, {"proxy_outbound": "default"})[0], 200)
+        # Saving other settings with an unchanged choice must keep working.
+        self.assertEqual(self.call("PATCH", path, {"proxy_outbound": "default", "device_limit": 3})[0], 200)
+
+        app.record_applied_proxy_outbounds(persist=True)  # full restart: `--init`, Mita, serve()
+        app.load_applied_proxy_outbounds()
+        _, state = self.call("GET", "/api/state")
+        self.assertEqual((state["proxy_outbounds"], state["pending_proxy_outbounds"]), (["default", "west"], []))
+        self.assertEqual(self.call("PATCH", path, {"proxy_outbound": "west"})[0], 200)
+        self.assertEqual(app.get_users()[0]["proxy_outbound"], "west")
+
+    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_proxy_outbound_applies_to_account_and_devices_without_changing_subscription(self):
         users = app.get_users()
         device = {"mita_username": "dev_first", "password": "device-secret"}

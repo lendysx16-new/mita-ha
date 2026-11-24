@@ -1208,6 +1208,48 @@ def proxy_outbound_names(egress):
     return {proxy["name"] for proxy in egress["proxies"]}
 
 
+# Proxy outbounds of the egress config the running Mita process started with.
+# Mita applies egress changes only on restart, but `mita reload` does update the
+# per-user outbound choice, and the routing core rejects PROXY traffic for an
+# account whose outbound it does not know. `webapp.py --init` records the set right
+# before run.sh starts Mita, and serve() loads it, so restarting only the web
+# process cannot mistake unapplied settings for live ones. None means "unknown"
+# (tests, one-shot commands) and treats every configured outbound as live.
+APPLIED_PROXY_OUTBOUNDS = None
+
+
+def applied_outbounds_path():
+    return DATA_DIR / "mita-applied-outbounds.json"
+
+
+def record_applied_proxy_outbounds(persist=False):
+    global APPLIED_PROXY_OUTBOUNDS
+    try:
+        APPLIED_PROXY_OUTBOUNDS = proxy_outbound_names(managed_egress(get_settings()))
+    except (ValueError, StateError):
+        APPLIED_PROXY_OUTBOUNDS = set()
+    if persist:
+        write_json(applied_outbounds_path(), sorted(APPLIED_PROXY_OUTBOUNDS))
+
+
+def load_applied_proxy_outbounds():
+    """Read what `--init` recorded for the running Mita; unknown means nothing is live."""
+    global APPLIED_PROXY_OUTBOUNDS
+    value = load_json(applied_outbounds_path(), None)
+    if isinstance(value, list) and all(isinstance(name, str) for name in value):
+        APPLIED_PROXY_OUTBOUNDS = set(value)
+    else:
+        APPLIED_PROXY_OUTBOUNDS = set()
+
+
+def split_proxy_outbounds(settings):
+    """Return (assignable now, configured but waiting for a Mita restart)."""
+    configured = proxy_outbound_names(managed_egress(settings))
+    if APPLIED_PROXY_OUTBOUNDS is None:
+        return configured, set()
+    return configured & APPLIED_PROXY_OUTBOUNDS, configured - APPLIED_PROXY_OUTBOUNDS
+
+
 def validate_outbound_assignments(users, egress):
     names = proxy_outbound_names(egress)
     for user in users:
@@ -2034,11 +2076,13 @@ class AdminHandler(CommonHandler):
     def route_get_state(self):
         settings = get_settings()
         standalone = is_standalone()
+        assignable, pending = split_proxy_outbounds(settings) if standalone else (set(), set())
         return HTTPStatus.OK, {
             "users": [public_user(u) for u in get_users()],
             "settings": admin_settings(settings),
             "outbound_enabled": standalone,
-            "proxy_outbounds": sorted(proxy_outbound_names(managed_egress(settings))) if standalone else [],
+            "proxy_outbounds": sorted(assignable),
+            "pending_proxy_outbounds": sorted(pending),
             "sing_box_available": sing_box_available(),
             "sing_box_running": sing_box_available() and SING_BOX.running(),
         }
@@ -2130,10 +2174,14 @@ class AdminHandler(CommonHandler):
             if "proxy_outbound" in body:
                 if not is_standalone():
                     raise ValueError("outbound selection is only available on standalone Linux")
-                if not isinstance(outbound, str) or (
-                    outbound and outbound not in proxy_outbound_names(managed_egress(get_settings()))
-                ):
+                if not isinstance(outbound, str):
                     raise ValueError("choose a configured proxy outbound or use the routing rule default")
+                if outbound and outbound != previous_outbound:
+                    assignable, pending = split_proxy_outbounds(get_settings())
+                    if outbound in pending:
+                        raise ValueError(f"restart Mita to apply outbound {outbound!r} before assigning it")
+                    if outbound not in assignable:
+                        raise ValueError("choose a configured proxy outbound or use the routing rule default")
                 if outbound:
                     user["proxy_outbound"] = outbound
                 else:
@@ -2371,6 +2419,8 @@ def serve():
     sub = Server(("0.0.0.0", SUB_PORT), SubscriptionHandler)
 
     stop_bridge = threading.Event()
+    if is_standalone():
+        load_applied_proxy_outbounds()
 
     def shutdown_handler(signum, frame):
         threading.Thread(target=admin.shutdown, daemon=True).start()
@@ -2419,6 +2469,9 @@ if __name__ == "__main__":
         if is_standalone() and not standalone_admin_password():
             raise StateError("set MITA_ADMIN_PASSWORD to a password of at least 24 characters")
         initialize()
+        if args.init and is_standalone():
+            # run.sh starts Mita right after this step from the config just written.
+            record_applied_proxy_outbounds(persist=True)
     except (StateError, ValueError, OSError) as exc:
         parser.exit(1, f"Startup failed: {exc}\n")
     if not args.init:
