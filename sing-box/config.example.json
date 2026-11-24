@@ -1,0 +1,20 @@
+{
+  "inbounds": [
+    {
+      "type": "socks",
+      "listen": "127.0.0.1",
+      "listen_port": 1080
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "upstream",
+      "server": "replace-with-your-server.invalid",
+      "server_port": 443,
+      "uuid": "00000000-0000-4000-8000-000000000000",
+      "tls": {"enabled": true}
+    }
+  ],
+  "route": {"final": "upstream"}
+}

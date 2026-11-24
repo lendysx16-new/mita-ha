@@ -63,7 +63,7 @@
 * { box-sizing: border-box; }
 html { min-width: 320px; }
 body { margin: 0; min-height: 100vh; background: var(--background); color: var(--foreground); font-size: 14px; line-height: 1.5; }
-button, input, select { font: inherit; color: inherit; }
+button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
 a { color: inherit; }
@@ -124,8 +124,8 @@ code { font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .form-grid > .span-2 { grid-column: 1 / -1; }
 label:not(.check) { display: flex; flex-direction: column; gap: 7px; font-size: 12px; font-weight: 580; }
-label input, label select { font-weight: 400; }
-input:not([type="checkbox"]), select { width: 100%; min-width: 0; min-height: 40px; border: 1px solid var(--input); border-radius: var(--radius-sm); background: var(--card); padding: 9px 11px; box-shadow: 0 1px 2px rgba(0,0,0,.025); }
+label input, label select, label textarea { font-weight: 400; }
+input:not([type="checkbox"]), select, #outboundConfig { width: 100%; min-width: 0; min-height: 40px; border: 1px solid var(--input); border-radius: var(--radius-sm); background: var(--card); padding: 9px 11px; box-shadow: 0 1px 2px rgba(0,0,0,.025); }
 input::placeholder { color: var(--muted-foreground); opacity: .75; }
 input:not([type="checkbox"]):hover, select:hover { border-color: var(--ring); }
 input:not([type="checkbox"]):focus, select:focus { border-color: var(--ring); outline: 2px solid color-mix(in srgb, var(--ring) 18%, transparent); outline-offset: 0; }
@@ -306,6 +306,14 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
+#outboundConfig {
+  box-sizing: border-box;
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  font-family: monospace;
+}
+#outboundForm pre { overflow: auto; }
 </style>
 </head>
 <body>
@@ -445,6 +453,17 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
             <label class="span-2">Contact email (optional)<input id="contactEmail" type="email" maxlength="254" placeholder="support@example.com" autocomplete="email" spellcheck="false"><span class="field-help">Shown on the public subscription page only when set. Leave blank to hide it.</span></label>
           </div></div>
           <div class="card-actions"><button id="saveSettings" class="btn" type="submit">Save connection</button></div>
+        </form>
+        <form class="card" id="outboundForm">
+          <div class="card-header"><div><h2>Outbound</h2><p class="card-subtitle">Route destinations through SOCKS5, connect directly, or block them. Rules run top to bottom. Restart Mita after saving.</p></div></div>
+          <div class="card-body">
+            <label>Outbound configuration (JSON)<textarea id="outboundConfig" rows="12" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
+            <details><summary>Example with sing-box</summary><pre>{
+  "proxies": [{"name": "sing-box", "host": "127.0.0.1", "port": 1080}],
+  "rules": [{"domainNames": ["example.com"], "action": "PROXY", "proxyNames": ["sing-box"]}]
+}</pre></details>
+          </div>
+          <div class="card-actions"><button id="saveOutbound" class="btn" type="submit">Save outbound</button></div>
         </form>
         <form class="card" id="serverForm">
           <div class="card-header"><div><h2>Server settings</h2><p class="card-subtitle">Log verbosity, PostgreSQL log forwarding and backups.</p></div></div>
@@ -930,6 +949,7 @@ function fillSettings(s) {
   $('#contactEmail').value = s.contact_email || '';
   $('#logLevel').value = s.log_level || 'INFO';
   $('#postgresDsn').value = s.postgres_dsn || '';
+  $('#outboundConfig').value = JSON.stringify(s.egress || {proxies: [], rules: []}, null, 2);
 }
 function resetAddUserForm() {
   $('#username').value = '';
@@ -1055,6 +1075,12 @@ $('#connectionForm').addEventListener('submit', async e => {
     contact_email: $('#contactEmail').value.trim(),
   }), 'Connection settings saved');
   if (ok) fillSettings(state.settings);
+});
+$('#outboundForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  await mutate($('#saveOutbound'), () => api.saveSettings({
+    egress: JSON.parse($('#outboundConfig').value),
+  }), 'Outbound saved. Restart Mita to apply the rules.');
 });
 $('#serverForm').addEventListener('submit', async e => {
   e.preventDefault();

@@ -795,6 +795,89 @@ def parse_password(body):
     return value, ""
 
 
+def normalize_egress(value):
+    """Validate the supported subset of Mita's native egress schema."""
+    def object_fields(item, allowed, label):
+        if not isinstance(item, dict) or set(item) - allowed:
+            raise ValueError(f"{label}: invalid object or unknown field")
+
+    def items(item, key, limit):
+        values = item.get(key, [])
+        if not isinstance(values, list) or len(values) > limit:
+            raise ValueError(f"{key} must be an array with at most {limit} entries")
+        return values
+
+    def domain(value, wildcard=False):
+        if not isinstance(value, str):
+            raise ValueError("domain or proxy host must be a string")
+        if wildcard and value == "*":
+            return value
+        value = value.lower().removesuffix(".")
+        labels = value.split(".")
+        if len(value) > 253 or any(
+            not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+            for label in labels
+        ):
+            raise ValueError("invalid domain or proxy host (use ASCII or punycode)")
+        return value
+
+    object_fields(value, {"proxies", "rules"}, "Outbound")
+    proxies = []
+    names = set()
+    for proxy in items(value, "proxies", 32):
+        object_fields(proxy, {"name", "protocol", "host", "port", "socks5Authentication"}, "Proxy")
+        name = proxy.get("name")
+        if not isinstance(name, str) or not USERNAME_RE.fullmatch(name) or name in names:
+            raise ValueError("proxy names must be valid and unique")
+        names.add(name)
+        protocol = "SOCKS5_PROXY_PROTOCOL"
+        if proxy.get("protocol", protocol) != protocol:
+            raise ValueError("Mita outbound supports only SOCKS5")
+        port = proxy.get("port")
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError("proxy port must be an integer between 1 and 65535")
+        host = proxy.get("host")
+        try:
+            host = str(ipaddress.ip_address(host))
+        except ValueError:
+            host = domain(host)
+        entry = {"name": name, "protocol": protocol, "host": host, "port": port}
+        if "socks5Authentication" in proxy:
+            auth = proxy["socks5Authentication"]
+            object_fields(auth, {"user", "password"}, "SOCKS5 authentication")
+            for key in ("user", "password"):
+                field = auth.get(key)
+                if not isinstance(field, str) or not field or len(field.encode("utf-8", errors="replace")) > 255 or any(
+                    ord(char) < 32 or ord(char) == 127 or 0xD800 <= ord(char) <= 0xDFFF for char in field
+                ):
+                    raise ValueError("SOCKS5 credentials must be 1 to 255 UTF-8 bytes without control characters")
+            entry["socks5Authentication"] = auth.copy()
+        proxies.append(entry)
+
+    rules = []
+    for rule in items(value, "rules", 128):
+        object_fields(rule, {"domainNames", "ipRanges", "action", "proxyNames"}, "Rule")
+        domains = [domain(v, wildcard=True) for v in items(rule, "domainNames", 256)]
+        ranges = []
+        for value in items(rule, "ipRanges", 256):
+            if not isinstance(value, str) or (value != "*" and "/" not in value):
+                raise ValueError("IP ranges must be CIDR strings or *")
+            ranges.append("*" if value == "*" else str(ipaddress.ip_network(value, strict=False)))
+        if not domains and not ranges:
+            raise ValueError("each rule needs a domain or IP range")
+        action = rule.get("action")
+        if action not in ("PROXY", "DIRECT", "REJECT"):
+            raise ValueError("rule action must be PROXY, DIRECT, or REJECT")
+        references = items(rule, "proxyNames", 32)
+        if action == "PROXY":
+            if not references or any(not isinstance(ref, str) or ref not in names for ref in references):
+                raise ValueError("PROXY rule must reference defined proxies")
+        elif references:
+            raise ValueError("only PROXY rules may reference proxies")
+        rules.append({"domainNames": domains, "ipRanges": ranges, "action": action, "proxyNames": references})
+    return {"proxies": proxies, "rules": rules}
+
+
 def build_mita_config(users, settings):
     """Construct the Mita config without filesystem or subprocess side effects."""
     dns_policy = "PREFER_IPv4" if settings.get("prefer_ipv4", True) else "USE_FIRST_IP"
@@ -817,12 +900,15 @@ def build_mita_config(users, settings):
                 **access,
             })
 
-    return {
+    config = {
         "portBindings": [{"port": 2022, "protocol": "TCP"}],
         "users": mita_users,
         "loggingLevel": settings.get("log_level", "INFO"),
         "dns": {"dualStack": dns_policy},
     }
+    if "egress" in settings:
+        config["egress"] = normalize_egress(settings["egress"])
+    return config
 
 
 def rebuild_mita_config():
@@ -1608,6 +1694,10 @@ class AdminHandler(CommonHandler):
             if "contact_email" in body:
                 settings["contact_email"] = normalize_contact_email(body["contact_email"])
 
+            if "egress" in body:
+                settings["egress"] = normalize_egress(body["egress"])
+            egress_changed = settings.get("egress") != previous.get("egress")
+
             settings["public_mieru_host"] = host
             settings["public_mieru_port"] = port
             settings["subscription_base_url"] = base
@@ -1619,7 +1709,8 @@ class AdminHandler(CommonHandler):
 
         return HTTPStatus.OK, {
             "settings": settings,
-            "mita_reloaded": True,
+            "restart_required": egress_changed,
+            "mita_reloaded": settings.get("log_level", "INFO") != old_log_level,
             "mita_output": reload_output,
         }
 

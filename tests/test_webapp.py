@@ -146,6 +146,28 @@ class AdminAPITests(unittest.TestCase):
                 self.assertEqual(app.get_settings().get("contact_email", ""), "")
         self.reload_mock.assert_not_called()
 
+    def test_outbound_settings_validate_and_require_restart(self):
+        egress = {
+            "proxies": [{"name": "sing-box", "host": "127.0.0.1", "port": 1080}],
+            "rules": [{"domainNames": ["Example.COM"], "action": "PROXY", "proxyNames": ["sing-box"]}],
+        }
+        status, data = self.call("PUT", "/api/settings", {"egress": egress})
+        self.assertEqual(status, 200)
+        self.assertTrue(data["restart_required"])
+        self.reload_mock.assert_not_called()
+        config = app.build_mita_config(app.get_users(), app.get_settings())
+        self.assertEqual(config["egress"]["rules"][0]["domainNames"], ["example.com"])
+        self.assertEqual(config["egress"]["proxies"][0]["protocol"], "SOCKS5_PROXY_PROTOCOL")
+
+        egress["rules"][0]["proxyNames"] = ["missing"]
+        status, _ = self.call("PUT", "/api/settings", {"egress": egress})
+        self.assertEqual(status, 400)
+        self.assertEqual(app.get_settings()["egress"], config["egress"])
+
+        status, _ = self.call("PUT", "/api/settings", {"egress": {"proxies": [], "rules": []}})
+        self.assertEqual(status, 200)
+        self.assertEqual(app.build_mita_config(app.get_users(), app.get_settings())["egress"]["rules"], [])
+
     def test_settings_without_log_change_does_not_reload(self):
         status, _ = self.call("PUT", "/api/settings", {"public_mieru_port": 443})
         self.assertEqual(status, 200)

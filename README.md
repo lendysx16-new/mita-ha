@@ -75,3 +75,40 @@ To keep existing subscription URLs working, point their original hostname and
 proxy routes at the Linux server. The database stores snapshots, so use it for
 migration or recovery with one active instance. Running HA and Linux against the
 same tables does not synchronize changes and mixes their snapshot histories.
+
+## Route selected destinations through an outbound proxy
+
+Open **Settings → Outbound** in the Mita admin UI on Home Assistant or Linux.
+Save the JSON configuration, then restart the HA add-on or run
+`docker compose restart mita` on Linux. Changes take effect after restart.
+Use empty `proxies` and `rules` arrays to remove all custom routing.
+
+Rules are evaluated in order. `domainNames` entries match the domain and its
+subdomains when the client sends a hostname. If the client sends an IP, use
+`ipRanges` with CIDRs. `"*"` matches all entries of that kind. A rule's
+`action` is `PROXY`, `DIRECT` or `REJECT`. A `PROXY` rule references one or
+more configured `proxyNames`. Unmatched destinations go directly.
+
+Mita connects to a SOCKS5 proxy defined by `name`, `host` and `port`.
+For authentication, add `"socks5Authentication": {"user": "...", "password": "..."}`
+to the proxy. PostgreSQL snapshots include the outbound settings and their
+credentials. The external sing-box configuration is a separate file.
+
+### Optional sing-box service on Linux
+
+Copy `sing-box/config.example.json` to `sing-box/config.json`. Keep its SOCKS5
+inbound bound to `127.0.0.1:1080`. The example uses placeholder VLESS settings. Replace them with your provider
+settings or use a different sing-box outbound such as Shadowsocks, Trojan or
+Hysteria2. Set `route.final` to that outbound’s tag. Keep endpoint credentials in this local file.
+
+```sh
+docker compose --profile sing-box run --rm --no-deps sing-box check -c /etc/sing-box/config.json
+docker compose --profile sing-box up -d
+```
+
+Use the sing-box example in the Mita Outbound editor to route specific domains
+through that SOCKS5 listener. On Home Assistant, point Mita at a reachable
+SOCKS5 listener from a separately installed sing-box instance. The add-on's
+loopback address reaches only the Mita container. If the listener is remote,
+require SOCKS5 authentication and limit network access to the Mita host.
+SOCKS5 credentials alone do not encrypt the connection.
