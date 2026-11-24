@@ -101,6 +101,12 @@ the Linux image with `docker compose up -d --build mita`; it bundles sing-box.
    `docker compose restart mita`. An outbound that a policy or an account still
    uses cannot be deleted, and outbounds cannot be renamed. If sing-box exits,
    it is restarted with increasing delays up to one minute.
+   The **Status** column shows whether each outbound actually works: Mita
+   fetches `https://www.gstatic.com/generate_204` through the outbound's
+   loopback port (so through sing-box and the provider server) and shows the
+   latency or the error. It checks on save, every five minutes, and when you
+   press **Test**. A failed check does not block saving. Set
+   `MITA_OUTBOUND_PROBE_URL` in `.env` to probe a different http(s) URL.
 2. **Routing**: create policies. Each policy is a list of domains, CIDRs
    and/or up to four GitHub GeoSite / GeoIP source lists, bound to one saved
    outbound, or sent directly, or blocked. Policies are checked top to bottom

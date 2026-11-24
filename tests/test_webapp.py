@@ -5,8 +5,10 @@ import http.client
 import importlib.util
 import io
 import json
+import socket
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer
@@ -346,6 +348,32 @@ class AdminAPITests(unittest.TestCase):
             replace.side_effect = ValueError("sing-box rejected the outbound")
             self.assertEqual(self.call("PUT", "/api/outbounds/nl", {"config": self.HY2})[0], 400)
             self.assertEqual(app.get_settings(), before)
+
+    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
+    @mock.patch.object(app, "sing_box_available", return_value=True)
+    def test_outbound_health_is_checked_on_save_on_demand_and_in_background(self, _available):
+        self.addCleanup(app.OUTBOUND_HEALTH.clear)
+        good = {"ok": True, "latency_ms": 42, "error": "", "checked_at": "2026-11-24T20:00:00Z"}
+        bad = {"ok": False, "latency_ms": None, "error": "the outbound timed out", "checked_at": "2026-11-24T20:05:00Z"}
+        with self.persist_outbounds(), mock.patch.object(app, "probe_outbound", return_value=bad) as probe:
+            status, data = self.call("POST", "/api/outbounds", {"name": "nl", "config": self.HY2})
+            # A failing check does not block saving; the result is returned for a warning.
+            self.assertEqual((status, data["health"]), (201, bad))
+            self.assertEqual(probe.call_args[0][0]["name"], "nl")
+            probe.return_value = good
+            self.assertEqual(self.call("POST", "/api/outbounds/nl/test", {}), (200, {"health": good}))
+            self.assertEqual(self.call("POST", "/api/outbounds/missing/test", {})[0], 404)
+            _, state = self.call("GET", "/api/state")
+            self.assertEqual(state["outbound_health"], {"nl": good})
+            self.assertEqual(self.call("PUT", "/api/outbounds/nl", {"config": self.VLESS})[1]["health"], good)
+
+            app.OUTBOUND_HEALTH["gone"] = bad
+            probe.reset_mock()
+            app.check_all_outbounds()
+            self.assertEqual(probe.call_count, 1)
+            self.assertNotIn("gone", app.OUTBOUND_HEALTH)
+            self.assertEqual(self.call("DELETE", "/api/outbounds/nl")[0], 200)
+            self.assertNotIn("nl", app.OUTBOUND_HEALTH)
 
     @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     @mock.patch.object(app, "sing_box_available", return_value=True)
@@ -944,3 +972,83 @@ class InitializeDefaultsTests(unittest.TestCase):
         log = self.init({})
         self.assertEqual(app.get_users()[0]["password"], app.PLACEHOLDER_PASSWORD)
         self.assertIn("WARNING: user 'change-me' still uses the public placeholder password", log)
+
+
+class OutboundProbeTests(unittest.TestCase):
+    """probe_outbound speaks SOCKS5 to sing-box's loopback inbound, then HTTP(S) to the probe URL."""
+
+    def fake_sing_box(self, behavior="ok"):
+        server = socket.create_server(("127.0.0.1", 0))
+        seen = {}
+
+        def recv(conn, size):
+            data = b""
+            while len(data) < size:
+                data += conn.recv(size - len(data))
+            return data
+
+        def handle():
+            conn, _ = server.accept()
+            with conn:
+                conn.settimeout(5)
+                recv(conn, 3)
+                conn.sendall(b"\x05\x02")
+                _, ulen = recv(conn, 2)
+                seen["user"] = recv(conn, ulen)
+                seen["password"] = recv(conn, recv(conn, 1)[0])
+                if behavior == "badauth":
+                    conn.sendall(b"\x01\x01")
+                    return
+                conn.sendall(b"\x01\x00")
+                _, _, _, kind = recv(conn, 4)
+                seen["host"] = recv(conn, recv(conn, 1)[0])
+                seen["port"] = int.from_bytes(recv(conn, 2), "big")
+                if behavior == "refused":
+                    conn.sendall(b"\x05\x05\x00\x01" + b"\x00" * 6)
+                    return
+                conn.sendall(b"\x05\x00\x00\x01" + b"\x00" * 6)
+                if behavior == "silent":
+                    time.sleep(1.5)
+                    return
+                request = b""
+                while not request.endswith(b"\r\n\r\n"):
+                    request += conn.recv(1024)
+                seen["request"] = request
+                conn.sendall(b"HTTP/1.1 500 Oops\r\n\r\n" if behavior == "http500" else b"HTTP/1.1 204 No Content\r\n\r\n")
+
+        threading.Thread(target=handle, daemon=True).start()
+        self.addCleanup(server.close)
+        return {"name": "nl", "port": server.getsockname()[1], "password": "local-secret"}, seen
+
+    @mock.patch.dict(app.os.environ, {"MITA_OUTBOUND_PROBE_URL": "http://probe.test/generate_204"})
+    def test_probe_results(self):
+        entry, seen = self.fake_sing_box("ok")
+        result = app.probe_outbound(entry)
+        self.assertTrue(result["ok"], result)
+        self.assertIsInstance(result["latency_ms"], int)
+        self.assertEqual((seen["user"], seen["password"], seen["host"], seen["port"]),
+                         (b"mita", b"local-secret", b"probe.test", 80))
+        self.assertTrue(seen["request"].startswith(b"GET /generate_204 HTTP/1.1\r\nHost: probe.test\r\n"))
+
+        for behavior, message in (("badauth", "credentials"), ("refused", "refused"), ("http500", "HTTP 500")):
+            with self.subTest(behavior=behavior):
+                entry, _ = self.fake_sing_box(behavior)
+                result = app.probe_outbound(entry)
+                self.assertFalse(result["ok"])
+                self.assertIn(message, result["error"])
+
+        entry, _ = self.fake_sing_box("silent")
+        result = app.probe_outbound(entry, timeout=0.5)
+        self.assertEqual((result["ok"], result["error"]), (False, "no answer within 0.5 s"))
+
+        closed = socket.create_server(("127.0.0.1", 0))
+        port = closed.getsockname()[1]
+        closed.close()
+        result = app.probe_outbound({"name": "nl", "port": port, "password": "x"})
+        self.assertEqual(result["error"], "sing-box is not listening for this outbound")
+
+    def test_probe_url_must_be_http(self):
+        with mock.patch.dict(app.os.environ, {"MITA_OUTBOUND_PROBE_URL": "ftp://probe.test/"}):
+            with self.assertRaises(ValueError):
+                app.probe_target()
+        self.assertEqual(app.probe_target(), ("https", "www.gstatic.com", 443, "/generate_204"))

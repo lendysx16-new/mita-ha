@@ -17,6 +17,7 @@ services:
       MITA_PUBLIC_PORT: ${MITA_PUBLIC_PORT:-2022}
       MITA_SUBSCRIPTION_BASE_URL: ${MITA_SUBSCRIPTION_BASE_URL:-http://localhost:8099}
       MITA_POSTGRES_DSN: ${MITA_POSTGRES_DSN:-}
+      MITA_OUTBOUND_PROBE_URL: ${MITA_OUTBOUND_PROBE_URL:-}
     volumes:
       - mita-data:/data
 

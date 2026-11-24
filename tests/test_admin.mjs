@@ -439,3 +439,39 @@ test('outbounds and routing are separate tabs; policies only pick saved outbound
   assert.match(routingTab, /name="geoUrls"/);
   assert.doesNotMatch(routingTab, /id="outboundEditor"|name="config"/);
 });
+
+test('outbound status shows the last check and Test refreshes it', async () => {
+  const {ctx, element, state} = setup({outboundEnabled: true});
+  state.sing_box_available = true;
+  state.sing_box_running = true;
+  state.settings.outbounds = [
+    {name: 'nl', port: 1081, outbound: {type: 'hysteria2', server: 'hy.example', server_port: 443, password: 'p'}},
+    {name: 'de', port: 1082, outbound: {type: 'trojan', server: 't.example', server_port: 443, password: 'p'}},
+    {name: 'fi', port: 1083, outbound: {type: 'trojan', server: 'f.example', server_port: 443, password: 'p'}},
+  ];
+  state.outbound_health = {
+    nl: {ok: true, latency_ms: 142, error: '', checked_at: '2026-11-24T20:00:00Z'},
+    de: {ok: false, latency_ms: null, error: 'the outbound timed out <x>', checked_at: '2026-11-24T20:00:00Z'},
+  };
+  await ctx.load();
+  const rows = element('#outboundRows').innerHTML;
+  assert.match(rows, /data-state="ok"[^>]*>OK · 142 ms/);
+  assert.match(rows, /data-state="error"[^>]*>the outbound timed out &lt;x&gt;/);
+  assert.match(rows, /Not checked yet/);
+  assert.match(rows, /data-routing="test-outbound" data-name="fi"/);
+
+  let tested;
+  const fetchState = ctx.fetch;
+  ctx.fetch = async (url, options) => {
+    if (String(url).endsWith('api/outbounds/fi/test')) {
+      tested = options.method;
+      return {ok: true, json: async () => ({health: {ok: true, latency_ms: 77, error: '', checked_at: '2026-11-24T20:01:00Z'}})};
+    }
+    return fetchState(url, options);
+  };
+  await ctx.onRoutingClick({target: {closest: selector => selector === '[data-routing]'
+    ? {dataset: {routing: 'test-outbound', name: 'fi'}, disabled: false, setAttribute() {}} : null}});
+  assert.equal(tested, 'POST');
+  assert.match(element('#outboundRows').innerHTML, /OK · 77 ms/);
+  assert.match(element('#msg').textContent, /fi works \(77 ms\)/);
+});

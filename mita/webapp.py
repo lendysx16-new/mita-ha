@@ -15,6 +15,7 @@ import secrets
 import signal
 import shutil
 import socket
+import ssl
 import subprocess
 import tarfile
 import tempfile
@@ -1629,6 +1630,122 @@ def supervise_sing_box(stop_event):
                 print(f"[web] sing-box unavailable; retrying in {delay}s", flush=True)
 
 
+# ---------- Outbound health ----------
+# A probe goes through the outbound's own loopback SOCKS5 inbound, so it exercises
+# the same path as real traffic: sing-box, the provider server, and the Internet.
+DEFAULT_PROBE_URL = "https://www.gstatic.com/generate_204"
+PROBE_TIMEOUT = 8
+HEALTH_INTERVAL = 5 * 60
+OUTBOUND_HEALTH = {}  # name -> last probe result; in memory, refreshed in the background
+SOCKS_REPLY_ERRORS = {
+    1: "the outbound failed to connect", 2: "the connection was not allowed",
+    3: "the network is unreachable through the outbound", 4: "the host is unreachable through the outbound",
+    5: "the connection was refused", 6: "the outbound timed out", 7: "the command is not supported",
+    8: "the address type is not supported",
+}
+
+
+def probe_target():
+    url = os.environ.get("MITA_OUTBOUND_PROBE_URL", "").strip() or DEFAULT_PROBE_URL
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("MITA_OUTBOUND_PROBE_URL must be an http(s) URL")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return parsed.scheme, parsed.hostname, port, (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+
+
+def _recv_exact(sock, size):
+    data = b""
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise ConnectionError("sing-box closed the connection")
+        data += chunk
+    return data
+
+
+def probe_outbound(entry, timeout=PROBE_TIMEOUT):
+    """Fetch the probe URL through one outbound. Returns {ok, latency_ms, error, checked_at}."""
+    scheme, host, port, path = probe_target()
+    started = time.monotonic()
+    result = {"ok": False, "latency_ms": None, "error": "", "checked_at": utc_now()}
+    try:
+        try:
+            sock = socket.create_connection(("127.0.0.1", entry["port"]), timeout=timeout)
+        except OSError:
+            result["error"] = "sing-box is not listening for this outbound"
+            return result
+        with sock:
+            sock.settimeout(timeout)
+            sock.sendall(b"\x05\x01\x02")  # SOCKS5, one method: username/password
+            if _recv_exact(sock, 2) != b"\x05\x02":
+                raise ConnectionError("sing-box refused the local SOCKS5 login")
+            user, password = b"mita", entry["password"].encode()
+            sock.sendall(b"\x01" + bytes([len(user)]) + user + bytes([len(password)]) + password)
+            if _recv_exact(sock, 2)[1] != 0:
+                raise ConnectionError("sing-box rejected the local SOCKS5 credentials")
+            name = host.encode("idna")
+            sock.sendall(b"\x05\x01\x00\x03" + bytes([len(name)]) + name + port.to_bytes(2, "big"))
+            reply = _recv_exact(sock, 4)
+            if reply[1] != 0:
+                raise ConnectionError(SOCKS_REPLY_ERRORS.get(reply[1], f"SOCKS5 error {reply[1]}"))
+            address_length = {1: 4, 4: 16}.get(reply[3])
+            _recv_exact(sock, (address_length if address_length else _recv_exact(sock, 1)[0]) + 2)
+            stream = sock
+            if scheme == "https":
+                stream = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+            stream.sendall(f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: mita-outbound-check\r\n"
+                           f"Connection: close\r\n\r\n".encode())
+            status_line = b""
+            while not status_line.endswith(b"\r\n") and len(status_line) < 1024:
+                chunk = stream.recv(1)
+                if not chunk:
+                    break
+                status_line += chunk
+            parts = status_line.decode("latin-1").split()
+            if len(parts) < 2 or not parts[1].isdigit():
+                raise ConnectionError("the probe got no HTTP response")
+            if not 200 <= int(parts[1]) < 400:
+                raise ConnectionError(f"the probe URL answered HTTP {parts[1]}")
+        result.update(ok=True, latency_ms=round((time.monotonic() - started) * 1000))
+    except socket.timeout:
+        result["error"] = f"no answer within {timeout} s"
+    except ssl.SSLError as exc:
+        result["error"] = f"TLS to the probe URL failed ({exc.reason or exc})"
+    except (OSError, ConnectionError, ValueError) as exc:
+        result["error"] = str(exc) or exc.__class__.__name__
+    return result
+
+
+def check_outbound(name):
+    with LOCK:
+        entry = next((e for e in outbound_entries(get_settings()) if e["name"] == name), None)
+    if entry is None:
+        return None
+    result = probe_outbound(entry)
+    OUTBOUND_HEALTH[name] = result
+    return result
+
+
+def check_all_outbounds():
+    with LOCK:
+        names = [entry["name"] for entry in outbound_entries(get_settings())]
+    for stale in set(OUTBOUND_HEALTH) - set(names):
+        OUTBOUND_HEALTH.pop(stale, None)
+    for name in names:
+        check_outbound(name)
+
+
+def outbound_health_worker(stop_event):
+    delay = 15  # first check shortly after sing-box starts
+    while not stop_event.wait(delay):
+        delay = HEALTH_INTERVAL
+        try:
+            check_all_outbounds()
+        except (StateError, ValueError, OSError) as exc:
+            print(f"[web] outbound health check failed: {exc}", flush=True)
+
+
 def public_outbound(entry):
     return {"name": entry["name"], "outbound": entry["outbound"], "port": entry["port"]}
 
@@ -2292,6 +2409,7 @@ ADMIN_ROUTES = [
     ("PUT", r"/api/settings", "update_settings"),
     ("POST", r"/api/outbounds", "add_outbound"),
     ("PUT", OUTBOUND, "update_outbound"),
+    ("POST", OUTBOUND + r"/test", "test_outbound"),
     ("DELETE", OUTBOUND, "delete_outbound"),
     ("DELETE", USER + r"/devices/(?P<device_id>[A-Fa-f0-9]{16})", "delete_device"),
     ("DELETE", USER, "delete_user"),
@@ -2398,6 +2516,7 @@ class AdminHandler(CommonHandler):
             "pending_proxy_outbounds": sorted(pending),
             "sing_box_available": sing_box_available(),
             "sing_box_running": sing_box_available() and SING_BOX.running(),
+            "outbound_health": dict(OUTBOUND_HEALTH) if standalone else {},
         }
 
     def route_get_traffic(self):
@@ -2565,8 +2684,10 @@ class AdminHandler(CommonHandler):
                      "password": secrets.token_urlsafe(24)}
             settings["outbounds"] = previous + [entry]
             self.apply_outbounds(settings, settings["outbounds"], previous)
-        # Mita learns about a new local proxy only when it restarts.
-        return HTTPStatus.CREATED, {"outbound": public_outbound(entry), "restart_required": True}
+        # Mita learns about a new local proxy only when it restarts. sing-box already
+        # serves it, so the outbound can be tested right away.
+        return HTTPStatus.CREATED, {"outbound": public_outbound(entry), "restart_required": True,
+                                    "health": check_outbound(name)}
 
     def route_update_outbound(self, name):
         self.require_sing_box()
@@ -2581,7 +2702,15 @@ class AdminHandler(CommonHandler):
             settings["outbounds"] = [entry if e["name"] == name else e for e in previous]
             self.apply_outbounds(settings, settings["outbounds"], previous)
         # Same local port and credentials: only sing-box restarts, Mita keeps running.
-        return HTTPStatus.OK, {"outbound": public_outbound(entry), "restart_required": False}
+        return HTTPStatus.OK, {"outbound": public_outbound(entry), "restart_required": False,
+                               "health": check_outbound(name)}
+
+    def route_test_outbound(self, name):
+        self.require_sing_box()
+        result = check_outbound(name)
+        if result is None:
+            raise ApiError(HTTPStatus.NOT_FOUND, "outbound not found")
+        return HTTPStatus.OK, {"health": result}
 
     def route_delete_outbound(self, name):
         self.require_sing_box()
@@ -2592,6 +2721,7 @@ class AdminHandler(CommonHandler):
                 raise ApiError(HTTPStatus.NOT_FOUND, "outbound not found")
             settings["outbounds"] = [e for e in previous if e["name"] != name]
             self.apply_outbounds(settings, settings["outbounds"], previous)
+        OUTBOUND_HEALTH.pop(name, None)
         return HTTPStatus.OK, {"deleted": name, "restart_required": True}
 
     def route_update_settings(self):
@@ -2790,6 +2920,7 @@ def serve():
     if sing_box_available():
         threading.Thread(target=supervise_sing_box, args=(stop_bridge,), name="sing-box-supervisor", daemon=True).start()
         threading.Thread(target=geo_refresh_worker, args=(stop_bridge,), name="github-geo-refresh", daemon=True).start()
+        threading.Thread(target=outbound_health_worker, args=(stop_bridge,), name="outbound-health", daemon=True).start()
     print(f"[web] admin UI listening on {admin_host}:{ADMIN_PORT}", flush=True)
     print("[web] subscription server listening on 8099", flush=True)
     try:

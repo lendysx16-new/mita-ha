@@ -324,6 +324,12 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
 .routing-table .row-actions .btn + .btn { margin-left: 4px; }
 .list-preview { display: block; max-width: 360px; margin-top: 2px; color: var(--muted-foreground); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .target-badge { font-family: var(--mono); font-weight: 560; }
+.health { display: inline-flex; align-items: baseline; gap: 7px; color: var(--muted-foreground); }
+.health::before { content: ""; width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--border); transform: translateY(-1px); }
+.health[data-state="ok"] { color: var(--foreground); }
+.health[data-state="ok"]::before { background: var(--success); }
+.health[data-state="error"] { color: var(--destructive); }
+.health[data-state="error"]::before { background: var(--destructive); }
 .routing-restart, #singBoxStatus { margin-bottom: 16px; }
 .routing-restart code { display: inline; padding: 1px 6px; background: var(--card); border-radius: 4px; }
 #routingJson > summary { cursor: pointer; list-style: none; border-bottom: 0; }
@@ -482,7 +488,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
             <div class="editor-actions"><button class="btn btn-secondary" type="button" data-cancel-editor>Cancel</button><button class="btn" type="submit" data-save-outbound>Save outbound</button></div>
           </form>
           <div class="table-scroll"><table class="routing-table">
-            <thead><tr><th>Name</th><th>Protocol</th><th>Server</th><th>Used by</th><th><span class="sr-only">Actions</span></th></tr></thead>
+            <thead><tr><th>Name</th><th>Protocol</th><th>Server</th><th>Status</th><th>Used by</th><th><span class="sr-only">Actions</span></th></tr></thead>
             <tbody id="outboundRows"></tbody>
           </table></div>
         </section>
@@ -623,6 +629,7 @@ const api = {
   addOutbound: body => request('api/outbounds', {method: 'POST', body}),
   updateOutbound: (name, body) => request('api/outbounds/' + encodeURIComponent(name), {method: 'PUT', body}),
   deleteOutbound: name => request('api/outbounds/' + encodeURIComponent(name), {method: 'DELETE'}),
+  testOutbound: name => request('api/outbounds/' + encodeURIComponent(name) + '/test', {method: 'POST', body: {}}),
   saveSettings: body => request('api/settings', {method: 'PUT', body}),
 };
 
@@ -1068,6 +1075,7 @@ async function load() {
   state.pending_proxy_outbounds = data.pending_proxy_outbounds || [];
   state.sing_box_available = data.sing_box_available === true;
   state.sing_box_running = data.sing_box_running === true;
+  state.outbound_health = data.outbound_health || {};
   renderStats();
   renderUsers();
   renderDeviceDirectory();
@@ -1314,6 +1322,19 @@ function deleteButton(attrs, used) {
   return html`<button type="button" class="btn btn-danger btn-sm" ${raw(attrs)}${attr('disabled', used)} title="${used ? 'Move its policies and accounts to another outbound first' : 'Delete outbound'}">Delete</button>`;
 }
 
+function healthCell(name) {
+  const health = (state.outbound_health || {})[name];
+  if (!health) return html`<span class="health" data-state="">Not checked yet</span>`;
+  const when = 'Checked ' + displayRelativeTime(health.checked_at);
+  return health.ok
+    ? html`<span class="health" data-state="ok" title="${when}">OK · ${health.latency_ms} ms</span>`
+    : html`<span class="health" data-state="error" title="${when}">${health.error || 'Failed'}</span>`;
+}
+function healthMessage(name, health) {
+  if (!health) return '';
+  return health.ok ? name + ' works (' + health.latency_ms + ' ms).' : name + ' check failed: ' + (health.error || 'unknown error') + '.';
+}
+
 function renderSingBoxStatus() {
   const el = $('#singBoxStatus');
   const count = savedOutbounds().length;
@@ -1346,8 +1367,10 @@ function renderRouting() {
       <td data-label="Name"><span class="target-badge">${name}</span></td>
       <td data-label="Protocol">${protocolLabel(outbound)}</td>
       <td data-label="Server"><code>${outbound.server}:${outbound.server_port}</code></td>
+      <td data-label="Status">${healthCell(name)}</td>
       <td data-label="Used by">${usageText(usage)}</td>
       <td class="row-actions">
+        <button type="button" class="btn btn-secondary btn-sm" data-routing="test-outbound" data-name="${name}"${attr('disabled', !state.sing_box_available)}>Test</button>
         <button type="button" class="btn btn-secondary btn-sm" data-routing="edit-outbound" data-name="${name}">Edit</button>
         ${deleteButton('data-routing="delete-outbound" data-name="' + esc(name) + '"', usage.lists || usage.accounts)}
       </td></tr>`;
@@ -1357,11 +1380,12 @@ function renderRouting() {
       <td data-label="Name"><span class="target-badge">${proxy.name}</span></td>
       <td data-label="Protocol">SOCKS5 <span class="badge badge-subtle">JSON</span></td>
       <td data-label="Server"><code>${proxy.host}:${proxy.port}</code></td>
+      <td data-label="Status"><span class="health" data-state="">Not checked (no sing-box)</span></td>
       <td data-label="Used by">${usageText(outboundUsage(proxy.name, egress))}</td>
       <td class="row-actions"><span class="field-help">Edit in Routing → JSON</span></td></tr>`);
   }
   setHTML($('#outboundRows'), outboundRows.length ? outboundRows
-    : html`<tr><td colspan="5" class="table-empty">No outbounds yet. Paste a share link from your provider, then bind it to domains in Routing.</td></tr>`);
+    : html`<tr><td colspan="6" class="table-empty">No outbounds yet. Paste a share link from your provider, then bind it to domains in Routing.</td></tr>`);
 
   const listRows = egress.rules.map((rule, index) => {
     const domains = rule.domainNames || [];
@@ -1462,11 +1486,19 @@ $('#outboundEditor').addEventListener('submit', async e => {
   const f = $('#outboundEditor').elements;
   const editing = routingEdit.outbound;
   const button = e.submitter || $('#outboundEditor').querySelector('[data-save-outbound]');
-  const ok = await mutate(button, () => editing
-    ? api.updateOutbound(editing, {config: f.config.value})
-    : api.addOutbound({name: f.name.value.trim(), config: f.config.value}),
-    editing ? 'Outbound updated; sing-box restarted.' : 'Outbound added. Restart Mita to use it in Routing.');
-  if (ok) closeRoutingEditor('outbound');
+  let result;
+  const ok = await mutate(button, async () => {
+    result = await (editing
+      ? api.updateOutbound(editing, {config: f.config.value})
+      : api.addOutbound({name: f.name.value.trim(), config: f.config.value}));
+  });
+  if (!ok) return;
+  closeRoutingEditor('outbound');
+  const name = result.outbound ? result.outbound.name : editing;
+  const saved = editing ? 'Outbound updated; sing-box restarted.' : 'Outbound added. Restart Mita to use it in Routing.';
+  const health = result.health;
+  // Saving keeps the outbound even when the check fails: the server may be down only briefly.
+  toast(saved + ' ' + healthMessage(name, health), health && !health.ok ? 'error' : 'info');
 });
 $('#listEditor').addEventListener('submit', async e => {
   e.preventDefault();
@@ -1503,6 +1535,15 @@ async function onRoutingClick(e) {
   const egress = currentEgress();
   switch (button.dataset.routing) {
     case 'edit-outbound': openOutboundEditor(button.dataset.name); break;
+    case 'test-outbound': {
+      const name = button.dataset.name;
+      let health;
+      if (!await run(button, async () => { health = (await api.testOutbound(name)).health; })) return;
+      state.outbound_health = {...state.outbound_health, [name]: health};
+      renderRouting();
+      toast(healthMessage(name, health), health.ok ? 'info' : 'error');
+      break;
+    }
     case 'edit-list': openListEditor(index); break;
     case 'delete-outbound': {
       const name = button.dataset.name;
