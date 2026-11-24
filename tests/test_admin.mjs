@@ -333,53 +333,62 @@ test('outbounds and routing policies render and policies are built from the edit
   const {ctx, element, state} = setup({outboundEnabled: true});
   state.sing_box_available = true;
   state.sing_box_running = true;
-  state.settings.sing_box = {outbound: {type: 'trojan'}, domains: [], ip_ranges: []};
+  state.settings.outbounds = [
+    {name: 'nl', port: 1081, outbound: {type: 'hysteria2', server: 'hy.example', server_port: 8443, password: 'SECRET'}},
+    {name: 'de', port: 1082, outbound: {type: 'vless', server: 'v.example', server_port: 443, uuid: 'u', tls: {enabled: true, reality: {enabled: true}}}},
+  ];
+  state.settings.geo_snapshots = {'https://raw.githubusercontent.com/o/r/main/g.json': {domains: 120, ip_ranges: 3}};
   state.settings.egress = {
-    proxies: [{name: 'nl', host: '203.0.113.10', port: 1080, socks5Authentication: {user: 'u', password: 'SECRET'}},
-      {name: 'spare', host: 'proxy.example', port: 1081}],
-    rules: [{name: 'Streaming <b>', domainNames: ['video.example', 'cdn.example'], ipRanges: ['198.51.100.0/24'], action: 'PROXY', proxyNames: ['nl']},
+    proxies: [{name: 'spare', host: 'proxy.example', port: 1080}],
+    rules: [{name: 'Streaming <b>', domainNames: ['video.example', 'cdn.example'], ipRanges: ['198.51.100.0/24'], action: 'PROXY', proxyNames: ['nl'],
+             geoUrls: ['https://raw.githubusercontent.com/o/r/main/g.json']},
       {domainNames: ['ads.example'], ipRanges: [], action: 'REJECT', proxyNames: []}],
   };
   state.users[0].proxy_outbound = 'nl';
   await ctx.load();
   assert.equal(element('.tab[data-tab="outboundsTab"]').hidden, false);
   assert.equal(element('.tab[data-tab="routingTab"]').hidden, false);
+  assert.match(element('#singBoxStatus').textContent, /running with 2 outbounds/);
   const outbounds = element('#outboundRows').innerHTML;
-  assert.match(outbounds, /203\.0\.113\.10:1080/);
-  assert.match(outbounds, /User u/);
+  assert.match(outbounds, /Hysteria2[\s\S]*hy\.example:8443/);
+  assert.match(outbounds, /VLESS REALITY/);
   assert.doesNotMatch(outbounds, /SECRET/);
   assert.match(outbounds, /1 policy · 1 account/);
-  assert.match(outbounds, /data-routing="delete-outbound" data-index="0" disabled/, 'used outbound cannot be deleted');
-  assert.match(outbounds, /data-routing="delete-outbound" data-index="1" title/, 'unused outbound can be deleted');
-  assert.match(outbounds, /managed-sing-box[\s\S]*running/);
+  assert.match(outbounds, /data-routing="delete-outbound" data-name="nl" disabled/, 'used outbound cannot be deleted');
+  assert.match(outbounds, /data-routing="delete-outbound" data-name="de" title/, 'unused outbound can be deleted');
+  assert.match(outbounds, /spare[\s\S]*SOCKS5[\s\S]*JSON/);
   const lists = element('#listRows').innerHTML;
   assert.match(lists, /Streaming &lt;b&gt;/);
-  assert.match(lists, /2 domains · 1 network/);
+  assert.match(lists, /2 domains · 1 network · 1 GitHub list \(123 entries\)/);
   assert.match(lists, />Block</);
   assert.match(lists, /Unnamed policy/);
   assert.match(lists, /data-step="-1" disabled/);
 
-  const fields = {name: {value: ''}, target: {value: '', innerHTML: ''}, domains: {value: ''}, ipRanges: {value: ''}};
+  const fields = {name: {value: ''}, target: {value: '', innerHTML: ''}, domains: {value: ''}, ipRanges: {value: ''}, geoUrls: {value: ''}};
   fields.name.focus = () => {};
   Object.assign(element('#listEditor'), {elements: fields, querySelector: () => ({textContent: ''})});
   ctx.openListEditor(-1);
-  assert.match(fields.target.innerHTML, /value="proxy:nl"[\s\S]*value="proxy:spare"[\s\S]*value="proxy:managed-sing-box"[\s\S]*value="DIRECT"[\s\S]*value="REJECT"/);
+  assert.match(fields.target.innerHTML, /value="proxy:nl"[\s\S]*value="proxy:de"[\s\S]*value="proxy:spare"[\s\S]*value="DIRECT"[\s\S]*value="REJECT"/);
   fields.name.value = ' Work ';
-  fields.target.value = 'proxy:managed-sing-box';
+  fields.target.value = 'proxy:de';
   fields.domains.value = 'corp.example\n\n corp.example \nmail.example';
+  fields.geoUrls.value = 'https://github.com/o/r/blob/main/x.json';
   const egress = ctx.listFromEditor();
   assert.deepEqual(JSON.parse(JSON.stringify(egress.rules[2])), {
     name: 'Work', domainNames: ['corp.example', 'mail.example'], ipRanges: [],
-    action: 'PROXY', proxyNames: ['managed-sing-box'],
+    action: 'PROXY', proxyNames: ['de'], geoUrls: ['https://github.com/o/r/blob/main/x.json'],
   });
   fields.target.value = 'DIRECT';
   assert.equal(ctx.listFromEditor().rules[2].action, 'DIRECT');
   fields.domains.value = '';
-  assert.throws(() => ctx.listFromEditor(), /at least one domain/);
+  assert.equal(ctx.listFromEditor().rules[2].domainNames.length, 0, 'a GitHub-only policy is allowed');
+  fields.geoUrls.value = '';
+  assert.throws(() => ctx.listFromEditor(), /domain, an IP network or a GitHub list/);
 
   ctx.openListEditor(0);
   assert.equal(fields.target.value, 'proxy:nl');
   assert.equal(fields.domains.value, 'video.example\ncdn.example');
+  assert.equal(fields.geoUrls.value, 'https://raw.githubusercontent.com/o/r/main/g.json');
   // A policy with several outbounds (set in JSON) keeps them when edited in the form.
   state.settings.egress.rules[0].proxyNames = ['nl', 'spare'];
   await ctx.load();
@@ -390,6 +399,25 @@ test('outbounds and routing policies render and policies are built from the edit
   assert.deepEqual([...ctx.listFromEditor().rules[0].proxyNames], ['nl', 'spare']);
   fields.target.value = 'proxy:spare';
   assert.deepEqual([...ctx.listFromEditor().rules[0].proxyNames], ['spare']);
+});
+
+test('outbound editor shows the saved sing-box JSON and the status explains a missing binary', async () => {
+  const {ctx, element, state} = setup({outboundEnabled: true});
+  state.sing_box_available = false;
+  state.settings.outbounds = [{name: 'nl', port: 1081, outbound: {type: 'trojan', server: 't.example', server_port: 443, password: 'p'}}];
+  await ctx.load();
+  assert.match(element('#singBoxStatus').textContent, /not installed/);
+  assert.equal(element('#addOutbound').disabled, true);
+  const fields = {name: {value: ''}, config: {value: ''}};
+  fields.name.focus = fields.config.focus = () => {};
+  Object.assign(element('#outboundEditor'), {elements: fields});
+  ctx.openOutboundEditor('nl');
+  assert.equal(fields.name.value, 'nl');
+  assert.equal(fields.name.readOnly, true);
+  assert.deepEqual(JSON.parse(fields.config.value), {type: 'trojan', server: 't.example', server_port: 443, password: 'p'});
+  ctx.openOutboundEditor('');
+  assert.equal(fields.name.readOnly, false);
+  assert.equal(fields.config.value, '');
 });
 
 test('outbounds and routing tabs are hidden on Home Assistant', async () => {
@@ -403,9 +431,11 @@ test('outbounds and routing are separate tabs; policies only pick saved outbound
   const outboundsTab = /<div id="outboundsTab"[\s\S]*?(?=<div id="routingTab")/.exec(html)?.[0] || '';
   const routingTab = /<div id="routingTab"[\s\S]*?(?=<div id="confTab")/.exec(html)?.[0] || '';
   assert.match(outboundsTab, /id="outboundEditor"/);
-  assert.match(outboundsTab, /id="singBoxForm"/);
+  assert.match(outboundsTab, /name="config"/);
+  assert.doesNotMatch(outboundsTab, /name="host"|id="singBoxForm"/);
   assert.doesNotMatch(outboundsTab, /id="listEditor"/);
   assert.match(routingTab, /id="listEditor"/);
   assert.match(routingTab, /<select name="target" required>/);
-  assert.doesNotMatch(routingTab, /id="outboundEditor"|name="host"/);
+  assert.match(routingTab, /name="geoUrls"/);
+  assert.doesNotMatch(routingTab, /id="outboundEditor"|name="config"/);
 });

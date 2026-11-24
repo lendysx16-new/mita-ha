@@ -291,89 +291,100 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(app.get_settings()["egress"], settings["egress"])
 
+    HY2 = "hysteria2://pass@hy.example:8443/?sni=hy.example&obfs=salamander&obfs-password=ob#NL%20Hy2"
+    VLESS = ("vless://11111111-1111-4111-8111-111111111111@v.example:443?security=reality"
+             "&sni=www.example.com&fp=chrome&pbk=PUBKEY&sid=ab&flow=xtls-rprx-vision#DE")
+
+    def persist_outbounds(self):
+        """Run SING_BOX.replace without a real sing-box: just save."""
+        def replace(updated, previous, persist):
+            persist()
+        return mock.patch.object(app.SING_BOX, "replace", side_effect=replace)
+
     @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     @mock.patch.object(app, "sing_box_available", return_value=True)
-    def test_managed_sing_box_registers_proxy_and_rule(self, _available):
-        outbound = {
-            "type": "vless", "server": "provider.example", "server_port": 443,
-            "uuid": "00000000-0000-4000-8000-000000000000",
-        }
-        def persist(updated, previous, save):
-            save()
+    def test_outbounds_from_share_links_run_through_sing_box(self, _available):
+        with self.persist_outbounds() as replace:
+            status, data = self.call("POST", "/api/outbounds", {"name": "nl", "config": self.HY2})
+            self.assertEqual((status, data["restart_required"]), (201, True))
+            self.assertEqual(data["outbound"]["outbound"]["type"], "hysteria2")
+            self.assertEqual(data["outbound"]["outbound"]["obfs"], {"type": "salamander", "password": "ob"})
+            # The link's own name is used when none is given... but it must be a valid name.
+            status, data = self.call("POST", "/api/outbounds", {"config": self.VLESS})
+            self.assertEqual((status, data["outbound"]["name"]), (201, "DE"))
+            self.assertEqual(self.call("POST", "/api/outbounds", {"config": self.HY2})[0], 400)  # "NL Hy2" has a space
+            self.assertEqual(self.call("POST", "/api/outbounds", {"name": "nl", "config": self.VLESS})[0], 400)
+            self.assertEqual(self.call("POST", "/api/outbounds", {"name": "x", "config": "ftp://h:1"})[0], 400)
+            self.assertEqual(replace.call_count, 2)
 
-        with mock.patch.object(app.SING_BOX, "replace", side_effect=persist) as replace:
-            status, result = self.call("PUT", "/api/sing-box", {
-                "outbound": outbound, "domains": ["Example.COM"],
-                "ip_ranges": ["198.51.100.42/24"],
-            })
-            self.assertEqual(status, 200)
-            self.assertTrue(result["restart_required"])
-            replace.assert_called_once()
-            settings = app.get_settings()
-            config = app.build_mita_config(app.get_users(), settings)["egress"]
-            self.assertEqual(config["rules"][0]["domainNames"], ["example.com"])
-            self.assertEqual(config["rules"][0]["ipRanges"], ["198.51.100.0/24"])
-            self.assertEqual(config["rules"][0]["proxyNames"], [app.SING_BOX_PROXY_NAME])
-            auth = config["proxies"][0]["socks5Authentication"]
-            self.assertEqual(auth["password"], settings["sing_box"]["password"])
+            entries = app.get_settings()["outbounds"]
+            self.assertEqual([(e["name"], e["port"]) for e in entries], [("nl", 1081), ("DE", 1082)])
+            config = app.sing_box_config(entries)
+            self.assertEqual([i["listen_port"] for i in config["inbounds"]], [1081, 1082])
+            self.assertTrue(all(i["listen"] == "127.0.0.1" and i["users"][0]["password"] for i in config["inbounds"]))
+            self.assertEqual(config["route"]["rules"], [
+                {"inbound": ["in-0"], "outbound": "out-0"}, {"inbound": ["in-1"], "outbound": "out-1"}])
+            self.assertEqual([o["tag"] for o in config["outbounds"]], ["out-0", "out-1", "direct"])
+
+            mita = app.build_mita_config(app.get_users(), app.get_settings())["egress"]
+            self.assertEqual([(p["name"], p["host"], p["port"]) for p in mita["proxies"]],
+                             [("nl", "127.0.0.1", 1081), ("DE", "127.0.0.1", 1082)])
             _, state = self.call("GET", "/api/state")
-            self.assertNotIn("password", state["settings"]["sing_box"])
+            self.assertTrue(all("password" not in o for o in state["settings"]["outbounds"]))
+            self.assertEqual(state["proxy_outbounds"], ["DE", "nl"])
 
-            replace.side_effect = ValueError("sing-box rejected the config")
-            status, _ = self.call("PUT", "/api/sing-box", {
-                "outbound": outbound, "domains": ["new.example"],
-            })
-            self.assertEqual(status, 400)
-            self.assertEqual(app.get_settings(), settings)
+            # Editing keeps the local port and credentials, so Mita needs no restart.
+            password = entries[0]["password"]
+            status, data = self.call("PUT", "/api/outbounds/nl", {"config": self.VLESS})
+            self.assertEqual((status, data["restart_required"]), (200, False))
+            entry = app.get_settings()["outbounds"][0]
+            self.assertEqual((entry["port"], entry["password"], entry["outbound"]["type"]), (1081, password, "vless"))
+            self.assertEqual(self.call("PUT", "/api/outbounds/missing", {"config": self.VLESS})[0], 404)
 
-            replace.side_effect = persist
-            status, _ = self.call("PUT", "/api/sing-box", {"enabled": False})
-            self.assertEqual(status, 200)
-            self.assertNotIn("sing_box", app.get_settings())
+            # sing-box rejecting the config leaves everything unchanged.
+            before = app.get_settings()
+            replace.side_effect = ValueError("sing-box rejected the outbound")
+            self.assertEqual(self.call("PUT", "/api/outbounds/nl", {"config": self.HY2})[0], 400)
+            self.assertEqual(app.get_settings(), before)
 
     @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     @mock.patch.object(app, "sing_box_available", return_value=True)
-    def test_named_domain_lists_can_route_to_built_in_sing_box(self, _available):
-        outbound = {"type": "trojan", "server": "provider.example", "server_port": 443, "password": "p"}
-        def persist(updated, previous, save):
-            save()
-        lists = {
-            "proxies": [{"name": "nl", "host": "203.0.113.10", "port": 1080}],
-            "rules": [
-                {"name": "  Streaming ", "domainNames": ["video.example"], "action": "PROXY",
-                 "proxyNames": [app.SING_BOX_PROXY_NAME]},
-                {"name": "Work", "domainNames": ["corp.example"], "action": "PROXY", "proxyNames": ["nl"]},
-                {"domainNames": ["ads.example"], "action": "REJECT"},
-            ],
-        }
-        # Without the built-in sing-box a list cannot use it.
-        status, data = self.call("PUT", "/api/settings", {"egress": lists})
+    def test_named_policies_bind_saved_outbounds(self, _available):
+        policies = {"rules": [
+            {"name": "  Streaming ", "domainNames": ["video.example"], "action": "PROXY", "proxyNames": ["nl"]},
+            {"domainNames": ["ads.example"], "action": "REJECT"},
+        ]}
+        status, data = self.call("PUT", "/api/settings", {"egress": policies})
         self.assertEqual(status, 400)
-        self.assertIn("'Streaming' uses outbound 'managed-sing-box'", data["error"])
+        self.assertIn("'Streaming' uses outbound 'nl'", data["error"])
 
-        with mock.patch.object(app.SING_BOX, "replace", side_effect=persist):
-            # sing-box with no destinations of its own is just an outbound.
-            self.assertEqual(self.call("PUT", "/api/sing-box", {"outbound": outbound})[0], 200)
-            self.assertEqual(self.call("PUT", "/api/settings", {"egress": lists})[0], 200)
-            stored = app.get_settings()["egress"]["rules"]
-            self.assertEqual([r.get("name") for r in stored], ["Streaming", "Work", None])
-
+        with self.persist_outbounds():
+            self.assertEqual(self.call("POST", "/api/outbounds", {"name": "nl", "config": self.HY2})[0], 201)
+            self.assertEqual(self.call("PUT", "/api/settings", {"egress": policies})[0], 200)
+            self.assertEqual([r.get("name") for r in app.get_settings()["egress"]["rules"]], ["Streaming", None])
             config = app.build_mita_config(app.get_users(), app.get_settings())["egress"]
             self.assertTrue(all("name" not in rule for rule in config["rules"]))
-            self.assertEqual([r["domainNames"] for r in config["rules"]],
-                             [["video.example"], ["corp.example"], ["ads.example"]])
-            self.assertEqual(sorted(p["name"] for p in config["proxies"]), [app.SING_BOX_PROXY_NAME, "nl"])
+            self.assertEqual(config["rules"][0]["proxyNames"], ["nl"])
 
-            # Disabling sing-box while a list still uses it is refused.
-            status, data = self.call("PUT", "/api/sing-box", {"enabled": False})
+            # An outbound still used by a policy or an account cannot be deleted.
+            status, data = self.call("DELETE", "/api/outbounds/nl")
             self.assertEqual(status, 400)
-            self.assertIn("managed-sing-box", data["error"])
-            self.assertIn("sing_box", app.get_settings())
+            self.assertIn("'Streaming' uses outbound 'nl'", data["error"])
+            self.assertEqual(self.call("PUT", "/api/settings", {"egress": {"rules": policies["rules"][1:]}})[0], 200)
+            users = app.get_users()
+            users[0]["proxy_outbound"] = "nl"
+            app.write_json(app.USERS_PATH, users)
+            status, data = self.call("DELETE", "/api/outbounds/nl")
+            self.assertEqual(status, 400)
+            self.assertIn("still assigned to first", data["error"])
+            users[0].pop("proxy_outbound")
+            app.write_json(app.USERS_PATH, users)
+            self.assertEqual(self.call("DELETE", "/api/outbounds/nl")[0], 200)
+            self.assertEqual(app.get_settings()["outbounds"], [])
 
         for bad in ("x" * 65, "line\nbreak", 7):
             body = {"egress": {"rules": [{"name": bad, "domainNames": ["a.example"], "action": "DIRECT"}]}}
             self.assertEqual(self.call("PUT", "/api/settings", body)[0], 400, bad)
-
         many = [f"d{i}.example" for i in range(app.EGRESS_RULE_DESTINATION_LIMIT)]
         body = {"egress": {"rules": [{"name": "Big", "domainNames": many, "action": "DIRECT"}]}}
         self.assertEqual(self.call("PUT", "/api/settings", body)[0], 200)
@@ -381,37 +392,81 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(self.call("PUT", "/api/settings", body)[0], 400)
 
     @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "0"})
-    def test_managed_sing_box_is_unavailable_on_home_assistant(self):
-        status, _ = self.call("PUT", "/api/sing-box", {"enabled": False})
-        self.assertEqual(status, 404)
+    def test_outbounds_are_unavailable_on_home_assistant(self):
+        self.assertEqual(self.call("POST", "/api/outbounds", {"name": "nl", "config": self.HY2})[0], 404)
+        self.assertEqual(self.call("DELETE", "/api/outbounds/nl")[0], 404)
 
     @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
-    def test_github_geo_refresh_replaces_remote_entries_and_keeps_manual_rules(self):
-        settings = app.get_settings()
-        settings["sing_box"] = {
-            "outbound": {"type": "socks", "server": "upstream.example", "server_port": 1080},
-            "password": "bridge-secret",
-            "domains": ["manual.example"],
-            "geo_urls": ["https://raw.githubusercontent.com/owner/repo/main/geosite.json"],
-            "geo_snapshot": {"domains": ["old.example"], "ip_ranges": []},
-        }
-        app.write_json(app.SETTINGS_PATH, settings)
-        with mock.patch.object(app, "download_geo_sources", return_value={
-            "domains": ["new.example"], "ip_ranges": ["198.51.100.0/24"],
-        }) as download:
-            app.refresh_geo_sources()
-            download.assert_called_once_with(settings["sing_box"]["geo_urls"])
-        updated = app.get_settings()
-        rule = app.build_mita_config(app.get_users(), updated)["egress"]["rules"][0]
-        self.assertEqual(rule["domainNames"], ["manual.example", "new.example"])
-        self.assertEqual(rule["ipRanges"], ["198.51.100.0/24"])
+    def test_policy_github_lists_download_on_save_and_refresh_daily(self):
+        url = "https://raw.githubusercontent.com/owner/repo/main/geosite.json"
+        policy = {"name": "Geo", "domainNames": ["manual.example"], "geoUrls": [url.replace(
+            "raw.githubusercontent.com/owner/repo/main", "github.com/owner/repo/blob/main")], "action": "REJECT"}
+        first = {"domains": ["old.example"], "ip_ranges": [], "skipped": []}
+        with mock.patch.object(app, "download_geo_sources", return_value=first) as download:
+            self.assertEqual(self.call("PUT", "/api/settings", {"egress": {"rules": [policy]}})[0], 200)
+            download.assert_called_once_with([url])
+            # Saving again does not download a list that is already stored.
+            self.assertEqual(self.call("PUT", "/api/settings", {"egress": {"rules": [policy]}})[0], 200)
+            download.assert_called_once()
+        rule = app.build_mita_config(app.get_users(), app.get_settings())["egress"]["rules"][0]
+        self.assertEqual(rule["domainNames"], ["manual.example", "old.example"])
+        self.assertNotIn("geoUrls", rule)
+        _, state = self.call("GET", "/api/state")
+        self.assertEqual(state["settings"]["geo_snapshots"][url]["domains"], 1)
 
         with mock.patch.object(app, "download_geo_sources", return_value={
-            "domains": ["*"], "ip_ranges": [],
-        }):
-            with self.assertRaises(ValueError):
-                app.refresh_geo_sources()
-        self.assertEqual(app.get_settings(), updated)
+                "domains": ["new.example"], "ip_ranges": ["198.51.100.0/24"], "skipped": []}):
+            app.refresh_geo_sources()
+        rule = app.build_mita_config(app.get_users(), app.get_settings())["egress"]["rules"][0]
+        self.assertEqual((rule["domainNames"], rule["ipRanges"]), (["manual.example", "new.example"], ["198.51.100.0/24"]))
+
+        # A failed refresh keeps the previous list.
+        before = app.get_settings()
+        with mock.patch.object(app, "download_geo_sources", side_effect=ValueError("offline")):
+            app.refresh_geo_sources()
+        self.assertEqual(app.get_settings(), before)
+        # A failed first download refuses the save.
+        other = dict(policy, geoUrls=["https://raw.githubusercontent.com/o/r/main/other.json"])
+        with mock.patch.object(app, "download_geo_sources", side_effect=ValueError("could not download")):
+            self.assertEqual(self.call("PUT", "/api/settings", {"egress": {"rules": [other]}})[0], 400)
+        # Removing the policy drops its stored list.
+        self.assertEqual(self.call("PUT", "/api/settings", {"egress": {"rules": []}})[0], 200)
+        self.assertEqual(app.get_settings()["geo_snapshots"], {})
+
+    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
+    def test_legacy_built_in_sing_box_moves_to_outbound_and_policy(self):
+        url = "https://raw.githubusercontent.com/owner/repo/main/geosite.json"
+        settings = app.get_settings()
+        settings["sing_box"] = {
+            "outbound": {"type": "trojan", "server": "t.example", "server_port": 443, "password": "p"},
+            "password": "bridge-secret", "domains": ["manual.example"], "ip_ranges": ["198.51.100.0/24"],
+            "geo_urls": [url], "geo_snapshot": {"domains": ["geo.example"], "ip_ranges": []},
+        }
+        settings["egress"] = {"proxies": [], "rules": [{"domainNames": ["x.example"], "action": "DIRECT"}]}
+        self.assertTrue(app.migrate_legacy_sing_box(settings))
+        self.assertNotIn("sing_box", settings)
+        self.assertEqual(settings["outbounds"], [{"name": "managed-sing-box", "outbound": {
+            "type": "trojan", "server": "t.example", "server_port": 443, "password": "p"},
+            "port": 1081, "password": "bridge-secret"}])
+        self.assertEqual(settings["egress"]["rules"][0], {
+            "name": "sing-box", "domainNames": ["manual.example"], "ipRanges": ["198.51.100.0/24"],
+            "action": "PROXY", "proxyNames": ["managed-sing-box"], "geoUrls": [url]})
+        config = app.build_mita_config(app.get_users(), settings)["egress"]
+        self.assertEqual(config["rules"][0]["domainNames"], ["manual.example", "geo.example"])
+        self.assertEqual(config["rules"][1]["domainNames"], ["x.example"])
+        self.assertFalse(app.migrate_legacy_sing_box(settings))
+
+    def test_sing_box_supervisor_backs_off_and_resumes_quick_checks(self):
+        app.write_json(app.SETTINGS_PATH, {"outbounds": [{"name": "nl", "outbound": {"type": "socks"}, "port": 1081, "password": "p"}]})
+        stop = mock.Mock()
+        stop.wait.side_effect = [False, False, False, True]
+        stop.is_set.return_value = False
+        with mock.patch.object(app.SING_BOX, "running", return_value=False), mock.patch.object(
+            app.SING_BOX, "start", side_effect=[ValueError("port busy"), ValueError("port busy"), None],
+        ) as start:
+            app.supervise_sing_box(stop)
+        self.assertEqual(start.call_count, 3)
+        self.assertEqual(stop.wait.call_args_list, [mock.call(1), mock.call(2), mock.call(4), mock.call(1)])
 
     def test_github_geo_urls_and_source_validation(self):
         self.assertEqual(app.normalize_geo_urls([
@@ -444,18 +499,6 @@ class AdminAPITests(unittest.TestCase):
             limited = app.limit_geo_snapshot(snapshot, ["FIRST.example", "manual.example"], [])
         self.assertEqual(limited["domains"], [])
         self.assertIn("2 domain suffixes beyond the 2 entry limit", limited["skipped"])
-
-    def test_sing_box_supervisor_backs_off_and_resumes_quick_checks(self):
-        app.write_json(app.SETTINGS_PATH, {"sing_box": {"outbound": {"type": "socks"}}})
-        stop = mock.Mock()
-        stop.wait.side_effect = [False, False, False, True]
-        stop.is_set.return_value = False
-        with mock.patch.object(app.SING_BOX, "running", return_value=False), mock.patch.object(
-            app.SING_BOX, "start", side_effect=[ValueError("port busy"), ValueError("port busy"), None],
-        ) as start:
-            app.supervise_sing_box(stop)
-        self.assertEqual(start.call_count, 3)
-        self.assertEqual(stop.wait.call_args_list, [mock.call(1), mock.call(2), mock.call(4), mock.call(1)])
 
     def test_settings_without_log_change_does_not_reload(self):
         status, _ = self.call("PUT", "/api/settings", {"public_mieru_port": 443})

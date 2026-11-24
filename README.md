@@ -87,54 +87,49 @@ same tables does not synchronize changes and mixes their snapshot histories.
 
 ## Route selected destinations through an outbound proxy
 
-The standalone Linux admin UI configures this in two tabs. Changes are saved
-right away; run `docker compose restart mita` to apply them.
+The standalone Linux admin UI configures this in two tabs. Build or update
+the Linux image with `docker compose up -d --build mita`; it bundles sing-box.
 
-1. **Outbounds**: save where routed traffic can go. SOCKS5 proxies (name,
-   host, port, optional username and password) and the built-in
-   `managed-sing-box` (see below). An outbound that a policy or an account still
-   uses cannot be deleted, and outbounds cannot be renamed.
-2. **Routing**: create policies. Each policy is a list of domains and/or CIDRs
-   bound to one saved outbound, or sent directly, or blocked. Policies are
-   checked top to bottom (reorder them with the arrows) and the first match
-   wins; unmatched traffic connects directly. A policy holds up to 4,096 domains
-   and 4,096 networks, and a GeoSite / GeoIP source file can be imported into
-   it. **Advanced: edit as JSON** shows the same data in Mita's egress format.
+1. **Outbounds**: add your provider servers. Paste a share link
+   (`hysteria2://` / `hy2://`, `vless://` including REALITY, `vmess://`,
+   `trojan://`, `ss://`, `tuic://`, `socks5://`, `http://`) or one sing-box
+   outbound JSON object, and give it a name. Every outbound runs inside one
+   sing-box process, which listens on an authenticated loopback SOCKS5 port per
+   outbound (from `127.0.0.1:1081` up); Mita sends routed traffic there.
+   sing-box checks each outbound before it is saved. Editing an outbound
+   restarts only sing-box; a new outbound becomes usable after
+   `docker compose restart mita`. An outbound that a policy or an account still
+   uses cannot be deleted, and outbounds cannot be renamed. If sing-box exits,
+   it is restarted with increasing delays up to one minute.
+2. **Routing**: create policies. Each policy is a list of domains, CIDRs
+   and/or up to four GitHub GeoSite / GeoIP source lists, bound to one saved
+   outbound, or sent directly, or blocked. Policies are checked top to bottom
+   (reorder them with the arrows) and the first match wins; unmatched traffic
+   connects directly. GitHub lists are downloaded on save and refreshed daily.
+   A policy holds up to 4,096 domains and 4,096 networks of its own (16,384
+   with GitHub entries), and a GeoSite / GeoIP file can also be imported into
+   it. Changes apply after `docker compose restart mita`. **Advanced: edit as
+   JSON** shows the policies in Mita's egress format.
 
 Rules are evaluated in order. `domainNames` entries match the domain and its
 subdomains when the client sends a hostname. If the client sends an IP, use
 `ipRanges` with CIDRs. `"*"` matches all entries of that kind. A rule's
 `action` is `PROXY`, `DIRECT` or `REJECT`. A `PROXY` rule references one or
-more configured `proxyNames`. Unmatched destinations go directly.
+more outbound names in `proxyNames`; an optional `name` and `geoUrls` are kept
+for the admin UI only. Unmatched destinations go directly. For a plain SOCKS5
+proxy without sing-box, add it to `proxies` in the JSON editor (`name`, `host`,
+`port`, optional `"socks5Authentication": {"user": "...", "password": "..."}`).
 
-Mita connects to a SOCKS5 proxy defined by `name`, `host` and `port`.
-For authentication, add `"socks5Authentication": {"user": "...", "password": "..."}`
-to the proxy. PostgreSQL snapshots include the outbound settings and their
-credentials. The external sing-box configuration is a separate file.
-
-### Set up the built-in sing-box on Linux
-
-Build or update the Linux image with `docker compose up -d --build mita`.
-In **Outbounds → Built-in sing-box**, paste one provider outbound object in
-sing-box JSON format, then click **Set up sing-box**. Pick `managed-sing-box`
-as the outbound of any routing policy; the form's own optional domains are
-routed through sing-box before all policies. The Linux image already contains the executable. The button
-validates the outbound, starts an authenticated local SOCKS5 listener on
-`127.0.0.1:1081`, and, when you entered extra domains, adds a rule for them ahead of the
-routing policies. Restart Mita with `docker compose restart mita` to apply the route.
-
-The provider config and domains are included in PostgreSQL backups. Treat
-these backups as confidential because the provider config may contain keys.
-The **Disable** button removes the managed rule and stops the listener.
-Restart Mita after disabling so it applies the remaining rules. If the
-built-in sing-box process exits, Mita retries it with increasing delays up
-to one minute.
+Outbound configs, policies and their credentials are included in PostgreSQL
+backups. Treat these backups as confidential because the provider configs
+contain keys. An installation that used the earlier single built-in sing-box
+is moved automatically on start: it becomes the outbound `managed-sing-box`,
+and its domains and GitHub lists become the first routing policy.
 
 #### Choose an outbound for an account
 
-Define named SOCKS5 outbounds under the **Outbounds** tab, or use the
-built-in `managed-sing-box` outbound. Restart Mita after adding or changing an
-outbound or a routing rule. In the user's settings, select **Outbound for
+Add outbounds in the **Outbounds** tab. Restart Mita after adding an outbound
+or changing a routing policy. In the user's settings, select **Outbound for
 PROXY**. The selection applies to new connections from the account and its
 HWID devices. **Routing rule default** clears the override.
 

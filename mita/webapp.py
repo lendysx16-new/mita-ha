@@ -773,6 +773,12 @@ def initialize_state():
         }
         write_json(SETTINGS_PATH, settings)
 
+    if is_standalone():
+        settings = get_settings()
+        if migrate_legacy_sing_box(settings):
+            write_json(SETTINGS_PATH, settings)
+            print("[init] moved the built-in sing-box into Outbounds and a routing policy", flush=True)
+
     rebuild_mita_config()
 
 
@@ -931,7 +937,7 @@ def normalize_egress(value, *, destination_limit=EGRESS_RULE_DESTINATION_LIMIT, 
 
     rules = []
     for rule in items(value, "rules", 128):
-        object_fields(rule, {"name", "domainNames", "ipRanges", "action", "proxyNames"}, "Rule")
+        object_fields(rule, {"name", "domainNames", "ipRanges", "geoUrls", "action", "proxyNames"}, "Rule")
         rule_name = rule.get("name", "")
         if not isinstance(rule_name, str) or len(rule_name.strip()) > EGRESS_RULE_NAME_MAX or any(
             ord(char) < 32 or ord(char) == 127 for char in rule_name
@@ -944,8 +950,9 @@ def normalize_egress(value, *, destination_limit=EGRESS_RULE_DESTINATION_LIMIT, 
             if not isinstance(value, str) or (value != "*" and "/" not in value):
                 raise ValueError("IP ranges must be CIDR strings or *")
             ranges.append("*" if value == "*" else str(ipaddress.ip_network(value, strict=False)))
-        if not domains and not ranges:
-            raise ValueError("each rule needs a domain or IP range")
+        geo_urls = normalize_geo_urls(rule["geoUrls"]) if "geoUrls" in rule else []
+        if not domains and not ranges and not geo_urls:
+            raise ValueError("each rule needs a domain, an IP range or a GitHub list")
         action = rule.get("action")
         if action not in ("PROXY", "DIRECT", "REJECT"):
             raise ValueError("rule action must be PROXY, DIRECT, or REJECT")
@@ -960,6 +967,8 @@ def normalize_egress(value, *, destination_limit=EGRESS_RULE_DESTINATION_LIMIT, 
         elif references:
             raise ValueError("only PROXY rules may reference proxies")
         entry = {"domainNames": domains, "ipRanges": ranges, "action": action, "proxyNames": references}
+        if geo_urls:
+            entry["geoUrls"] = geo_urls
         if rule_name:
             entry = {"name": rule_name, **entry}
         rules.append(entry)
@@ -967,9 +976,17 @@ def normalize_egress(value, *, destination_limit=EGRESS_RULE_DESTINATION_LIMIT, 
 
 
 SING_BOX_BINARY = Path("/usr/local/bin/sing-box")
-SING_BOX_PORT = 1081
-SING_BOX_PROXY_NAME = "managed-sing-box"
-SING_BOX_TYPES = {"vless", "shadowsocks", "trojan", "hysteria2", "socks"}
+# Every outbound runs in one sing-box process. Each gets its own authenticated
+# SOCKS5 inbound on loopback, starting at this port, which Mita uses as a proxy.
+SING_BOX_FIRST_PORT = 1081
+SING_BOX_MAX_OUTBOUNDS = 32
+LEGACY_SING_BOX_NAME = "managed-sing-box"
+OUTBOUND_TYPES = {"vless", "vmess", "trojan", "shadowsocks", "hysteria2", "hysteria", "tuic", "socks", "http"}
+OUTBOUND_REQUIRED = {
+    "vless": ("uuid",), "vmess": ("uuid",), "trojan": ("password",), "hysteria2": ("password",),
+    "shadowsocks": ("method", "password"), "tuic": ("uuid",),
+}
+OUTBOUND_MAX_BYTES = 64 * 1024
 
 
 def sing_box_available():
@@ -978,40 +995,247 @@ def sing_box_available():
 
 def validate_sing_box_outbound(outbound):
     if not isinstance(outbound, dict) or not isinstance(outbound.get("type"), str):
-        raise ValueError("provide one sing-box outbound JSON object")
+        raise ValueError("provide a share link or one sing-box outbound JSON object")
     protocol = outbound["type"]
-    if protocol not in SING_BOX_TYPES:
-        raise ValueError("supported outbound types: VLESS, Shadowsocks, Trojan, Hysteria2 and SOCKS")
+    if protocol not in OUTBOUND_TYPES:
+        raise ValueError("supported protocols: VLESS, VMess, Trojan, Shadowsocks, Hysteria2, Hysteria, TUIC, SOCKS and HTTP")
+    if "detour" in outbound:
+        raise ValueError("chaining outbounds with detour is not supported")
     server = outbound.get("server")
     if not isinstance(server, str) or not server.strip() or any(c.isspace() for c in server):
-        raise ValueError("sing-box outbound requires a server hostname or IP")
+        raise ValueError("the outbound needs a server hostname or IP")
     port = outbound.get("server_port")
     if type(port) is not int or not 1 <= port <= 65535:
-        raise ValueError("sing-box outbound requires server_port between 1 and 65535")
-    required = {
-        "vless": ("uuid",),
-        "shadowsocks": ("method", "password"),
-        "trojan": ("password",),
-        "hysteria2": ("password",),
-        "socks": (),
-    }
-    for key in required[protocol]:
+        raise ValueError("the outbound needs server_port between 1 and 65535")
+    for key in OUTBOUND_REQUIRED.get(protocol, ()):
         if not isinstance(outbound.get(key), str) or not outbound[key].strip():
-            raise ValueError(f"sing-box outbound requires {key}")
+            raise ValueError(f"{protocol} outbound requires {key}")
+    if len(json.dumps(outbound)) > OUTBOUND_MAX_BYTES:
+        raise ValueError("the outbound configuration is too large")
 
 
-def sing_box_config(settings):
-    validate_sing_box_outbound(settings["outbound"])
-    return {
-        "inbounds": [{
-            "type": "socks",
-            "listen": "127.0.0.1",
-            "listen_port": SING_BOX_PORT,
-            "users": [{"username": "mita", "password": settings["password"]}],
-        }],
-        "outbounds": [dict(settings["outbound"], tag="upstream")],
-        "route": {"final": "upstream"},
-    }
+def _link_query(parsed):
+    return {key: values[-1] for key, values in urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items()}
+
+
+def _link_truthy(value):
+    return str(value or "").lower() in ("1", "true", "yes")
+
+
+def _link_endpoint(parsed):
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("the link has an invalid port") from exc
+    if not parsed.hostname or not port:
+        raise ValueError("the link needs a server and a port")
+    return parsed.hostname, port
+
+
+def _link_tls(query, enabled_by_default):
+    security = query.get("security", "tls" if enabled_by_default else "none").lower()
+    if security in ("", "none"):
+        return None
+    if security not in ("tls", "reality", "xtls"):
+        raise ValueError(f"unsupported link security {security!r}")
+    tls = {"enabled": True}
+    server_name = query.get("sni") or query.get("peer") or query.get("servername")
+    if server_name:
+        tls["server_name"] = server_name
+    if _link_truthy(query.get("allowInsecure") or query.get("insecure") or query.get("allow_insecure")):
+        tls["insecure"] = True
+    if query.get("alpn"):
+        tls["alpn"] = [item for item in query["alpn"].split(",") if item]
+    if query.get("fp"):
+        tls["utls"] = {"enabled": True, "fingerprint": query["fp"]}
+    if security == "reality":
+        if not query.get("pbk"):
+            raise ValueError("a REALITY link needs pbk (the public key)")
+        tls["reality"] = {"enabled": True, "public_key": query["pbk"]}
+        if query.get("sid"):
+            tls["reality"]["short_id"] = query["sid"]
+        tls.setdefault("utls", {"enabled": True, "fingerprint": "chrome"})
+    return tls
+
+
+def _link_transport(query):
+    kind = (query.get("type") or query.get("net") or "tcp").lower()
+    host, path = query.get("host", ""), query.get("path", "")
+    if kind in ("tcp", "raw", ""):
+        return None
+    if kind == "ws":
+        transport = {"type": "ws"}
+        if path:
+            transport["path"] = path
+        if host:
+            transport["headers"] = {"Host": host}
+        return transport
+    if kind == "grpc":
+        return {"type": "grpc", "service_name": query.get("serviceName", "")}
+    if kind in ("http", "h2", "httpupgrade"):
+        transport = {"type": "httpupgrade" if kind == "httpupgrade" else "http"}
+        if host:
+            transport["host"] = host if kind == "httpupgrade" else [h for h in host.split(",") if h]
+        if path:
+            transport["path"] = path
+        return transport
+    raise ValueError(f"unsupported link transport {kind!r}")
+
+
+def _b64decode(text):
+    text = text.strip().replace("-", "+").replace("_", "/")
+    return base64.b64decode(text + "=" * (-len(text) % 4)).decode("utf-8")
+
+
+def parse_share_link(link):
+    """Convert a common proxy share link into a sing-box outbound and a suggested name."""
+    link = link.strip()
+    scheme = link.split("://", 1)[0].lower() if "://" in link else ""
+    if scheme == "vmess":
+        try:
+            data = json.loads(_b64decode(link[len("vmess://"):]))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValueError("the vmess link is not valid base64 JSON") from exc
+        if not isinstance(data, dict):
+            raise ValueError("the vmess link is not valid base64 JSON")
+        try:
+            port = int(data.get("port"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("the vmess link has an invalid port") from exc
+        outbound = {"type": "vmess", "server": str(data.get("add", "")), "server_port": port,
+                    "uuid": str(data.get("id", "")), "security": str(data.get("scy") or "auto"),
+                    "alter_id": int(data.get("aid") or 0)}
+        query = {"type": str(data.get("net", "tcp")), "host": str(data.get("host", "")),
+                 "path": str(data.get("path", "")), "serviceName": str(data.get("path", "")),
+                 "security": "tls" if data.get("tls") == "tls" else "none",
+                 "sni": str(data.get("sni", "")), "alpn": str(data.get("alpn", "")), "fp": str(data.get("fp", ""))}
+        tls, transport = _link_tls(query, False), _link_transport(query)
+        if tls:
+            outbound["tls"] = tls
+        if transport:
+            outbound["transport"] = transport
+        return outbound, str(data.get("ps", ""))
+
+    parsed = urllib.parse.urlsplit(link)
+    name = urllib.parse.unquote(parsed.fragment)
+    query = _link_query(parsed)
+    user = urllib.parse.unquote(parsed.username or "")
+    secret = urllib.parse.unquote(parsed.password or "")
+
+    if scheme == "ss":
+        if "@" not in parsed.netloc:  # legacy: ss://base64(method:password@host:port)
+            try:
+                decoded = _b64decode(parsed.netloc + parsed.path)
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise ValueError("the ss link is not valid") from exc
+            parsed = urllib.parse.urlsplit("ss://" + decoded)
+            user, secret = urllib.parse.unquote(parsed.username or ""), urllib.parse.unquote(parsed.password or "")
+        elif not secret:  # SIP002: userinfo is base64(method:password)
+            try:
+                user, _, secret = _b64decode(user).partition(":")
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise ValueError("the ss link has invalid credentials") from exc
+        if query.get("plugin"):
+            raise ValueError("Shadowsocks plugins are not supported")
+        server, port = _link_endpoint(parsed)
+        return {"type": "shadowsocks", "server": server, "server_port": port,
+                "method": user, "password": secret}, name
+
+    if scheme not in ("hysteria2", "hy2", "vless", "trojan", "tuic", "socks", "socks5", "http", "https"):
+        raise ValueError("paste a vless://, vmess://, trojan://, ss://, hysteria2://, tuic://, socks5:// or http:// link, or sing-box JSON")
+    server, port = _link_endpoint(parsed)
+    if scheme in ("hysteria2", "hy2"):
+        outbound = {"type": "hysteria2", "server": server, "server_port": port,
+                    "password": f"{user}:{secret}" if secret else user,
+                    "tls": _link_tls(dict(query, security="tls"), True)}
+        if query.get("obfs"):
+            if query["obfs"] != "salamander":
+                raise ValueError("only salamander obfuscation is supported")
+            outbound["obfs"] = {"type": "salamander", "password": query.get("obfs-password", "")}
+        for key, field in (("upmbps", "up_mbps"), ("downmbps", "down_mbps")):
+            if query.get(key, "").isdigit():
+                outbound[field] = int(query[key])
+        return outbound, name
+    if scheme == "vless":
+        outbound = {"type": "vless", "server": server, "server_port": port, "uuid": user}
+        if query.get("flow"):
+            outbound["flow"] = query["flow"]
+    elif scheme == "trojan":
+        outbound = {"type": "trojan", "server": server, "server_port": port, "password": user}
+    elif scheme == "tuic":
+        outbound = {"type": "tuic", "server": server, "server_port": port, "uuid": user, "password": secret,
+                    "tls": _link_tls(dict(query, security="tls"), True)}
+        if query.get("congestion_control"):
+            outbound["congestion_control"] = query["congestion_control"]
+        if query.get("udp_relay_mode"):
+            outbound["udp_relay_mode"] = query["udp_relay_mode"]
+        return outbound, name
+    elif scheme in ("socks", "socks5", "http", "https"):
+        outbound = {"type": "http" if scheme.startswith("http") else "socks", "server": server, "server_port": port}
+        if scheme.startswith("socks"):
+            outbound["version"] = "5"
+        if user:
+            outbound["username"] = user
+            outbound["password"] = secret
+        if scheme == "https":
+            outbound["tls"] = {"enabled": True}
+        return outbound, name
+    else:
+        raise ValueError("paste a vless://, vmess://, trojan://, ss://, hysteria2://, tuic://, socks5:// or http:// link, or sing-box JSON")
+    tls = _link_tls(query, scheme == "trojan")
+    if tls:
+        outbound["tls"] = tls
+    transport = _link_transport(query)
+    if transport:
+        outbound["transport"] = transport
+    return outbound, name
+
+
+def parse_outbound_config(value):
+    """Accept a share link, sing-box JSON text, or a JSON object. Returns (outbound, suggested name)."""
+    suggested = ""
+    if isinstance(value, str):
+        text = value.strip()
+        if len(text) > OUTBOUND_MAX_BYTES:
+            raise ValueError("the outbound configuration is too large")
+        if text.startswith("{"):
+            try:
+                value = json.loads(text)
+            except ValueError as exc:
+                raise ValueError("the outbound JSON is not valid") from exc
+        else:
+            value, suggested = parse_share_link(text)
+    if not isinstance(value, dict):
+        raise ValueError("provide a share link or one sing-box outbound JSON object")
+    outbound = {key: item for key, item in value.items() if key != "tag"}
+    validate_sing_box_outbound(outbound)
+    return outbound, suggested
+
+
+def outbound_entries(settings):
+    return settings.get("outbounds") or []
+
+
+def allocate_outbound_port(entries):
+    used = {entry["port"] for entry in entries}
+    port = SING_BOX_FIRST_PORT
+    while port in used:
+        port += 1
+    return port
+
+
+def sing_box_config(entries):
+    inbounds, outbounds, rules = [], [], []
+    for index, entry in enumerate(entries):
+        validate_sing_box_outbound(entry["outbound"])
+        inbounds.append({
+            "type": "socks", "tag": f"in-{index}", "listen": "127.0.0.1", "listen_port": entry["port"],
+            "users": [{"username": "mita", "password": entry["password"]}],
+        })
+        outbounds.append(dict(entry["outbound"], tag=f"out-{index}"))
+        rules.append({"inbound": [f"in-{index}"], "outbound": f"out-{index}"})
+    outbounds.append({"type": "direct", "tag": "direct"})
+    return {"inbounds": inbounds, "outbounds": outbounds, "route": {"rules": rules, "final": "direct"}}
 
 
 GEO_REFRESH_INTERVAL = 24 * 60 * 60
@@ -1155,31 +1379,51 @@ def limit_geo_snapshot(snapshot, domains, ip_ranges):
     return dict(limited, skipped=sorted(skipped))
 
 
+def policy_geo_urls(settings):
+    urls = []
+    for rule in (settings.get("egress") or {}).get("rules", []):
+        if isinstance(rule, dict) and isinstance(rule.get("geoUrls"), list):
+            urls.extend(url for url in rule["geoUrls"] if isinstance(url, str))
+    return list(dict.fromkeys(urls))
+
+
+def download_geo_snapshot(url):
+    snapshot = download_geo_sources([url])
+    snapshot["updated_at"] = utc_now()
+    return snapshot
+
+
 def refresh_geo_sources():
+    """Re-download every GitHub list used by a routing policy; keep old data on failure."""
     with LOCK:
-        bridge = get_settings().get("sing_box") or {}
-        urls = bridge.get("geo_urls", [])
-    if not urls:
-        return
-    downloaded = download_geo_sources(urls)
+        urls = policy_geo_urls(get_settings())
+    fresh = {}
+    for url in urls:
+        try:
+            fresh[url] = download_geo_snapshot(url)
+        except ValueError:
+            print(f"[web] GitHub Geo update failed for {url}; keeping the previous list", flush=True)
     with LOCK:
         settings = get_settings()
-        current = settings.get("sing_box")
-        if current != bridge:
-            return
-        downloaded = limit_geo_snapshot(downloaded, current["domains"], current.get("ip_ranges", []))
-        if current.get("geo_snapshot") == downloaded:
-            return
-        current["geo_snapshot"] = downloaded
-        current["geo_updated_at"] = utc_now()
-        managed_egress(settings)
-        write_json(SETTINGS_PATH, settings)
-        print("[web] GitHub Geo lists updated; restart Mita to apply", flush=True)
+        used = set(policy_geo_urls(settings))
+        snapshots = {url: snap for url, snap in settings.get("geo_snapshots", {}).items() if url in used}
+        changed = len(snapshots) != len(settings.get("geo_snapshots", {}))
+        for url, snapshot in fresh.items():
+            old = snapshots.get(url, {})
+            if url in used and (old.get("domains"), old.get("ip_ranges")) != (snapshot["domains"], snapshot["ip_ranges"]):
+                snapshots[url] = snapshot
+                changed = True
+        if changed:
+            settings["geo_snapshots"] = snapshots
+            managed_egress(settings)
+            write_json(SETTINGS_PATH, settings)
+            print("[web] GitHub Geo lists updated; restart Mita to apply", flush=True)
 
 
-def geo_refresh_worker():
-    while True:
-        time.sleep(GEO_REFRESH_INTERVAL)
+def geo_refresh_worker(stop_event=None):
+    delay = 60  # first check soon after start, then daily
+    while not (stop_event.wait(delay) if stop_event else time.sleep(delay)):
+        delay = GEO_REFRESH_INTERVAL
         try:
             refresh_geo_sources()
         except (ValueError, OSError, StateError):
@@ -1187,49 +1431,35 @@ def geo_refresh_worker():
 
 
 def egress_extra_proxy_names(settings):
-    """Outbounds admin rules may use besides their own SOCKS5 proxies."""
-    return (SING_BOX_PROXY_NAME,) if settings.get("sing_box") else ()
+    """Outbounds routing policies may use besides SOCKS5 proxies set in JSON."""
+    return tuple(entry["name"] for entry in outbound_entries(settings))
 
 
 def managed_egress(settings):
-    bridge = settings.get("sing_box")
+    """The egress config Mita runs: policies plus one local proxy per sing-box outbound."""
     egress = normalize_egress(settings.get("egress", {}), extra_proxy_names=egress_extra_proxy_names(settings))
-    if bridge is None:
-        return egress
-    if any(proxy["name"] == SING_BOX_PROXY_NAME for proxy in egress["proxies"]):
-        raise ValueError(f"{SING_BOX_PROXY_NAME} is reserved while built-in sing-box is enabled")
-    snapshot = bridge.get("geo_snapshot", {})
-    domains = list(dict.fromkeys(
-        normalize_egress_domain(value)
-        for value in bridge["domains"] + snapshot.get("domains", [])
-    ))
-    ip_ranges = list(dict.fromkeys(
-        str(ipaddress.ip_network(value, strict=False)) if "/" in value else value
-        for value in bridge.get("ip_ranges", []) + snapshot.get("ip_ranges", [])
-    ))
-    managed = normalize_egress({
-        "proxies": [{
-            "name": SING_BOX_PROXY_NAME,
-            "host": "127.0.0.1",
-            "port": SING_BOX_PORT,
-            "socks5Authentication": {"user": "mita", "password": bridge["password"]},
-        }],
-        # Without its own destinations sing-box is just an outbound that lists use.
-        "rules": [{
-            "domainNames": domains,
-            "ipRanges": ip_ranges,
-            "action": "PROXY",
-            "proxyNames": [SING_BOX_PROXY_NAME],
-        }] if domains or ip_ranges else [],
-    }, destination_limit=GEO_DESTINATION_LIMIT)
-    rule = managed["rules"][0] if managed["rules"] else {"domainNames": [], "ipRanges": []}
-    if "*" in rule["domainNames"] or any(
-        value == "*" or ipaddress.ip_network(value).prefixlen == 0
-        for value in rule["ipRanges"]
-    ):
-        raise ValueError("enter explicit domains or IP ranges for the managed sing-box rule")
-    egress["proxies"].extend(managed["proxies"])
-    egress["rules"] = managed["rules"] + egress["rules"]
+    names = {proxy["name"] for proxy in egress["proxies"]}
+    for entry in outbound_entries(settings):
+        if entry["name"] in names:
+            raise ValueError(f"outbound name {entry['name']!r} is used twice")
+        names.add(entry["name"])
+        egress["proxies"].append({
+            "name": entry["name"], "protocol": "SOCKS5_PROXY_PROTOCOL", "host": "127.0.0.1",
+            "port": entry["port"], "socks5Authentication": {"user": "mita", "password": entry["password"]},
+        })
+    snapshots = settings.get("geo_snapshots", {})
+    rules = []
+    for rule in egress["rules"]:
+        urls = rule.get("geoUrls", [])
+        if urls:
+            domains = list(dict.fromkeys(rule["domainNames"] + [
+                value for url in urls for value in snapshots.get(url, {}).get("domains", [])]))
+            ranges = list(dict.fromkeys(rule["ipRanges"] + [
+                value for url in urls for value in snapshots.get(url, {}).get("ip_ranges", [])]))
+            rule = dict(rule, domainNames=domains[:GEO_DESTINATION_LIMIT], ipRanges=ranges[:GEO_DESTINATION_LIMIT])
+        if rule["domainNames"] or rule["ipRanges"]:  # a GitHub-only policy before its first download
+            rules.append(rule)
+    egress["rules"] = rules
     return egress
 
 
@@ -1288,7 +1518,7 @@ def validate_outbound_assignments(users, egress):
 
 
 class SingBoxBridge:
-    """Manage the bundled SOCKS5 listener within the Linux container."""
+    """Run one sing-box process with a loopback SOCKS5 inbound per outbound."""
 
     def __init__(self):
         self.process = None
@@ -1310,58 +1540,68 @@ class SingBoxBridge:
         self.stop_process(self.process)
         self.process = None
 
-    def start(self, settings):
+    @staticmethod
+    def check(entries):
         try:
-            with socket.socket() as probe:
-                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                probe.bind(("127.0.0.1", SING_BOX_PORT))
-        except OSError as exc:
-            raise ValueError(f"sing-box needs loopback port {SING_BOX_PORT} to be free") from exc
+            result = subprocess.run(
+                [str(SING_BOX_BINARY), "check", "-c", "/dev/stdin"],
+                input=json.dumps(sing_box_config(entries)), text=True, capture_output=True, timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ValueError("could not validate the sing-box configuration") from exc
+        if result.returncode:
+            detail = (result.stderr or result.stdout).strip().splitlines()
+            raise ValueError("sing-box rejected the outbound" + (f": {detail[-1][:300]}" if detail else ""))
+
+    def start(self, entries):
+        ports = [entry["port"] for entry in entries]
+        for port in ports:
+            try:
+                with socket.socket() as probe:
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    probe.bind(("127.0.0.1", port))
+            except OSError as exc:
+                raise ValueError(f"sing-box needs loopback port {port} to be free") from exc
 
         with tempfile.TemporaryDirectory(prefix="mita-sing-box-") as directory:
             config = Path(directory) / "config.json"
-            write_json(config, sing_box_config(settings))
+            write_json(config, sing_box_config(entries))
             args = [str(SING_BOX_BINARY), "run", "-c", str(config)]
             process = subprocess.Popen(
                 args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             try:
+                pending = set(ports)
                 for _ in range(30):
                     if process.poll() is not None:
                         break
-                    try:
-                        with socket.create_connection(("127.0.0.1", SING_BOX_PORT), timeout=0.1):
-                            if process.poll() is None:
-                                self.process = process
-                                return
-                    except OSError:
-                        time.sleep(0.1)
+                    for port in list(pending):
+                        try:
+                            with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                                pending.discard(port)
+                        except OSError:
+                            pass
+                    if not pending and process.poll() is None:
+                        self.process = process
+                        return
+                    time.sleep(0.1)
             finally:
                 if self.process is not process:
                     self.stop_process(process)
-        raise ValueError("sing-box could not start its local SOCKS5 listener")
+        raise ValueError("sing-box could not start its local SOCKS5 listeners")
 
     def replace(self, updated, previous, persist):
-        if updated is not None:
-            payload = json.dumps(sing_box_config(updated))
-            try:
-                result = subprocess.run(
-                    [str(SING_BOX_BINARY), "check", "-c", "/dev/stdin"],
-                    input=payload, text=True, capture_output=True, timeout=10,
-                )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                raise ValueError("could not validate the sing-box configuration") from exc
-            if result.returncode:
-                raise ValueError("sing-box rejected the outbound configuration; check the provider JSON")
-
+        """Switch to the updated outbound list, or roll back to the previous one."""
+        if updated:
+            self.check(updated)
         self.stop()
         try:
-            if updated is not None:
+            if updated:
                 self.start(updated)
             persist()
         except (ValueError, OSError) as original:
             self.stop()
-            if previous is not None:
+            if previous:
                 try:
                     self.start(previous)
                 except (ValueError, OSError) as rollback:
@@ -1379,29 +1619,67 @@ def supervise_sing_box(stop_event):
             if stop_event.is_set():
                 return
             try:
-                bridge = get_settings().get("sing_box")
-                if bridge and not SING_BOX.running():
-                    SING_BOX.start(bridge)
-                    print("[web] built-in sing-box restarted", flush=True)
+                entries = outbound_entries(get_settings())
+                if entries and not SING_BOX.running():
+                    SING_BOX.start(entries)
+                    print("[web] sing-box restarted", flush=True)
                 delay = 1
             except (ValueError, OSError, StateError):
                 delay = min(delay * 2, 60)
-                print(f"[web] built-in sing-box unavailable; retrying in {delay}s", flush=True)
+                print(f"[web] sing-box unavailable; retrying in {delay}s", flush=True)
+
+
+def public_outbound(entry):
+    return {"name": entry["name"], "outbound": entry["outbound"], "port": entry["port"]}
 
 
 def admin_settings(settings):
     settings = settings.copy()
     if not is_standalone():
-        settings.pop("egress", None)
-        settings.pop("sing_box", None)
-    elif settings.get("sing_box"):
-        bridge = settings["sing_box"]
-        settings["sing_box"] = {
-            key: settings["sing_box"][key] for key in ("domains", "outbound", "ip_ranges", "geo_urls", "geo_updated_at")
-            if key in settings["sing_box"]
-        }
-        settings["sing_box"]["geo_skipped"] = bridge.get("geo_snapshot", {}).get("skipped", [])
+        for key in ("egress", "outbounds", "geo_snapshots", "sing_box"):
+            settings.pop(key, None)
+        return settings
+    settings["outbounds"] = [public_outbound(entry) for entry in outbound_entries(settings)]
+    settings["geo_snapshots"] = {
+        url: {"domains": len(snap.get("domains", [])), "ip_ranges": len(snap.get("ip_ranges", [])),
+              "skipped": snap.get("skipped", []), "updated_at": snap.get("updated_at")}
+        for url, snap in settings.get("geo_snapshots", {}).items()
+    }
     return settings
+
+
+def migrate_legacy_sing_box(settings):
+    """Turn the old single built-in sing-box into an outbound plus a routing policy."""
+    old = settings.pop("sing_box", None)
+    if not old:
+        return False
+    entries = settings.setdefault("outbounds", [])
+    if isinstance(old.get("outbound"), dict) and not any(e["name"] == LEGACY_SING_BOX_NAME for e in entries):
+        port = SING_BOX_FIRST_PORT if all(e["port"] != SING_BOX_FIRST_PORT for e in entries) else allocate_outbound_port(entries)
+        entries.append({"name": LEGACY_SING_BOX_NAME, "outbound": old["outbound"], "port": port,
+                        "password": old.get("password") or secrets.token_urlsafe(24)})
+    domains, ranges, urls = old.get("domains", []), old.get("ip_ranges", []), old.get("geo_urls", [])
+    if domains or ranges or urls:
+        egress = settings.setdefault("egress", {})
+        egress.setdefault("proxies", [])
+        rules = egress.setdefault("rules", [])
+        limit = EGRESS_RULE_DESTINATION_LIMIT
+        chunks = max(1, -(-max(len(domains), len(ranges)) // limit))
+        for index in reversed(range(chunks)):
+            rule = {"name": "sing-box" if index == 0 else f"sing-box ({index + 1})",
+                    "domainNames": domains[index * limit:(index + 1) * limit],
+                    "ipRanges": ranges[index * limit:(index + 1) * limit],
+                    "action": "PROXY", "proxyNames": [LEGACY_SING_BOX_NAME]}
+            if index == 0 and urls:
+                rule["geoUrls"] = urls
+            rules.insert(0, rule)
+        snapshot = old.get("geo_snapshot")
+        if urls and snapshot:
+            settings.setdefault("geo_snapshots", {})[urls[0]] = {
+                "domains": snapshot.get("domains", []), "ip_ranges": snapshot.get("ip_ranges", []),
+                "skipped": snapshot.get("skipped", []), "updated_at": old.get("geo_updated_at"),
+            }
+    return True
 
 
 def build_mita_config(users, settings):
@@ -1435,10 +1713,10 @@ def build_mita_config(users, settings):
         "loggingLevel": settings.get("log_level", "INFO"),
         "dns": {"dualStack": dns_policy},
     }
-    if standalone and ("egress" in settings or settings.get("sing_box")):
+    if standalone and ("egress" in settings or outbound_entries(settings)):
         egress = managed_egress(settings)
-        # List names are admin-facing only; Mita's schema has no such field.
-        egress["rules"] = [{k: v for k, v in rule.items() if k != "name"} for rule in egress["rules"]]
+        # Policy names and GitHub list URLs are admin-facing; Mita's schema has neither.
+        egress["rules"] = [{k: v for k, v in rule.items() if k not in ("name", "geoUrls")} for rule in egress["rules"]]
         config["egress"] = egress
     return config
 
@@ -1999,6 +2277,7 @@ ADMIN_PAGE_HEADERS = {
     "Referrer-Policy": "no-referrer",
 }
 USER = r"/api/users/(?P<username>[^/]+)"
+OUTBOUND = r"/api/outbounds/(?P<name>[A-Za-z0-9_.-]{1,64})"
 ADMIN_ROUTES = [
     ("GET", r"/?", "page"),
     ("GET", r"/api/state", "get_state"),
@@ -2011,7 +2290,9 @@ ADMIN_ROUTES = [
     ("PATCH", USER, "update_user"),
     ("PUT", USER + r"/device-settings", "update_user"),  # kept for older UI builds
     ("PUT", r"/api/settings", "update_settings"),
-    ("PUT", r"/api/sing-box", "sing_box"),
+    ("POST", r"/api/outbounds", "add_outbound"),
+    ("PUT", OUTBOUND, "update_outbound"),
+    ("DELETE", OUTBOUND, "delete_outbound"),
     ("DELETE", USER + r"/devices/(?P<device_id>[A-Fa-f0-9]{16})", "delete_device"),
     ("DELETE", USER, "delete_user"),
 ]
@@ -2253,44 +2534,79 @@ class AdminHandler(CommonHandler):
         return HTTPStatus.OK, {"deleted": username, "mita_reloaded": True, "mita_output": reload_output}
 
     # ----- settings -----
-    def route_sing_box(self):
+    def require_sing_box(self):
         if not sing_box_available():
-            raise ApiError(HTTPStatus.NOT_FOUND, "built-in sing-box is only available in the Linux image")
-        body = self.read_json(max_bytes=6 * 1024 * 1024)
-        outbound = body.get("outbound")
-        disabling = outbound is None and body.get("enabled") is False
-        if not disabling:
-            validate_sing_box_outbound(outbound)
-            urls = normalize_geo_urls(body.get("geo_urls", []))
-            snapshot = download_geo_sources(urls) if urls else {}
-            domains = body.get("domains", [])
-            ip_ranges = body.get("ip_ranges", [])
-            if not isinstance(domains, list) or not isinstance(ip_ranges, list) or any(
-                not isinstance(value, str) for value in domains + ip_ranges
-            ):
-                raise ValueError("domains and IP ranges must be arrays of strings")
+            raise ApiError(HTTPStatus.NOT_FOUND, "outbounds are only available in the Linux image")
+
+    def outbound_from_body(self):
+        body = self.read_json(max_bytes=OUTBOUND_MAX_BYTES * 2)
+        outbound, suggested = parse_outbound_config(body.get("config"))
+        return body, outbound, suggested
+
+    def apply_outbounds(self, settings, updated, previous):
+        validate_outbound_assignments(get_users(), managed_egress(settings))
+        SING_BOX.replace(updated, previous, lambda: write_json(SETTINGS_PATH, settings))
+
+    def route_add_outbound(self):
+        self.require_sing_box()
+        body, outbound, suggested = self.outbound_from_body()
+        name = body.get("name") or suggested
+        if not isinstance(name, str) or not USERNAME_RE.fullmatch(name.strip()):
+            raise ValueError("enter a name: letters, digits, _ . or -")
+        name = name.strip()
         with LOCK:
             settings = get_settings()
-            previous = settings.get("sing_box")
-            if disabling:
-                updated = None
-                settings.pop("sing_box", None)
-            else:
-                password = previous["password"] if previous else secrets.token_urlsafe(24)
-                updated = {
-                    "outbound": outbound, "domains": domains,
-                    "ip_ranges": ip_ranges, "password": password,
-                }
-                if urls:
-                    snapshot = limit_geo_snapshot(snapshot, domains, ip_ranges)
-                    updated.update(geo_urls=urls, geo_snapshot=snapshot, geo_updated_at=utc_now())
-                settings["sing_box"] = updated
-            validate_outbound_assignments(get_users(), managed_egress(settings))
-            SING_BOX.replace(updated, previous, lambda: write_json(SETTINGS_PATH, settings))
-        return HTTPStatus.OK, {"restart_required": True}
+            previous = outbound_entries(settings)
+            if len(previous) >= SING_BOX_MAX_OUTBOUNDS:
+                raise ValueError(f"at most {SING_BOX_MAX_OUTBOUNDS} outbounds are supported")
+            if name in proxy_outbound_names(managed_egress(settings)):
+                raise ValueError(f"an outbound named {name!r} already exists")
+            entry = {"name": name, "outbound": outbound, "port": allocate_outbound_port(previous),
+                     "password": secrets.token_urlsafe(24)}
+            settings["outbounds"] = previous + [entry]
+            self.apply_outbounds(settings, settings["outbounds"], previous)
+        # Mita learns about a new local proxy only when it restarts.
+        return HTTPStatus.CREATED, {"outbound": public_outbound(entry), "restart_required": True}
+
+    def route_update_outbound(self, name):
+        self.require_sing_box()
+        _, outbound, _ = self.outbound_from_body()
+        with LOCK:
+            settings = get_settings()
+            previous = outbound_entries(settings)
+            entry = next((e for e in previous if e["name"] == name), None)
+            if entry is None:
+                raise ApiError(HTTPStatus.NOT_FOUND, "outbound not found")
+            entry = dict(entry, outbound=outbound)
+            settings["outbounds"] = [entry if e["name"] == name else e for e in previous]
+            self.apply_outbounds(settings, settings["outbounds"], previous)
+        # Same local port and credentials: only sing-box restarts, Mita keeps running.
+        return HTTPStatus.OK, {"outbound": public_outbound(entry), "restart_required": False}
+
+    def route_delete_outbound(self, name):
+        self.require_sing_box()
+        with LOCK:
+            settings = get_settings()
+            previous = outbound_entries(settings)
+            if not any(e["name"] == name for e in previous):
+                raise ApiError(HTTPStatus.NOT_FOUND, "outbound not found")
+            settings["outbounds"] = [e for e in previous if e["name"] != name]
+            self.apply_outbounds(settings, settings["outbounds"], previous)
+        return HTTPStatus.OK, {"deleted": name, "restart_required": True}
 
     def route_update_settings(self):
         body = self.read_json(max_bytes=4 * 1024 * 1024)  # domain lists can be large
+        downloaded = {}
+        if "egress" in body and is_standalone():
+            # Fetch lists the policies newly reference before taking the lock.
+            known = get_settings().get("geo_snapshots", {})
+            for url in policy_geo_urls({"egress": {"rules": [
+                dict(rule, geoUrls=normalize_geo_urls(rule["geoUrls"]))
+                for rule in (body["egress"].get("rules") if isinstance(body["egress"], dict) else None) or []
+                if isinstance(rule, dict) and "geoUrls" in rule
+            ]}}):
+                if url not in known:
+                    downloaded[url] = download_geo_snapshot(url)
         with LOCK:
             settings = get_settings()
             previous = copy.deepcopy(settings)
@@ -2324,6 +2640,12 @@ class AdminHandler(CommonHandler):
                     raise ValueError("outbound is only available on standalone Linux")
                 settings["egress"] = normalize_egress(
                     body["egress"], extra_proxy_names=egress_extra_proxy_names(settings))
+                used = set(policy_geo_urls(settings))
+                snapshots = {**settings.get("geo_snapshots", {}), **downloaded}
+                missing = used - set(snapshots)
+                if missing:
+                    raise ValueError("a GitHub list changed while saving; save again")
+                settings["geo_snapshots"] = {url: snap for url, snap in snapshots.items() if url in used}
                 validate_outbound_assignments(get_users(), managed_egress(settings))
             egress_changed = settings.get("egress") != previous.get("egress")
 
@@ -2467,7 +2789,7 @@ def serve():
     threading.Thread(target=backup_db_worker, name="postgres-backup-worker", daemon=True).start()
     if sing_box_available():
         threading.Thread(target=supervise_sing_box, args=(stop_bridge,), name="sing-box-supervisor", daemon=True).start()
-        threading.Thread(target=geo_refresh_worker, name="github-geo-refresh", daemon=True).start()
+        threading.Thread(target=geo_refresh_worker, args=(stop_bridge,), name="github-geo-refresh", daemon=True).start()
     print(f"[web] admin UI listening on {admin_host}:{ADMIN_PORT}", flush=True)
     print("[web] subscription server listening on 8099", flush=True)
     try:
