@@ -1,4 +1,4 @@
-#!/usr/bin/with-contenv bashio
+#!/usr/bin/env bash
 set -euo pipefail
 
 CONFIG_PATH="/data/mita-server.json"
@@ -11,8 +11,8 @@ export MITA_INSECURE_UDS="1"
 python3 /app/webapp.py --init
 
 # Mita stores rolling per-user metrics in /var/lib/mita/metrics.pb.
-# Home Assistant add-on updates may recreate the container, so keep that
-# directory on /data and link Mita's standard state path to it.
+# Image updates recreate the container, so keep that directory on /data and
+# link Mita's standard state path to it.
 mkdir -p /data/mita-state
 if [ -e /var/lib/mita ] && [ ! -L /var/lib/mita ]; then
   rm -rf /var/lib/mita

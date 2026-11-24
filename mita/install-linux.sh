@@ -108,7 +108,7 @@ from urllib.request import Request, urlopen
 repo, pattern = sys.argv[1:]
 request = Request(
     f"https://api.github.com/repos/{repo}/releases/latest",
-    headers={"Accept": "application/vnd.github+json", "User-Agent": "mita-ha-installer"},
+    headers={"Accept": "application/vnd.github+json", "User-Agent": "mita-installer"},
 )
 try:
     with urlopen(request, timeout=20) as response:

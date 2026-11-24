@@ -1,4 +1,4 @@
-name: Validate add-on
+name: Validate
 
 on:
   push:
@@ -38,7 +38,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import yaml
-          for path in ["repository.yaml", "mita/config.yaml"]:
+          for path in ["compose.yaml", ".github/workflows/validate.yml"]:
               with open(path, "r", encoding="utf-8") as f:
                   yaml.safe_load(f)
               print(path, "OK")
@@ -87,5 +87,5 @@ jobs:
           node --check /tmp/mita-subscription.js
           node --test tests/test_subscription.mjs
 
-      - name: Build and test Linux Mita routing core
-        run: docker build --target mita-routed-builder mita
+      - name: Build the image (patched Mita core with its tests, sing-box, web app)
+        run: docker build mita

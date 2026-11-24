@@ -1,4 +1,4 @@
-"""Regression tests for the Mita Home Assistant API and subscription state."""
+"""Regression tests for the Mita admin API, routing and subscription state."""
 import base64
 import contextlib
 import http.client
@@ -71,12 +71,13 @@ class AdminAPITests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=5)
 
-    def call(self, method, path, body=None, raw=False, headers=None):
+    def call(self, method, path, body=None, raw=False, headers=None, auth=True):
         if body is not None and not raw:
             body = json.dumps(body)
-        if headers is None:
+        headers = {"Content-Type": "application/json"} if headers is None else dict(headers)
+        if auth:
             credentials = base64.b64encode(b"admin:test-admin-password-long-enough").decode()
-            headers = {"Content-Type": "application/json", "Authorization": f"Basic {credentials}"}
+            headers.setdefault("Authorization", f"Basic {credentials}")
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=10)
         try:
             connection.request(method, path, body=body, headers=headers)
@@ -86,12 +87,11 @@ class AdminAPITests(unittest.TestCase):
         finally:
             connection.close()
 
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
-    def test_standalone_loopback_requires_admin_password(self):
-        status, result = self.call("GET", "/api/state", headers={})
+    def test_admin_requires_password_and_never_allows_loopback(self):
+        status, result = self.call("GET", "/api/state", auth=False)
         self.assertEqual(status, 401)
         self.assertNotIn("settings", result)
-        status, _ = self.call("PUT", "/api/settings", {"log_level": "DEBUG"}, headers={})
+        status, _ = self.call("PUT", "/api/settings", {"log_level": "DEBUG"}, auth=False)
         self.assertEqual(status, 401)
         self.assertEqual(app.get_settings()["log_level"], "INFO")
         status, _ = self.call("GET", "/api/state", headers={"Authorization": "Basic !!!"})
@@ -202,7 +202,6 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(status, 201, data)
         return data
 
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_routing_policies_are_validated(self):
         self.routing()
         def put(rules, **extra):
@@ -237,7 +236,6 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(self.call("PUT", "/api/settings", {"routing_final": "nl"})[0], 200)
         self.assertEqual(app.get_settings()["routing_final"], "nl")
 
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_sing_box_router_config_and_mita_egress(self):
         replace = self.routing()
         self.add_outbound("nl")
@@ -282,11 +280,10 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(state["sing_box_route"], config["route"])
         self.assertEqual(state["proxy_outbounds"], ["de", "nl"])
 
-        # Without sing-box (Home Assistant image, or missing binary) Mita routes nothing.
+        # Without the sing-box binary Mita routes nothing.
         with mock.patch.object(app, "sing_box_available", return_value=False):
             self.assertNotIn("egress", app.build_mita_config(app.get_users(), settings))
 
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_account_outbound_needs_restart_before_assignment(self):
         self.routing()
         self.addCleanup(setattr, app, "APPLIED_PROXY_OUTBOUNDS", app.APPLIED_PROXY_OUTBOUNDS)
@@ -326,21 +323,6 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(self.call("PATCH", path, {"proxy_outbound": ""})[0], 200)
         self.assertNotIn("proxy_outbound", app.get_users()[0])
 
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "0"})
-    def test_home_assistant_ignores_and_hides_routing(self):
-        settings = app.get_settings()
-        settings["egress"] = {"rules": [{"domainNames": ["example.com"], "action": "REJECT"}]}
-        settings["outbounds"] = [{"name": "nl", "outbound": {"type": "socks", "server": "s", "server_port": 1}, "port": 1081, "password": "p"}]
-        app.write_json(app.SETTINGS_PATH, settings)
-        self.assertNotIn("egress", app.build_mita_config(app.get_users(), settings))
-        _, state = self.call("GET", "/api/state")
-        for key in ("egress", "outbounds", "routing_final"):
-            self.assertNotIn(key, state["settings"])
-        self.assertEqual(self.call("PUT", "/api/settings", {"egress": {"rules": []}})[0], 400)
-        self.assertEqual(self.call("PUT", "/api/settings", {"routing_final": "block"})[0], 400)
-        self.assertEqual(app.get_settings()["egress"], settings["egress"])
-
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_outbounds_from_share_links_run_through_sing_box(self):
         replace = self.routing()
         data = self.add_outbound("nl")
@@ -368,7 +350,6 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(self.call("PUT", "/api/outbounds/nl", {"config": self.HY2})[0], 400)
         self.assertEqual(app.get_settings(), before)
 
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     @mock.patch.object(app, "sing_box_available", return_value=True)
     def test_outbound_health_is_checked_on_save_on_demand_and_in_background(self, _available):
         self.addCleanup(app.OUTBOUND_HEALTH.clear)
@@ -392,7 +373,6 @@ class AdminAPITests(unittest.TestCase):
             self.assertEqual(self.call("DELETE", "/api/outbounds/nl")[0], 200)
             self.assertNotIn("nl", app.OUTBOUND_HEALTH)
 
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_outbound_in_use_cannot_be_deleted(self):
         self.routing()
         self.add_outbound("nl")
@@ -417,12 +397,6 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(self.call("DELETE", "/api/outbounds/nl")[0], 200)
         self.assertEqual(app.get_settings()["outbounds"], [])
 
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "0"})
-    def test_outbounds_are_unavailable_on_home_assistant(self):
-        self.assertEqual(self.call("POST", "/api/outbounds", {"name": "nl", "config": self.HY2})[0], 404)
-        self.assertEqual(self.call("DELETE", "/api/outbounds/nl")[0], 404)
-
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_policy_categories_become_full_sing_box_rule_sets(self):
         replace = self.routing()
         url = "https://raw.githubusercontent.com/owner/repo/main/geosite.json"
@@ -464,7 +438,6 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(self.call("PUT", "/api/settings", {"egress": {"rules": []}})[0], 200)
         self.assertEqual(app.get_settings()["geo_snapshots"], {})
 
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_geo_categories_come_from_dat_sources_when_set(self):
         self.routing()
         dat = Path(self.temp.name) / "geosite-test.dat"
@@ -491,7 +464,6 @@ class AdminAPITests(unittest.TestCase):
             json_download.assert_called_once()
         self.assertEqual(app.get_settings()["geo_snapshots"][key]["source"], "json")
 
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_restart_button_applies_saved_outbounds_without_container_restart(self):
         self.routing()
         self.addCleanup(setattr, app, "APPLIED_EGRESS", app.APPLIED_EGRESS)
@@ -520,11 +492,6 @@ class AdminAPITests(unittest.TestCase):
         app.load_applied_proxy_outbounds()
         self.assertEqual((app.APPLIED_PROXY_OUTBOUNDS, app.APPLIED_EGRESS), ({"nl"}, None))
 
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "0"})
-    def test_restart_button_is_standalone_only(self):
-        self.assertEqual(self.call("POST", "/api/mita/restart", {})[0], 404)
-
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_router_keeps_running_until_mita_stops_using_it(self):
         replace = self.routing()
         self.addCleanup(setattr, app, "APPLIED_ROUTER", app.APPLIED_ROUTER)
@@ -546,7 +513,6 @@ class AdminAPITests(unittest.TestCase):
         self.assertFalse(app.APPLIED_ROUTER)
         self.assertIsNone(app.sing_box_config_or_none(app.get_settings()))
 
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_failed_reload_also_restores_sing_box_routing(self):
         replace = self.routing()
         before = app.get_settings()
@@ -559,7 +525,6 @@ class AdminAPITests(unittest.TestCase):
         restored = replace.call_args_list[1][0][0]
         self.assertFalse(any(r.get("action") == "reject" for r in (restored or {"route": {"rules": []}})["route"]["rules"]))
 
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_rule_set_files_are_content_addressed_and_pruned(self):
         first, digest = app.write_geo_rule_set({"version": 2, "rules": [{"domain_suffix": ["a.example"]}]})
         again, _ = app.write_geo_rule_set({"rules": [{"domain_suffix": ["a.example"]}], "version": 2})
@@ -576,7 +541,6 @@ class AdminAPITests(unittest.TestCase):
         self.assertFalse(other.exists(), "old unreferenced files go")
         self.assertTrue(fresh.exists(), "recent files may belong to a save in progress")
 
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_earlier_routing_data_moves_to_the_router_model(self):
         url = "https://raw.githubusercontent.com/owner/repo/main/geosite.json"
         settings = app.get_settings()
@@ -606,7 +570,6 @@ class AdminAPITests(unittest.TestCase):
             app.sing_box_config(settings)  # valid after migration
         self.assertFalse(app.migrate_to_router(settings))
 
-    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_sing_box_supervisor_backs_off_and_resumes_quick_checks(self):
         app.write_json(app.SETTINGS_PATH, {"router_password": "r", "outbounds": [
             {"name": "nl", "outbound": {"type": "socks", "server": "s.example", "server_port": 1080}, "port": 1081, "password": "p"}]})
@@ -678,11 +641,14 @@ class AdminAPITests(unittest.TestCase):
         status, _ = self.call("POST", "/api/users/first/rotate-token", headers={"Content-Type": "text/plain"})
         self.assertEqual(status, 415)
 
-    def test_admin_rejects_clients_other_than_ingress(self):
-        self.assertTrue(app.is_allowed_admin_client("172.30.32.2"))
-        self.assertTrue(app.is_allowed_admin_client("::ffff:172.30.32.2"))
-        self.assertFalse(app.is_allowed_admin_client("172.30.33.5"))
-        with mock.patch.object(app, "admin_allowed_clients", return_value={"172.30.32.2"}):
+    def test_admin_answers_only_local_clients(self):
+        for address in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            self.assertTrue(app.is_allowed_admin_client(address), address)
+        for address in ("172.30.32.2", "10.0.0.5", "not-an-ip"):
+            self.assertFalse(app.is_allowed_admin_client(address), address)
+        with mock.patch.dict(app.os.environ, {"MITA_ADMIN_ALLOWED_IPS": "10.0.0.5"}):
+            self.assertTrue(app.is_allowed_admin_client("10.0.0.5"))
+        with mock.patch.object(app, "admin_allowed_clients", return_value={"10.9.9.9"}):
             status, data = self.call("GET", "/api/state")
         self.assertEqual(status, 403)
         self.assertNotIn("users", data)
@@ -777,13 +743,14 @@ class AdminAPITests(unittest.TestCase):
     def test_admin_page_sends_security_headers(self):
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=10)
         try:
-            connection.request("GET", "/")
+            credentials = base64.b64encode(b"admin:test-admin-password-long-enough").decode()
+            connection.request("GET", "/", headers={"Authorization": f"Basic {credentials}"})
             response = connection.getresponse()
             response.read()
         finally:
             connection.close()
         self.assertEqual(response.status, 200)
-        self.assertIn("frame-ancestors 'self'", response.getheader("Content-Security-Policy"))
+        self.assertIn("frame-ancestors 'none'", response.getheader("Content-Security-Policy"))
         self.assertEqual(response.getheader("X-Content-Type-Options"), "nosniff")
         self.assertEqual(response.getheader("Referrer-Policy"), "no-referrer")
 
@@ -1055,48 +1022,42 @@ class InitializeDefaultsTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        names = ("DATA_DIR", "OPTIONS_PATH", "USERS_PATH", "SETTINGS_PATH", "MITA_CONFIG_PATH")
+        names = ("DATA_DIR", "USERS_PATH", "SETTINGS_PATH", "MITA_CONFIG_PATH")
         original = {name: getattr(app, name) for name in names}
         self.addCleanup(lambda: [setattr(app, k, v) for k, v in original.items()])
         app.DATA_DIR = Path(temp.name)
-        app.OPTIONS_PATH = app.DATA_DIR / "options.json"
         app.USERS_PATH = app.DATA_DIR / "users.json"
         app.SETTINGS_PATH = app.DATA_DIR / "settings.json"
         app.MITA_CONFIG_PATH = app.DATA_DIR / "mita-server.json"
 
-    def init(self, options):
-        app.write_json(app.OPTIONS_PATH, options)
-        with contextlib.redirect_stdout(io.StringIO()) as out:
+    def init(self, env=None):
+        with mock.patch.dict(app.os.environ, env or {}), contextlib.redirect_stdout(io.StringIO()) as out:
             app.initialize()
         return out.getvalue()
 
-    def mita_passwords(self):
-        return [u["password"] for u in json.loads(app.MITA_CONFIG_PATH.read_text())["users"]]
-
-    def test_placeholder_from_options_never_becomes_a_live_credential(self):
-        log = self.init({"users": [
-            {"username": "change-me", "password": app.PLACEHOLDER_PASSWORD},
-            {"username": "real", "password": "chosen-secret"},
-        ]})
-        passwords = self.mita_passwords()
-        self.assertNotIn(app.PLACEHOLDER_PASSWORD, passwords)
-        self.assertIn("chosen-secret", passwords)
-        self.assertGreaterEqual(len(app.get_users()[0]["password"]), 24)
-        self.assertIn("replaced the placeholder password of 'change-me'", log)
-        self.assertNotIn(app.get_users()[0]["password"], log)
-
-    def test_fallback_user_gets_a_random_password(self):
-        self.init({"users": []})
+    def test_fresh_install_uses_environment_and_a_random_first_password(self):
+        self.init({"MITA_PUBLIC_HOST": "vpn.example.com", "MITA_PUBLIC_PORT": "8443",
+                   "MITA_SUBSCRIPTION_BASE_URL": "https://vpn.example.com/", "MITA_POSTGRES_DSN": "postgresql://db/mita"})
+        settings = app.get_settings()
+        self.assertEqual((settings["public_mieru_host"], settings["public_mieru_port"], settings["subscription_base_url"],
+                          settings["postgres_dsn"]), ("vpn.example.com", 8443, "https://vpn.example.com", "postgresql://db/mita"))
         users = app.get_users()
         self.assertEqual([u["username"] for u in users], ["change-me"])
+        self.assertGreaterEqual(len(users[0]["password"]), 24)
         self.assertNotEqual(users[0]["password"], app.PLACEHOLDER_PASSWORD)
-        self.assertNotIn(app.PLACEHOLDER_PASSWORD, self.mita_passwords())
+        config = json.loads(app.MITA_CONFIG_PATH.read_text())
+        self.assertNotIn(app.PLACEHOLDER_PASSWORD, [u["password"] for u in config["users"]])
+        self.assertIn("router_password", settings)
+
+    def test_invalid_public_port_stops_startup(self):
+        with self.assertRaisesRegex(app.StateError, "MITA_PUBLIC_PORT"):
+            self.init({"MITA_PUBLIC_PORT": "abc"})
 
     def test_existing_placeholder_user_is_kept_but_warned_about(self):
         app.write_json(app.USERS_PATH, [{
             "username": "change-me", "password": app.PLACEHOLDER_PASSWORD, "token": "T" * 32,
         }])
-        log = self.init({})
+        log = self.init()
         self.assertEqual(app.get_users()[0]["password"], app.PLACEHOLDER_PASSWORD)
         self.assertIn("WARNING: user 'change-me' still uses the public placeholder password", log)
 

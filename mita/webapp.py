@@ -37,7 +37,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 DATA_DIR = Path("/data")
-OPTIONS_PATH = DATA_DIR / "options.json"
 USERS_PATH = DATA_DIR / "users.json"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 MITA_CONFIG_PATH = DATA_DIR / "mita-server.json"
@@ -53,9 +52,6 @@ DEVICE_ID_RE = re.compile(r"^[A-Fa-f0-9]{16}$")
 PASSWORD_MAX_LENGTH = 256
 # Placeholder shipped in config.yaml. It is public, so it must never become a live credential.
 PLACEHOLDER_PASSWORD = "change-this-password"
-# Home Assistant Ingress proxies every request from the Supervisor at this address.
-# Extra addresses (e.g. for local development) can be added with MITA_ADMIN_ALLOWED_IPS.
-INGRESS_PROXY_IP = "172.30.32.2"
 CONTACT_EMAIL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9.-]+$")
 LOCK = threading.RLock()
 RELEASE_CACHE_LOCK = threading.RLock()
@@ -151,7 +147,7 @@ def resolve_github_download(client_id, target_id):
                 f"https://api.github.com/repos/{repo}/releases/latest",
                 headers={
                     "Accept": "application/vnd.github+json",
-                    "User-Agent": "mita-ha",
+                    "User-Agent": "mita-admin",
                 },
             )
             try:
@@ -198,10 +194,6 @@ def write_json(path, value):
         f.write("\n")
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
-
-
-def load_options():
-    return load_json(OPTIONS_PATH, {})
 
 
 def utc_now():
@@ -363,7 +355,7 @@ def build_backup_archive():
 
     The archive stores credentials and must be treated as confidential.
     """
-    names = ("users.json", "settings.json", "mita-server.json", "options.json")
+    names = ("users.json", "settings.json", "mita-server.json")
     files = []
     total = 0
     with LOCK:
@@ -686,10 +678,6 @@ def normalize_contact_email(value):
     return address
 
 
-def is_standalone():
-    return os.environ.get("MITA_STANDALONE") == "1"
-
-
 def initialize():
     with data_directory_lock():
         if (DATA_DIR / RESTORE_MARKER).exists():
@@ -697,60 +685,29 @@ def initialize():
         initialize_state()
 
 
-def initialize_state():
-    options = load_options()
-    if is_standalone():
-        options.setdefault("public_mieru_host", os.environ.get("MITA_PUBLIC_HOST", "localhost"))
-        if not SETTINGS_PATH.exists() and "public_mieru_port" not in options:
-            try:
-                public_port = int(os.environ.get("MITA_PUBLIC_PORT", "2022"))
-            except ValueError as exc:
-                raise StateError("MITA_PUBLIC_PORT must be an integer between 1 and 65535") from exc
-            if not 1 <= public_port <= 65535:
-                raise StateError("MITA_PUBLIC_PORT must be an integer between 1 and 65535")
-            options["public_mieru_port"] = public_port
-        options.setdefault("subscription_base_url", os.environ.get(
-            "MITA_SUBSCRIPTION_BASE_URL", "http://localhost:8099"))
-        options.setdefault("postgres_dsn", os.environ.get("MITA_POSTGRES_DSN", ""))
+def env_public_port():
+    try:
+        port = int(os.environ.get("MITA_PUBLIC_PORT", "2022"))
+    except ValueError as exc:
+        raise StateError("MITA_PUBLIC_PORT must be an integer between 1 and 65535") from exc
+    if not 1 <= port <= 65535:
+        raise StateError("MITA_PUBLIC_PORT must be an integer between 1 and 65535")
+    return port
 
+
+def initialize_state():
     if not USERS_PATH.exists():
-        default_private = bool(options.get("allow_private_ip", False))
-        default_loopback = bool(options.get("allow_loopback_ip", False))
-        users = []
-        for item in options.get("users", []):
-            username = str(item.get("username", "")).strip()
-            password = str(item.get("password", ""))
-            if not username or not password:
-                continue
-            if password == PLACEHOLDER_PASSWORD:
-                password = secrets.token_urlsafe(24)
-                print(
-                    f"[init] replaced the placeholder password of '{username}' with a random one; "
-                    "share its subscription link or reset the password in the admin UI",
-                    flush=True,
-                )
-            users.append({
-                "username": username,
-                "password": password,
-                "allow_private_ip": default_private,
-                "allow_loopback_ip": default_loopback,
-                "token": secrets.token_urlsafe(24),
-                "legacy_enabled": True,
-                "device_limit": 0,
-                "devices": [],
-            })
-        if not users:
-            users = [{
-                "username": "change-me",
-                "password": secrets.token_urlsafe(24),
-                "allow_private_ip": default_private,
-                "allow_loopback_ip": default_loopback,
-                "token": secrets.token_urlsafe(24),
-                "legacy_enabled": True,
-                "device_limit": 0,
-                "devices": [],
-            }]
-        write_json(USERS_PATH, users)
+        # A first account so clients can connect right away; its password is random.
+        write_json(USERS_PATH, [{
+            "username": "change-me",
+            "password": secrets.token_urlsafe(24),
+            "allow_private_ip": False,
+            "allow_loopback_ip": False,
+            "token": secrets.token_urlsafe(24),
+            "legacy_enabled": True,
+            "device_limit": 0,
+            "devices": [],
+        }])
 
     migrate_users()
     for user in get_users():
@@ -762,25 +719,23 @@ def initialize_state():
             )
 
     if not SETTINGS_PATH.exists():
-        settings = {
-            "public_mieru_host": str(options.get("public_mieru_host", "me.lendysx16.ru")).strip(),
-            "public_mieru_port": int(options.get("public_mieru_port", 8443)),
-            "subscription_base_url": str(options.get("subscription_base_url", "https://me.lendysx16.ru")).rstrip("/"),
-            "log_level": str(options.get("log_level", "INFO")),
-            "prefer_ipv4": bool(options.get("prefer_ipv4", True)),
-            "default_allow_private_ip": bool(options.get("allow_private_ip", False)),
-            "default_allow_loopback_ip": bool(options.get("allow_loopback_ip", False)),
-            "postgres_dsn": str(options.get("postgres_dsn", "")).strip(),
+        write_json(SETTINGS_PATH, {
+            "public_mieru_host": os.environ.get("MITA_PUBLIC_HOST", "localhost").strip() or "localhost",
+            "public_mieru_port": env_public_port(),
+            "subscription_base_url": os.environ.get("MITA_SUBSCRIPTION_BASE_URL", "http://localhost:8099").rstrip("/"),
+            "log_level": "INFO",
+            "prefer_ipv4": True,
+            "default_allow_private_ip": False,
+            "default_allow_loopback_ip": False,
+            "postgres_dsn": os.environ.get("MITA_POSTGRES_DSN", "").strip(),
             "contact_email": "",
-        }
-        write_json(SETTINGS_PATH, settings)
+        })
 
-    if is_standalone():
-        settings = get_settings()
-        moved = migrate_legacy_sing_box(settings)
-        if migrate_to_router(settings) or moved:
-            write_json(SETTINGS_PATH, settings)
-            print("[init] routing settings moved to the sing-box router model", flush=True)
+    settings = get_settings()
+    moved = migrate_legacy_sing_box(settings)
+    if migrate_to_router(settings) or moved:
+        write_json(SETTINGS_PATH, settings)
+        print("[init] routing settings moved to the sing-box router model", flush=True)
 
     rebuild_mita_config()
 
@@ -1006,7 +961,7 @@ OUTBOUND_MAX_BYTES = 64 * 1024
 
 
 def sing_box_available():
-    return is_standalone() and os.access(SING_BOX_BINARY, os.X_OK)
+    return os.access(SING_BOX_BINARY, os.X_OK)
 
 
 def validate_sing_box_outbound(outbound):
@@ -1742,7 +1697,7 @@ def routing_final(settings):
 
 
 def routing_enabled(settings):
-    return is_standalone() and bool(
+    return bool(
         outbound_entries(settings) or (settings.get("egress") or {}).get("rules")
         or (settings.get("routing_final") or "direct") != "direct")
 
@@ -1758,7 +1713,7 @@ APPLIED_ROUTER = False  # the running Mita sends its traffic to the sing-box rou
 def sing_box_needed(settings):
     """sing-box must run while the settings route through it *or* the running Mita still
     does; otherwise turning routing off would cut traffic until Mita restarts."""
-    return is_standalone() and sing_box_available() and (routing_enabled(settings) or APPLIED_ROUTER)
+    return sing_box_available() and (routing_enabled(settings) or APPLIED_ROUTER)
 
 
 def router_password(settings):
@@ -1861,8 +1816,7 @@ def sing_box_config_or_none(settings):
 
 def apply_routing(updated, previous, persist=None):
     """Bring sing-box in line with updated settings, then persist; roll back on failure."""
-    if is_standalone():
-        ensure_router_password(updated)
+    ensure_router_password(updated)
     config = sing_box_config(updated) if sing_box_needed(updated) else None
     SING_BOX.replace(config, sing_box_config_or_none(previous),
                      persist or (lambda: write_json(SETTINGS_PATH, updated)))
@@ -2204,10 +2158,6 @@ def public_outbound(entry):
 def admin_settings(settings):
     settings = settings.copy()
     settings.pop("router_password", None)
-    if not is_standalone():
-        for key in ("egress", "outbounds", "geo_snapshots", "sing_box", "routing_final", "geo_sources"):
-            settings.pop(key, None)
-        return settings
     settings["outbounds"] = [public_outbound(entry) for entry in outbound_entries(settings)]
     settings["routing_final"] = settings.get("routing_final") or "direct"
 
@@ -2323,14 +2273,14 @@ def migrate_legacy_sing_box(settings):
 def build_mita_config(users, settings):
     """Construct the Mita config without filesystem or subprocess side effects."""
     dns_policy = "PREFER_IPv4" if settings.get("prefer_ipv4", True) else "USE_FIRST_IP"
-    standalone = is_standalone()
     mita_users = []
     for user in users:
         access = {
             "allowPrivateIP": bool(user.get("allow_private_ip", False)),
-            "allowLoopbackIP": not standalone and bool(user.get("allow_loopback_ip", False)),
+            # The admin panel and sing-box listen on the host's loopback (host networking).
+            "allowLoopbackIP": False,
         }
-        if standalone and user.get("proxy_outbound"):
+        if user.get("proxy_outbound"):
             access["proxyOutbound"] = user["proxy_outbound"]
         if user.get("legacy_enabled", True):
             mita_users.append({
@@ -2351,7 +2301,7 @@ def build_mita_config(users, settings):
         "loggingLevel": settings.get("log_level", "INFO"),
         "dns": {"dualStack": dns_policy},
     }
-    if standalone and routing_active(settings):
+    if routing_active(settings):
         config["egress"] = managed_egress(settings)
     return config
 
@@ -2724,7 +2674,7 @@ def public_user(user):
         "default_password": user.get("password") == PLACEHOLDER_PASSWORD,
         "device_limit": int(user.get("device_limit", 0) or 0),
         "devices": [public_device(d) for d in user.get("devices", [])],
-        **({"proxy_outbound": user.get("proxy_outbound", "")} if is_standalone() else {}),
+        "proxy_outbound": user.get("proxy_outbound", ""),
     }
 
 
@@ -2826,7 +2776,7 @@ def resolve_subscription(token, headers):
 PAGE = Path(__file__).with_name("admin.html").read_text(encoding="utf-8")
 
 class CommonHandler(BaseHTTPRequestHandler):
-    server_version = "mita-ha/1"
+    server_version = "mita/1"
 
     def log_message(self, fmt, *args):
         # Subscription tokens are credentials; never persist them in HTTP logs.
@@ -2879,7 +2829,7 @@ class ApiError(Exception):
 
 def admin_allowed_clients():
     extra = os.environ.get("MITA_ADMIN_ALLOWED_IPS", "")
-    allowed = {INGRESS_PROXY_IP, "127.0.0.1", "::1"}
+    allowed = {"127.0.0.1", "::1"}
     allowed.update(item.strip() for item in extra.split(",") if item.strip())
     return allowed
 
@@ -2902,11 +2852,11 @@ def find_user(users, username):
 
 
 ADMIN_PAGE_HEADERS = {
-    # Ingress embeds the panel in a same-origin iframe; inline code is the page itself.
+    # The page's only scripts and styles are inline; it is never framed.
     "Content-Security-Policy": (
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
         "img-src 'self' data:; connect-src 'self'; form-action 'self'; "
-        "base-uri 'none'; frame-ancestors 'self'"
+        "base-uri 'none'; frame-ancestors 'none'"
     ),
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
@@ -2936,7 +2886,7 @@ ADMIN_ROUTES = [
 ADMIN_ROUTES = [(method, re.compile(pattern), name) for method, pattern, name in ADMIN_ROUTES]
 
 
-def standalone_admin_password():
+def admin_password():
     password = os.environ.get("MITA_ADMIN_PASSWORD", "")
     return password if len(password) >= 24 else ""
 
@@ -2970,19 +2920,18 @@ class AdminHandler(CommonHandler):
 
     def dispatch(self, method):
         if not is_allowed_admin_client(self.client_address[0]):
-            self.send_json(HTTPStatus.FORBIDDEN, {"error": "admin UI is only available through Home Assistant Ingress"})
+            self.send_json(HTTPStatus.FORBIDDEN, {"error": "the admin UI only answers local requests (use an SSH tunnel)"})
             return
-        if is_standalone():
-            password = standalone_admin_password()
-            if not password:
-                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Linux admin password is not configured"})
-                return
-            if not matches_admin_password(self.headers.get("Authorization", ""), password):
-                self.send_json(
-                    HTTPStatus.UNAUTHORIZED, {"error": "admin credentials required"},
-                    headers={"WWW-Authenticate": 'Basic realm="Mita Linux", charset="UTF-8"'},
-                )
-                return
+        password = admin_password()
+        if not password:
+            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "admin password is not configured"})
+            return
+        if not matches_admin_password(self.headers.get("Authorization", ""), password):
+            self.send_json(
+                HTTPStatus.UNAUTHORIZED, {"error": "admin credentials required"},
+                headers={"WWW-Authenticate": 'Basic realm="Mita", charset="UTF-8"'},
+            )
+            return
         path = urllib.parse.urlparse(self.path).path
         matches = [(m, r.fullmatch(path), name) for m, r, name in ADMIN_ROUTES]
         matches = [(m, match, name) for m, match, name in matches if match]
@@ -3025,21 +2974,20 @@ class AdminHandler(CommonHandler):
 
     def route_get_state(self):
         settings = get_settings()
-        standalone = is_standalone()
-        assignable, pending = split_proxy_outbounds(settings) if standalone else (set(), set())
+        assignable, pending = split_proxy_outbounds(settings)
         return HTTPStatus.OK, {
             "users": [public_user(u) for u in get_users()],
             "settings": admin_settings(settings),
-            "outbound_enabled": standalone,
+            "outbound_enabled": True,
             "proxy_outbounds": sorted(assignable),
             "pending_proxy_outbounds": sorted(pending),
             "sing_box_available": sing_box_available(),
             "sing_box_running": sing_box_available() and SING_BOX.running(),
-            "outbound_health": dict(OUTBOUND_HEALTH) if standalone else {},
-            "restart_pending": standalone and restart_pending(settings),
-            "geo_dat": geo_dat_status() if standalone else {},
-            "routing_active": standalone and routing_active(settings),
-            "sing_box_route": (sing_box_config_or_none(settings) or {}).get("route") if standalone else None,
+            "outbound_health": dict(OUTBOUND_HEALTH),
+            "restart_pending": restart_pending(settings),
+            "geo_dat": geo_dat_status(),
+            "routing_active": routing_active(settings),
+            "sing_box_route": (sing_box_config_or_none(settings) or {}).get("route"),
         }
 
     def route_get_traffic(self):
@@ -3127,8 +3075,6 @@ class AdminHandler(CommonHandler):
             previous_outbound = user.get("proxy_outbound", "")
             outbound = body.get("proxy_outbound", previous_outbound)
             if "proxy_outbound" in body:
-                if not is_standalone():
-                    raise ValueError("outbound selection is only available on standalone Linux")
                 if not isinstance(outbound, str):
                     raise ValueError("choose a configured proxy outbound or use the routing rule default")
                 if outbound and outbound != previous_outbound:
@@ -3177,8 +3123,6 @@ class AdminHandler(CommonHandler):
 
     # ----- settings -----
     def route_restart_mita(self):
-        if not is_standalone():
-            raise ApiError(HTTPStatus.NOT_FOUND, "restarting Mita from the panel is only available on standalone Linux")
         try:
             output = restart_mita()
         except (MitaReloadError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
@@ -3264,7 +3208,7 @@ class AdminHandler(CommonHandler):
     def route_update_settings(self):
         body = self.read_json(max_bytes=4 * 1024 * 1024)  # domain lists can be large
         downloaded = {}
-        if ("egress" in body or "geo_sources" in body) and is_standalone():
+        if "egress" in body or "geo_sources" in body:
             # Download lists that are new or whose source changed before taking the lock;
             # a large geosite.dat can take a while.
             current = get_settings()
@@ -3309,16 +3253,12 @@ class AdminHandler(CommonHandler):
                 settings["contact_email"] = normalize_contact_email(body["contact_email"])
 
             if "geo_sources" in body:
-                if not is_standalone():
-                    raise ValueError("Geo sources are only available on standalone Linux")
                 settings["geo_sources"] = normalize_geo_sources(body["geo_sources"])
                 snapshots = {**settings.get("geo_snapshots", {}), **downloaded}
                 if stale_geo_snapshots(policy_geo_urls(settings), snapshots, settings["geo_sources"]):
                     raise ValueError("a Geo list changed while saving; save again")
                 settings["geo_snapshots"] = snapshots
             if "egress" in body:
-                if not is_standalone():
-                    raise ValueError("outbound is only available on standalone Linux")
                 settings["egress"] = normalize_egress(
                     body["egress"], extra_proxy_names=egress_extra_proxy_names(settings))
                 used = set(policy_geo_urls(settings))
@@ -3327,10 +3267,8 @@ class AdminHandler(CommonHandler):
                     raise ValueError("a Geo list changed while saving; save again")
                 settings["geo_snapshots"] = {url: snap for url, snap in snapshots.items() if url in used}
             if "routing_final" in body:
-                if not is_standalone():
-                    raise ValueError("routing is only available on standalone Linux")
                 settings["routing_final"] = normalize_routing_final(body["routing_final"], settings)
-            routing_changed = is_standalone() and any(
+            routing_changed = any(
                 key in body for key in ("egress", "geo_sources", "routing_final"))
             if routing_changed:
                 validate_outbound_assignments(get_users(), managed_egress(settings))
@@ -3356,7 +3294,7 @@ class AdminHandler(CommonHandler):
                 write_json(SETTINGS_PATH, settings)
             if routing_changed:
                 prune_geo_rule_sets(settings)
-            pending = is_standalone() and restart_pending(settings)
+            pending = restart_pending(settings)
 
         return HTTPStatus.OK, {
             "settings": admin_settings(settings),
@@ -3469,13 +3407,12 @@ class Server(ThreadingHTTPServer):
 
 
 def serve():
-    admin_host = "127.0.0.1" if is_standalone() else "0.0.0.0"
+    admin_host = "127.0.0.1"  # reach it through an SSH tunnel
     admin = Server((admin_host, ADMIN_PORT), AdminHandler)
     sub = Server(("0.0.0.0", SUB_PORT), SubscriptionHandler)
 
     stop_bridge = threading.Event()
-    if is_standalone():
-        load_applied_proxy_outbounds()
+    load_applied_proxy_outbounds()
 
     def shutdown_handler(signum, frame):
         threading.Thread(target=admin.shutdown, daemon=True).start()
@@ -3522,10 +3459,10 @@ if __name__ == "__main__":
         print(f"Restored PostgreSQL backup {identifier}")
         raise SystemExit(0)
     try:
-        if is_standalone() and not standalone_admin_password():
+        if not admin_password():
             raise StateError("set MITA_ADMIN_PASSWORD to a password of at least 24 characters")
         initialize()
-        if args.init and is_standalone():
+        if args.init:
             # run.sh starts Mita right after this step from the config just written.
             record_applied_proxy_outbounds(persist=True)
     except (StateError, ValueError, OSError) as exc:

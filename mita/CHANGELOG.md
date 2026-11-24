@@ -1,3 +1,13 @@
+## 3.40.0.2
+
+- Linux only: the project now runs as a Docker Compose service. The Home Assistant add-on packaging (add-on manifest, repository file, translations, base image, Ingress access) is removed; existing add-on installs no longer receive updates. Move them with a PostgreSQL backup and `--restore-postgres`.
+- The admin panel always listens on `127.0.0.1:8098`, requires `MITA_ADMIN_PASSWORD` (Basic auth as `admin`) and is reached through an SSH tunnel. Mita users can never reach the host's loopback addresses, so the per-user loopback toggle is gone.
+- Fresh installs take their public host, port, subscription URL and PostgreSQL connection from `.env`.
+- The image is a single Debian-based build with the patched Mita core compiled from source and sing-box 1.14.4.
+- Outbounds: add provider servers from share links (Hysteria2, VLESS incl. REALITY, VMess, Trojan, Shadowsocks, TUIC, SOCKS5, HTTP) or sing-box JSON, each running in the bundled sing-box, with a health check (Status column, Test button, every five minutes).
+- Routing: sing-box decides where traffic goes. Ordered policies send domains, CIDRs and GeoSite / GeoIP categories (`geosite:<name>`, `geoip:<name>`, MetaCubeX or a `geosite.dat` / `geoip.dat` source) to an outbound, direct or block, with **Everything else** for the rest. Policy changes apply without restarting Mita; a **Restart Mita** button applies outbound changes.
+- Per-account outbounds: a user's chosen outbound replaces every outbound target of the policies for that account and its devices.
+
 ## 3.40.0.1
 
 - Updated the bundled Mita core to 3.40.0 for amd64 and aarch64. The release fixes private IP checks on outbound traffic and a race in per-user metrics.

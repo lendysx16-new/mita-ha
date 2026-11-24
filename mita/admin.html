@@ -355,10 +355,10 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
       <a class="tab" href="#/routing" data-tab="routingTab" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M8 6h3a3 3 0 0 1 3 3v0a3 3 0 0 0 3 3M8 18h3a3 3 0 0 0 3-3v0a3 3 0 0 1 3-3"/></svg>Routing</a>
       <a class="tab" href="#/settings" data-tab="confTab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2" fill="var(--card)"/><circle cx="15" cy="17" r="2" fill="var(--card)"/></svg>Settings</a>
     </nav>
-    <div class="sidebar-footer"><div class="connection"><span class="status-dot"></span>Local admin panel</div><small class="muted">Home Assistant Ingress</small></div>
+    <div class="sidebar-footer"><div class="connection"><span class="status-dot"></span>Local admin panel</div><small class="muted">Signed in as admin</small></div>
   </aside>
   <main class="workspace">
-    <header class="topbar"><div class="crumb">Mita<span class="crumb-sep">/</span><strong id="breadcrumb">Users</strong></div><div class="topbar-right"><span class="status-dot"></span>Home Assistant Ingress</div></header>
+    <header class="topbar"><div class="crumb">Mita<span class="crumb-sep">/</span><strong id="breadcrumb">Users</strong></div><div class="topbar-right"><span class="status-dot"></span>Local admin panel</div></header>
     <div class="content">
       <div class="page-heading"><p class="eyebrow">Server administration</p><h1 id="pageTitle">Users</h1><p class="heading-subtitle muted" id="pageDescription">Manage access, credentials and subscriptions.</p></div>
       <div class="stat-grid" aria-label="Server overview">
@@ -390,7 +390,6 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
               <label>Password<input id="password" type="password" autocomplete="new-password" placeholder="Generated automatically if empty"></label>
               <div class="span-2 check-stack">
                 <label class="check"><input id="private" type="checkbox">Allow private / LAN IPs</label>
-                <label class="check"><input id="loopback" type="checkbox">Allow loopback</label>
                 <label class="check"><input id="newLegacy" type="checkbox" checked>Enable legacy credential</label>
               </div>
             </div></div>
@@ -419,7 +418,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
             <button id="detailDelete" class="btn btn-danger" type="button">Delete user</button>
           </div>
           <div id="detailPasswordWarning" class="notice-warning" role="alert" hidden>
-            <span><strong>Default password.</strong> This user still uses the public placeholder password from the add-on options. <span id="detailPasswordRisk"></span></span>
+            <span><strong>Default password.</strong> This user still uses the public placeholder password from an old install. <span id="detailPasswordRisk"></span></span>
             <button id="detailFixPassword" class="btn btn-sm" type="button">Reset password</button>
           </div>
           <div class="card-body">
@@ -681,7 +680,7 @@ function confirmAction(title, text, action = 'Confirm') {
 async function copyText(text) {
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); return; }
-  } catch (_) { /* Ingress iframes may block the async clipboard; fall back below. */ }
+  } catch (_) { /* Plain-HTTP pages (an SSH tunnel) may block the async clipboard; fall back below. */ }
   const area = document.createElement('textarea');
   area.value = text;
   area.setAttribute('readonly', '');
@@ -741,7 +740,7 @@ const VIEWS = {
   routingTab: {slug: 'routing', title: 'Routing', description: 'Domain lists bound to saved outbounds, checked top to bottom.'},
   confTab: {slug: 'settings', title: 'Settings', description: 'Public connection, logging and backups.'},
 };
-const ROUTING_TABS = ['outboundsTab', 'routingTab'];  // standalone Linux only
+const ROUTING_TABS = ['outboundsTab', 'routingTab'];
 const currentUser = () => state.users.find(u => u.username === state.user) || null;
 
 function hashFor(id) {
@@ -816,8 +815,7 @@ function accessBadges(u) {
   return [
     u.default_password && ['Default password', 'warning'],
     u.allow_private_ip && ['LAN', false],
-    u.allow_loopback_ip && ['Loopback', false],
-    !u.allow_private_ip && !u.allow_loopback_ip && ['Public only', true],
+    !u.allow_private_ip && ['Public only', true],
     u.legacy_enabled ? ['Legacy', true] : ['HWID only', true],
   ].filter(Boolean);
 }
@@ -895,7 +893,6 @@ function renderUserDetail() {
       <div class="check-stack">
         <label class="check"><input name="legacy_enabled" data-legacy type="checkbox"${attr('checked', u.legacy_enabled)}>Legacy credential enabled</label>
         <label class="check"><input name="allow_private_ip" type="checkbox"${attr('checked', u.allow_private_ip)}>Allow private / LAN IPs</label>
-        <label class="check"><input name="allow_loopback_ip" type="checkbox"${attr('checked', u.allow_loopback_ip)}>Allow loopback</label>
       </div>
       ${state.outbound_enabled ? html`<label>Outbound for PROXY<select name="proxy_outbound">
         <option value=""${attr('selected', !u.proxy_outbound)}>Routing rule default</option>
@@ -921,7 +918,6 @@ async function saveDeviceSettings(form) {
     device_limit: Number(form.elements.device_limit.value || 0),
     legacy_enabled: form.elements.legacy_enabled.checked,
     allow_private_ip: form.elements.allow_private_ip.checked,
-    allow_loopback_ip: form.elements.allow_loopback_ip.checked,
     ...(form.elements.proxy_outbound ? {proxy_outbound: form.elements.proxy_outbound.value} : {}),
   }), 'User settings saved');
 }
@@ -1070,7 +1066,6 @@ function resetAddUserForm() {
   $('#username').value = '';
   $('#password').value = '';
   $('#private').checked = !!state.settings.default_allow_private_ip;
-  $('#loopback').checked = !!state.settings.default_allow_loopback_ip;
   $('#newLegacy').checked = true;
 }
 function hideGeneratedCredential() {
@@ -1167,7 +1162,6 @@ $('#addUserForm').addEventListener('submit', async e => {
       username: $('#username').value.trim(),
       password: $('#password').value,
       allow_private_ip: $('#private').checked,
-      allow_loopback_ip: $('#loopback').checked,
       legacy_enabled: $('#newLegacy').checked,
     });
   });

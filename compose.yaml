@@ -1,17 +1,10 @@
 services:
   mita:
-    build:
-      context: ./mita
-      target: linux
-      args:
-        MITA_BASE_IMAGE: debian:bookworm-slim
-    entrypoint: ["/bin/bash", "/run.sh"]
-    command: []
+    build: ./mita
     init: true
     network_mode: host
     restart: unless-stopped
     environment:
-      MITA_STANDALONE: "1"
       MITA_ADMIN_PASSWORD: ${MITA_ADMIN_PASSWORD:-}
       MITA_PUBLIC_HOST: ${MITA_PUBLIC_HOST:-localhost}
       MITA_PUBLIC_PORT: ${MITA_PUBLIC_PORT:-2022}

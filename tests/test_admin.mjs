@@ -74,7 +74,7 @@ function setup(overrides = {}) {
   const ctx = vm.createContext({
     document,
     navigator: { languages: ['en-US'], clipboard: { async writeText(v) { ctx.copied = v; } } },
-    location: { href: 'https://ha.example/ingress/' },
+    location: { href: 'http://127.0.0.1:8098/' },
     fetch: async url => ({ ok: true, json: async () =>
       String(url).includes('api/backup-status') ? {status:{enabled:false}} : state }),
     Intl, Date, URL,
@@ -208,9 +208,9 @@ test('mutations send JSON content type; user settings and password reset use new
   };
   await ctx.saveDeviceSettings(form);
   const patch = calls.find(c => c.method === 'PATCH');
-  assert.equal(patch.url, 'https://ha.example/ingress/api/users/alice');
+  assert.equal(patch.url, 'http://127.0.0.1:8098/api/users/alice');
   assert.equal(patch.type, 'application/json');
-  assert.deepEqual(JSON.parse(patch.body), {device_limit: 3, legacy_enabled: true, allow_private_ip: true, allow_loopback_ip: false});
+  assert.deepEqual(JSON.parse(patch.body), {device_limit: 3, legacy_enabled: true, allow_private_ip: true});
 
   await ctx.resetPassword('alice');
   assert.ok(calls.some(c => c.method === 'POST' && c.url.endsWith('/api/users/alice/password')));
@@ -260,7 +260,7 @@ test('routing tab shows Everything else and the generated sing-box route', async
   assert.ok(html.includes('id="finalForm"'));
 });
 
-test('account settings show and save a named outbound only on standalone Linux', async () => {
+test('account settings show and save a named outbound when routing is available', async () => {
   for (const enabled of [false, true]) {
     const {ctx, element, state} = setup({outboundEnabled: enabled});
     state.proxy_outbounds = ['east', 'west'];
@@ -422,13 +422,6 @@ test('outbound editor shows the saved sing-box JSON and the status explains a mi
   ctx.openOutboundEditor('');
   assert.equal(fields.name.readOnly, false);
   assert.equal(fields.config.value, '');
-});
-
-test('outbounds and routing tabs are hidden on Home Assistant', async () => {
-  const {ctx, element} = setup({outboundEnabled: false});
-  await ctx.load();
-  assert.equal(element('.tab[data-tab="outboundsTab"]').hidden, true);
-  assert.equal(element('.tab[data-tab="routingTab"]').hidden, true);
 });
 
 test('outbounds and routing are separate tabs; policies only pick saved outbounds', () => {
