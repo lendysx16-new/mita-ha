@@ -6,14 +6,18 @@ import contextlib
 import copy
 import html
 import hashlib
+import fcntl
 import io
 import json
 import os
 import re
 import secrets
 import signal
+import shutil
+import socket
 import subprocess
 import tarfile
+import tempfile
 import threading
 import time
 import urllib.error
@@ -26,6 +30,7 @@ try:
 except ImportError:
     psycopg2 = None
 from http import HTTPStatus
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -442,6 +447,127 @@ def save_postgres_backup(dsn, reason="scheduled"):
     return {"reason": reason, "file_names": names, "sha256": digest, "count": count}
 
 
+RESTORE_MARKER = ".restore-in-progress"
+RESTORE_STAGE = ".restore-staging"
+RESTORE_FILES = {"users.json", "settings.json", "mita-server.json", "options.json", "mita-state"}
+
+
+@contextlib.contextmanager
+def data_directory_lock():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(DATA_DIR, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield descriptor
+    except BlockingIOError as exc:
+        raise StateError("another process is preparing the data directory") from exc
+    finally:
+        os.close(descriptor)
+
+
+def cleanup_interrupted_restore():
+    paths = list(DATA_DIR.iterdir())
+    if any(path.name not in RESTORE_FILES | {RESTORE_MARKER, RESTORE_STAGE} for path in paths):
+        raise ValueError("interrupted restore contains unrelated files; use a new data volume")
+    for path in paths:
+        if path.name == RESTORE_MARKER:
+            continue
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
+def restore_backup_archive(payload, checksum, dsn=None):
+    if hashlib.sha256(payload).hexdigest() != checksum:
+        raise ValueError("backup checksum mismatch")
+    with data_directory_lock() as descriptor:
+        marker = DATA_DIR / RESTORE_MARKER
+        if marker.exists():
+            cleanup_interrupted_restore()
+        elif any(DATA_DIR.iterdir()):
+            raise ValueError("restore requires an empty data directory")
+        else:
+            marker.touch(mode=0o600, exist_ok=False)
+            os.fsync(descriptor)
+        try:
+            install_backup_archive(payload, dsn)
+            (DATA_DIR / RESTORE_STAGE).rmdir()
+            os.fsync(descriptor)
+        except Exception:
+            cleanup_interrupted_restore()
+            marker.unlink()
+            raise
+        marker.unlink()
+        os.fsync(descriptor)
+
+
+def install_backup_archive(payload, dsn):
+    """Restore into an unused data directory while the server is stopped."""
+    json_types = {
+        "users.json": list,
+        "settings.json": dict,
+        "mita-server.json": dict,
+        "options.json": dict,
+    }
+    root = DATA_DIR / RESTORE_STAGE
+    root.mkdir(mode=0o700)
+    seen = set()
+    total = 0
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r|gz") as archive:
+        for member in archive:
+            name = member.name
+            parts = name.split("/")
+            if (name in seen or not member.isfile()
+                    or any(part in ("", ".", "..") for part in parts)
+                    or (name not in json_types
+                        and not (parts[0] == "mita-state" and len(parts) > 1))):
+                raise ValueError("backup contains an unsupported or duplicate path")
+            seen.add(name)
+            total += member.size
+            if total > BACKUP_MAX_UNCOMPRESSED_BYTES:
+                raise ValueError("backup exceeds maximum uncompressed size")
+            data = archive.extractfile(member).read()
+            if name in json_types:
+                value = json.loads(data)
+                if not isinstance(value, json_types[name]):
+                    raise ValueError("backup contains invalid JSON state")
+                if name == "settings.json" and dsn is not None:
+                    value["postgres_dsn"] = dsn
+                    data = json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("xb") as file:
+                file.write(data)
+            path.chmod(0o600)
+    if not {"users.json", "settings.json"} <= seen:
+        raise ValueError("backup is missing required state")
+
+    for path in root.iterdir():
+        path.rename(DATA_DIR / path.name)
+
+
+def restore_postgres_backup(dsn, backup_id):
+    if psycopg2 is None:
+        raise RuntimeError("psycopg2 is not installed")
+    with contextlib.closing(psycopg2.connect(dsn, connect_timeout=8)) as connection:
+        with connection.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, checksum_sha256, payload FROM mita_backups
+                WHERE (%s::bigint IS NULL OR id = %s)
+                ORDER BY created_at DESC, id DESC LIMIT 1
+                """,
+                (backup_id, backup_id),
+            )
+            record = cur.fetchone()
+    if record is None:
+        raise ValueError("no matching PostgreSQL backup")
+    identifier, checksum, payload = record
+    restore_backup_archive(bytes(payload), checksum, dsn)
+    return identifier
+
+
 def backup_db_worker():
     """Back up on every server start, then every 24h; retry failed jobs."""
     if psycopg2 is None:
@@ -558,9 +684,32 @@ def normalize_contact_email(value):
     return address
 
 
+def is_standalone():
+    return os.environ.get("MITA_STANDALONE") == "1"
+
+
 def initialize():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with data_directory_lock():
+        if (DATA_DIR / RESTORE_MARKER).exists():
+            raise StateError("restore was interrupted; rerun the restore command before starting Mita")
+        initialize_state()
+
+
+def initialize_state():
     options = load_options()
+    if is_standalone():
+        options.setdefault("public_mieru_host", os.environ.get("MITA_PUBLIC_HOST", "localhost"))
+        if not SETTINGS_PATH.exists() and "public_mieru_port" not in options:
+            try:
+                public_port = int(os.environ.get("MITA_PUBLIC_PORT", "2022"))
+            except ValueError as exc:
+                raise StateError("MITA_PUBLIC_PORT must be an integer between 1 and 65535") from exc
+            if not 1 <= public_port <= 65535:
+                raise StateError("MITA_PUBLIC_PORT must be an integer between 1 and 65535")
+            options["public_mieru_port"] = public_port
+        options.setdefault("subscription_base_url", os.environ.get(
+            "MITA_SUBSCRIPTION_BASE_URL", "http://localhost:8099"))
+        options.setdefault("postgres_dsn", os.environ.get("MITA_POSTGRES_DSN", ""))
 
     if not USERS_PATH.exists():
         default_private = bool(options.get("allow_private_ip", False))
@@ -708,15 +857,494 @@ def parse_password(body):
     return value, ""
 
 
+def normalize_egress_domain(value, wildcard=False):
+    if not isinstance(value, str):
+        raise ValueError("domain or proxy host must be a string")
+    if wildcard and value == "*":
+        return value
+    value = value.lower().removesuffix(".")
+    labels = value.split(".")
+    if len(value) > 253 or any(
+        not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+        for label in labels
+    ):
+        raise ValueError("invalid domain or proxy host (use ASCII or punycode)")
+    return value
+
+
+def normalize_egress(value, *, destination_limit=256):
+    """Validate the supported subset of Mita's native egress schema."""
+    def object_fields(item, allowed, label):
+        if not isinstance(item, dict) or set(item) - allowed:
+            raise ValueError(f"{label}: invalid object or unknown field")
+
+    def items(item, key, limit):
+        values = item.get(key, [])
+        if not isinstance(values, list) or len(values) > limit:
+            raise ValueError(f"{key} must be an array with at most {limit} entries")
+        return values
+
+    object_fields(value, {"proxies", "rules"}, "Outbound")
+    proxies = []
+    names = set()
+    for proxy in items(value, "proxies", 32):
+        object_fields(proxy, {"name", "protocol", "host", "port", "socks5Authentication"}, "Proxy")
+        name = proxy.get("name")
+        if not isinstance(name, str) or not USERNAME_RE.fullmatch(name) or name in names:
+            raise ValueError("proxy names must be valid and unique")
+        names.add(name)
+        protocol = "SOCKS5_PROXY_PROTOCOL"
+        if proxy.get("protocol", protocol) != protocol:
+            raise ValueError("Mita outbound supports only SOCKS5")
+        port = proxy.get("port")
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError("proxy port must be an integer between 1 and 65535")
+        host = proxy.get("host")
+        if not isinstance(host, str):
+            raise ValueError("proxy host must be a string")
+        try:
+            host = str(ipaddress.ip_address(host))
+        except ValueError:
+            host = normalize_egress_domain(host)
+        entry = {"name": name, "protocol": protocol, "host": host, "port": port}
+        if "socks5Authentication" in proxy:
+            auth = proxy["socks5Authentication"]
+            object_fields(auth, {"user", "password"}, "SOCKS5 authentication")
+            for key in ("user", "password"):
+                field = auth.get(key)
+                if not isinstance(field, str) or not field or len(field.encode("utf-8", errors="replace")) > 255 or any(
+                    ord(char) < 32 or ord(char) == 127 or 0xD800 <= ord(char) <= 0xDFFF for char in field
+                ):
+                    raise ValueError("SOCKS5 credentials must be 1 to 255 UTF-8 bytes without control characters")
+            entry["socks5Authentication"] = auth.copy()
+        proxies.append(entry)
+
+    rules = []
+    for rule in items(value, "rules", 128):
+        object_fields(rule, {"domainNames", "ipRanges", "action", "proxyNames"}, "Rule")
+        domains = [normalize_egress_domain(v, wildcard=True) for v in items(rule, "domainNames", destination_limit)]
+        ranges = []
+        for value in items(rule, "ipRanges", destination_limit):
+            if not isinstance(value, str) or (value != "*" and "/" not in value):
+                raise ValueError("IP ranges must be CIDR strings or *")
+            ranges.append("*" if value == "*" else str(ipaddress.ip_network(value, strict=False)))
+        if not domains and not ranges:
+            raise ValueError("each rule needs a domain or IP range")
+        action = rule.get("action")
+        if action not in ("PROXY", "DIRECT", "REJECT"):
+            raise ValueError("rule action must be PROXY, DIRECT, or REJECT")
+        references = items(rule, "proxyNames", 32)
+        if action == "PROXY":
+            if not references or any(not isinstance(ref, str) or ref not in names for ref in references):
+                raise ValueError("PROXY rule must reference defined proxies")
+        elif references:
+            raise ValueError("only PROXY rules may reference proxies")
+        rules.append({"domainNames": domains, "ipRanges": ranges, "action": action, "proxyNames": references})
+    return {"proxies": proxies, "rules": rules}
+
+
+SING_BOX_BINARY = Path("/usr/local/bin/sing-box")
+SING_BOX_PORT = 1081
+SING_BOX_PROXY_NAME = "managed-sing-box"
+SING_BOX_TYPES = {"vless", "shadowsocks", "trojan", "hysteria2", "socks"}
+
+
+def sing_box_available():
+    return is_standalone() and os.access(SING_BOX_BINARY, os.X_OK)
+
+
+def validate_sing_box_outbound(outbound):
+    if not isinstance(outbound, dict) or not isinstance(outbound.get("type"), str):
+        raise ValueError("provide one sing-box outbound JSON object")
+    protocol = outbound["type"]
+    if protocol not in SING_BOX_TYPES:
+        raise ValueError("supported outbound types: VLESS, Shadowsocks, Trojan, Hysteria2 and SOCKS")
+    server = outbound.get("server")
+    if not isinstance(server, str) or not server.strip() or any(c.isspace() for c in server):
+        raise ValueError("sing-box outbound requires a server hostname or IP")
+    port = outbound.get("server_port")
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("sing-box outbound requires server_port between 1 and 65535")
+    required = {
+        "vless": ("uuid",),
+        "shadowsocks": ("method", "password"),
+        "trojan": ("password",),
+        "hysteria2": ("password",),
+        "socks": (),
+    }
+    for key in required[protocol]:
+        if not isinstance(outbound.get(key), str) or not outbound[key].strip():
+            raise ValueError(f"sing-box outbound requires {key}")
+
+
+def sing_box_config(settings):
+    validate_sing_box_outbound(settings["outbound"])
+    return {
+        "inbounds": [{
+            "type": "socks",
+            "listen": "127.0.0.1",
+            "listen_port": SING_BOX_PORT,
+            "users": [{"username": "mita", "password": settings["password"]}],
+        }],
+        "outbounds": [dict(settings["outbound"], tag="upstream")],
+        "route": {"final": "upstream"},
+    }
+
+
+GEO_REFRESH_INTERVAL = 24 * 60 * 60
+GEO_MAX_BYTES = 4 * 1024 * 1024
+GEO_DESTINATION_LIMIT = 16384
+
+
+class NoGeoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # A repository URL must not turn into a request to another service.
+        return None
+
+
+def normalize_geo_urls(urls):
+    if not isinstance(urls, list) or len(urls) > 4:
+        raise ValueError("provide up to four GitHub GeoSite / GeoIP URLs")
+    normalized = []
+    for url in urls:
+        if not isinstance(url, str) or len(url) > 2048:
+            raise ValueError("invalid GitHub Geo URL")
+        parsed = urllib.parse.urlsplit(url.strip())
+        parts = parsed.path.split("/")[1:]
+        if (parsed.scheme != "https" or parsed.query or parsed.fragment
+                or not all(re.fullmatch(r"[A-Za-z0-9_.-]+", part) and part not in (".", "..")
+                           for part in parts)):
+            raise ValueError("use an HTTPS GitHub link to a source JSON file")
+        if parsed.netloc == "github.com" and len(parts) >= 5 and parts[2] == "blob":
+            parts.pop(2)
+        elif parsed.netloc != "raw.githubusercontent.com":
+            raise ValueError("use github.com/.../blob/... or raw.githubusercontent.com")
+        if len(parts) < 4 or not parts[-1].lower().endswith(".json"):
+            raise ValueError("Geo links must point to a source .json file")
+        normalized.append("https://raw.githubusercontent.com/" + "/".join(parts))
+    return list(dict.fromkeys(normalized))
+
+
+def parse_geo_source(source):
+    if (not isinstance(source, dict) or type(source.get("version")) is not int
+            or source["version"] not in (1, 2, 3, 4)
+            or not isinstance(source.get("rules"), list) or not source["rules"]):
+        raise ValueError("expected a sing-box source rule set with version and rules")
+    domains, ip_ranges, skipped = [], [], set()
+    domain_selectors = {"domain", "domain_suffix", "domain_regex", "domain_keyword"}
+    for rule in source["rules"]:
+        if not isinstance(rule, dict):
+            raise ValueError("Geo rule must be an object")
+        keys = set(rule) - {"type"}
+        if rule.get("type", "default") != "default" or not (
+            keys == {"ip_cidr"} or keys and keys <= domain_selectors
+        ):
+            skipped.add("compound rules")
+            continue
+        skipped.update(keys & {"domain", "domain_regex", "domain_keyword"})
+        for key, target in (("domain_suffix", domains), ("ip_cidr", ip_ranges)):
+            if key not in rule:
+                continue
+            values = rule[key]
+            if isinstance(values, str):
+                values = [values]
+            if not isinstance(values, list):
+                skipped.add(f"invalid {key} entries")
+                continue
+            for value in values:
+                if key == "domain_suffix" and isinstance(value, str) and value.strip().startswith("."):
+                    skipped.add("subdomain-only suffixes")
+                    continue
+                try:
+                    if not isinstance(value, str):
+                        raise ValueError()
+                    value = value.strip()
+                    if key == "domain_suffix":
+                        if not value.isascii():
+                            raise ValueError()
+                        value = normalize_egress_domain(value)
+                    else:
+                        if "/" not in value:
+                            raise ValueError()
+                        network = ipaddress.ip_network(value, strict=False)
+                        if network.prefixlen == 0:
+                            raise ValueError()
+                        value = str(network)
+                except ValueError:
+                    skipped.add("invalid domain suffixes" if key == "domain_suffix" else "invalid CIDRs")
+                    continue
+                target.append(value)
+    if not domains and not ip_ranges:
+        raise ValueError("Geo rule set has no compatible domain suffixes or CIDRs")
+    return domains, ip_ranges, sorted(skipped)
+
+
+def download_geo_sources(urls):
+    opener = urllib.request.build_opener(NoGeoRedirects())
+    domains, ip_ranges, skipped = [], [], set()
+    for url in normalize_geo_urls(urls):
+        try:
+            with opener.open(url, timeout=8) as response:
+                payload = response.read(GEO_MAX_BYTES + 1)
+        except (OSError, ValueError, HTTPException) as exc:
+            raise ValueError("could not download GitHub Geo rule set") from exc
+        if len(payload) > GEO_MAX_BYTES:
+            raise ValueError("GitHub Geo rule set exceeds 4 MiB")
+        try:
+            source = json.loads(payload)
+        except (ValueError, RecursionError) as exc:
+            raise ValueError("GitHub Geo rule set is not valid JSON") from exc
+        source_domains, source_ranges, source_skipped = parse_geo_source(source)
+        domains.extend(source_domains)
+        ip_ranges.extend(source_ranges)
+        skipped.update(source_skipped)
+    return {
+        "domains": list(dict.fromkeys(domains)),
+        "ip_ranges": list(dict.fromkeys(ip_ranges)),
+        "skipped": sorted(skipped),
+    }
+
+
+def limit_geo_snapshot(snapshot, domains, ip_ranges):
+    """Fill the remaining capacity with distinct remote entries in source order."""
+    limited = {}
+    skipped = set(snapshot.get("skipped", []))
+    for key, manual, label in (
+        ("domains", domains, "domain suffixes"), ("ip_ranges", ip_ranges, "CIDRs"),
+    ):
+        if key == "domains":
+            seen = {normalize_egress_domain(value) for value in manual}
+        else:
+            seen = {str(ipaddress.ip_network(value, strict=False)) for value in manual}
+        imported = []
+        overflow = 0
+        for value in snapshot.get(key, []):
+            if value in seen:
+                continue
+            seen.add(value)
+            if len(seen) <= GEO_DESTINATION_LIMIT:
+                imported.append(value)
+            else:
+                overflow += 1
+        if overflow:
+            skipped.add(f"{overflow} {label} beyond the {GEO_DESTINATION_LIMIT} entry limit")
+        limited[key] = imported
+    return dict(limited, skipped=sorted(skipped))
+
+
+def refresh_geo_sources():
+    with LOCK:
+        bridge = get_settings().get("sing_box") or {}
+        urls = bridge.get("geo_urls", [])
+    if not urls:
+        return
+    downloaded = download_geo_sources(urls)
+    with LOCK:
+        settings = get_settings()
+        current = settings.get("sing_box")
+        if current != bridge:
+            return
+        downloaded = limit_geo_snapshot(downloaded, current["domains"], current.get("ip_ranges", []))
+        if current.get("geo_snapshot") == downloaded:
+            return
+        current["geo_snapshot"] = downloaded
+        current["geo_updated_at"] = utc_now()
+        managed_egress(settings)
+        write_json(SETTINGS_PATH, settings)
+        print("[web] GitHub Geo lists updated; restart Mita to apply", flush=True)
+
+
+def geo_refresh_worker():
+    while True:
+        time.sleep(GEO_REFRESH_INTERVAL)
+        try:
+            refresh_geo_sources()
+        except (ValueError, OSError, StateError):
+            print("[web] GitHub Geo update failed; keeping the previous lists", flush=True)
+
+
+def managed_egress(settings):
+    egress = normalize_egress(settings.get("egress", {}))
+    bridge = settings.get("sing_box")
+    if bridge is None:
+        return egress
+    if any(proxy["name"] == SING_BOX_PROXY_NAME for proxy in egress["proxies"]):
+        raise ValueError(f"{SING_BOX_PROXY_NAME} is reserved while built-in sing-box is enabled")
+    snapshot = bridge.get("geo_snapshot", {})
+    domains = list(dict.fromkeys(
+        normalize_egress_domain(value)
+        for value in bridge["domains"] + snapshot.get("domains", [])
+    ))
+    ip_ranges = list(dict.fromkeys(
+        str(ipaddress.ip_network(value, strict=False)) if "/" in value else value
+        for value in bridge.get("ip_ranges", []) + snapshot.get("ip_ranges", [])
+    ))
+    managed = normalize_egress({
+        "proxies": [{
+            "name": SING_BOX_PROXY_NAME,
+            "host": "127.0.0.1",
+            "port": SING_BOX_PORT,
+            "socks5Authentication": {"user": "mita", "password": bridge["password"]},
+        }],
+        "rules": [{
+            "domainNames": domains,
+            "ipRanges": ip_ranges,
+            "action": "PROXY",
+            "proxyNames": [SING_BOX_PROXY_NAME],
+        }],
+    }, destination_limit=GEO_DESTINATION_LIMIT)
+    rule = managed["rules"][0]
+    if "*" in rule["domainNames"] or any(
+        value == "*" or ipaddress.ip_network(value).prefixlen == 0
+        for value in rule["ipRanges"]
+    ):
+        raise ValueError("enter explicit domains or IP ranges for the managed sing-box rule")
+    egress["proxies"].extend(managed["proxies"])
+    egress["rules"] = managed["rules"] + egress["rules"]
+    return egress
+
+
+def proxy_outbound_names(egress):
+    return {proxy["name"] for proxy in egress["proxies"]}
+
+
+def validate_outbound_assignments(users, egress):
+    names = proxy_outbound_names(egress)
+    for user in users:
+        outbound = user.get("proxy_outbound", "")
+        if outbound and outbound not in names:
+            raise ValueError(f"Outbound {outbound!r} is still assigned to {user['username']}")
+
+
+class SingBoxBridge:
+    """Manage the bundled SOCKS5 listener within the Linux container."""
+
+    def __init__(self):
+        self.process = None
+
+    def running(self):
+        return self.process is not None and self.process.poll() is None
+
+    @staticmethod
+    def stop_process(process):
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+    def stop(self):
+        self.stop_process(self.process)
+        self.process = None
+
+    def start(self, settings):
+        try:
+            with socket.socket() as probe:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe.bind(("127.0.0.1", SING_BOX_PORT))
+        except OSError as exc:
+            raise ValueError(f"sing-box needs loopback port {SING_BOX_PORT} to be free") from exc
+
+        with tempfile.TemporaryDirectory(prefix="mita-sing-box-") as directory:
+            config = Path(directory) / "config.json"
+            write_json(config, sing_box_config(settings))
+            args = [str(SING_BOX_BINARY), "run", "-c", str(config)]
+            process = subprocess.Popen(
+                args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            try:
+                for _ in range(30):
+                    if process.poll() is not None:
+                        break
+                    try:
+                        with socket.create_connection(("127.0.0.1", SING_BOX_PORT), timeout=0.1):
+                            if process.poll() is None:
+                                self.process = process
+                                return
+                    except OSError:
+                        time.sleep(0.1)
+            finally:
+                if self.process is not process:
+                    self.stop_process(process)
+        raise ValueError("sing-box could not start its local SOCKS5 listener")
+
+    def replace(self, updated, previous, persist):
+        if updated is not None:
+            payload = json.dumps(sing_box_config(updated))
+            try:
+                result = subprocess.run(
+                    [str(SING_BOX_BINARY), "check", "-c", "/dev/stdin"],
+                    input=payload, text=True, capture_output=True, timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise ValueError("could not validate the sing-box configuration") from exc
+            if result.returncode:
+                raise ValueError("sing-box rejected the outbound configuration; check the provider JSON")
+
+        self.stop()
+        try:
+            if updated is not None:
+                self.start(updated)
+            persist()
+        except (ValueError, OSError) as original:
+            self.stop()
+            if previous is not None:
+                try:
+                    self.start(previous)
+                except (ValueError, OSError) as rollback:
+                    raise ValueError(f"{original}; previous sing-box also failed to restart: {rollback}") from original
+            raise
+
+
+SING_BOX = SingBoxBridge()
+
+
+def supervise_sing_box(stop_event):
+    delay = 1
+    while not stop_event.wait(delay):
+        with LOCK:
+            if stop_event.is_set():
+                return
+            try:
+                bridge = get_settings().get("sing_box")
+                if bridge and not SING_BOX.running():
+                    SING_BOX.start(bridge)
+                    print("[web] built-in sing-box restarted", flush=True)
+                delay = 1
+            except (ValueError, OSError, StateError):
+                delay = min(delay * 2, 60)
+                print(f"[web] built-in sing-box unavailable; retrying in {delay}s", flush=True)
+
+
+def admin_settings(settings):
+    settings = settings.copy()
+    if not is_standalone():
+        settings.pop("egress", None)
+        settings.pop("sing_box", None)
+    elif settings.get("sing_box"):
+        bridge = settings["sing_box"]
+        settings["sing_box"] = {
+            key: settings["sing_box"][key] for key in ("domains", "outbound", "ip_ranges", "geo_urls", "geo_updated_at")
+            if key in settings["sing_box"]
+        }
+        settings["sing_box"]["geo_skipped"] = bridge.get("geo_snapshot", {}).get("skipped", [])
+    return settings
+
+
 def build_mita_config(users, settings):
     """Construct the Mita config without filesystem or subprocess side effects."""
     dns_policy = "PREFER_IPv4" if settings.get("prefer_ipv4", True) else "USE_FIRST_IP"
+    standalone = is_standalone()
     mita_users = []
     for user in users:
         access = {
             "allowPrivateIP": bool(user.get("allow_private_ip", False)),
-            "allowLoopbackIP": bool(user.get("allow_loopback_ip", False)),
+            "allowLoopbackIP": not standalone and bool(user.get("allow_loopback_ip", False)),
         }
+        if standalone and user.get("proxy_outbound"):
+            access["proxyOutbound"] = user["proxy_outbound"]
         if user.get("legacy_enabled", True):
             mita_users.append({
                 "name": user["username"],
@@ -730,12 +1358,15 @@ def build_mita_config(users, settings):
                 **access,
             })
 
-    return {
+    config = {
         "portBindings": [{"port": 2022, "protocol": "TCP"}],
         "users": mita_users,
         "loggingLevel": settings.get("log_level", "INFO"),
         "dns": {"dualStack": dns_policy},
     }
+    if standalone and ("egress" in settings or settings.get("sing_box")):
+        config["egress"] = managed_egress(settings)
+    return config
 
 
 def rebuild_mita_config():
@@ -1106,6 +1737,7 @@ def public_user(user):
         "default_password": user.get("password") == PLACEHOLDER_PASSWORD,
         "device_limit": int(user.get("device_limit", 0) or 0),
         "devices": [public_device(d) for d in user.get("devices", [])],
+        **({"proxy_outbound": user.get("proxy_outbound", "")} if is_standalone() else {}),
     }
 
 
@@ -1234,12 +1866,12 @@ class CommonHandler(BaseHTTPRequestHandler):
             headers=headers,
         )
 
-    def read_json(self):
+    def read_json(self, max_bytes=65536):
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except (TypeError, ValueError) as exc:
             raise ValueError("invalid Content-Length") from exc
-        if length < 0 or length > 65536:
+        if length < 0 or length > max_bytes:
             raise ValueError("request size is invalid")
         raw = self.rfile.read(length) if length else b"{}"
         try:
@@ -1305,10 +1937,27 @@ ADMIN_ROUTES = [
     ("PATCH", USER, "update_user"),
     ("PUT", USER + r"/device-settings", "update_user"),  # kept for older UI builds
     ("PUT", r"/api/settings", "update_settings"),
+    ("PUT", r"/api/sing-box", "sing_box"),
     ("DELETE", USER + r"/devices/(?P<device_id>[A-Fa-f0-9]{16})", "delete_device"),
     ("DELETE", USER, "delete_user"),
 ]
 ADMIN_ROUTES = [(method, re.compile(pattern), name) for method, pattern, name in ADMIN_ROUTES]
+
+
+def standalone_admin_password():
+    password = os.environ.get("MITA_ADMIN_PASSWORD", "")
+    return password if len(password) >= 24 else ""
+
+
+def matches_admin_password(header, password):
+    scheme, _, encoded = header.partition(" ")
+    if scheme.lower() != "basic":
+        return False
+    try:
+        credentials = base64.b64decode(encoded, validate=True)
+    except ValueError:
+        return False
+    return secrets.compare_digest(credentials, f"admin:{password}".encode("utf-8"))
 
 
 class AdminHandler(CommonHandler):
@@ -1331,6 +1980,17 @@ class AdminHandler(CommonHandler):
         if not is_allowed_admin_client(self.client_address[0]):
             self.send_json(HTTPStatus.FORBIDDEN, {"error": "admin UI is only available through Home Assistant Ingress"})
             return
+        if is_standalone():
+            password = standalone_admin_password()
+            if not password:
+                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Linux admin password is not configured"})
+                return
+            if not matches_admin_password(self.headers.get("Authorization", ""), password):
+                self.send_json(
+                    HTTPStatus.UNAUTHORIZED, {"error": "admin credentials required"},
+                    headers={"WWW-Authenticate": 'Basic realm="Mita Linux", charset="UTF-8"'},
+                )
+                return
         path = urllib.parse.urlparse(self.path).path
         matches = [(m, r.fullmatch(path), name) for m, r, name in ADMIN_ROUTES]
         matches = [(m, match, name) for m, match, name in matches if match]
@@ -1372,7 +2032,16 @@ class AdminHandler(CommonHandler):
         self.send_bytes(HTTPStatus.OK, "text/html; charset=utf-8", PAGE, headers=ADMIN_PAGE_HEADERS)
 
     def route_get_state(self):
-        return HTTPStatus.OK, {"users": [public_user(u) for u in get_users()], "settings": get_settings()}
+        settings = get_settings()
+        standalone = is_standalone()
+        return HTTPStatus.OK, {
+            "users": [public_user(u) for u in get_users()],
+            "settings": admin_settings(settings),
+            "outbound_enabled": standalone,
+            "proxy_outbounds": sorted(proxy_outbound_names(managed_egress(settings))) if standalone else [],
+            "sing_box_available": sing_box_available(),
+            "sing_box_running": sing_box_available() and SING_BOX.running(),
+        }
 
     def route_get_traffic(self):
         try:
@@ -1456,9 +2125,22 @@ class AdminHandler(CommonHandler):
             limit = parse_int(body, "device_limit", int(user.get("device_limit", 0) or 0), 0, 100)
             if limit > 0 and len(user.get("devices", [])) > limit:
                 raise ValueError("device_limit is lower than the number of registered devices")
+            previous_outbound = user.get("proxy_outbound", "")
+            outbound = body.get("proxy_outbound", previous_outbound)
+            if "proxy_outbound" in body:
+                if not is_standalone():
+                    raise ValueError("outbound selection is only available on standalone Linux")
+                if not isinstance(outbound, str) or (
+                    outbound and outbound not in proxy_outbound_names(managed_egress(get_settings()))
+                ):
+                    raise ValueError("choose a configured proxy outbound or use the routing rule default")
+                if outbound:
+                    user["proxy_outbound"] = outbound
+                else:
+                    user.pop("proxy_outbound", None)
             user.update(after)
             user["device_limit"] = limit
-            if after != before:  # Access flags and legacy credentials live in the mita config.
+            if after != before or outbound != previous_outbound:
                 persist_and_reload(USERS_PATH, users, previous)
             else:
                 write_json(USERS_PATH, users)
@@ -1491,6 +2173,42 @@ class AdminHandler(CommonHandler):
         return HTTPStatus.OK, {"deleted": username, "mita_reloaded": True, "mita_output": reload_output}
 
     # ----- settings -----
+    def route_sing_box(self):
+        if not sing_box_available():
+            raise ApiError(HTTPStatus.NOT_FOUND, "built-in sing-box is only available in the Linux image")
+        body = self.read_json(max_bytes=6 * 1024 * 1024)
+        outbound = body.get("outbound")
+        disabling = outbound is None and body.get("enabled") is False
+        if not disabling:
+            validate_sing_box_outbound(outbound)
+            urls = normalize_geo_urls(body.get("geo_urls", []))
+            snapshot = download_geo_sources(urls) if urls else {}
+            domains = body.get("domains", [])
+            ip_ranges = body.get("ip_ranges", [])
+            if not isinstance(domains, list) or not isinstance(ip_ranges, list) or any(
+                not isinstance(value, str) for value in domains + ip_ranges
+            ):
+                raise ValueError("domains and IP ranges must be arrays of strings")
+        with LOCK:
+            settings = get_settings()
+            previous = settings.get("sing_box")
+            if disabling:
+                updated = None
+                settings.pop("sing_box", None)
+            else:
+                password = previous["password"] if previous else secrets.token_urlsafe(24)
+                updated = {
+                    "outbound": outbound, "domains": domains,
+                    "ip_ranges": ip_ranges, "password": password,
+                }
+                if urls:
+                    snapshot = limit_geo_snapshot(snapshot, domains, ip_ranges)
+                    updated.update(geo_urls=urls, geo_snapshot=snapshot, geo_updated_at=utc_now())
+                settings["sing_box"] = updated
+            validate_outbound_assignments(get_users(), managed_egress(settings))
+            SING_BOX.replace(updated, previous, lambda: write_json(SETTINGS_PATH, settings))
+        return HTTPStatus.OK, {"restart_required": True}
+
     def route_update_settings(self):
         body = self.read_json()
         with LOCK:
@@ -1521,6 +2239,13 @@ class AdminHandler(CommonHandler):
             if "contact_email" in body:
                 settings["contact_email"] = normalize_contact_email(body["contact_email"])
 
+            if "egress" in body:
+                if not is_standalone():
+                    raise ValueError("outbound is only available on standalone Linux")
+                settings["egress"] = normalize_egress(body["egress"])
+                validate_outbound_assignments(get_users(), managed_egress(settings))
+            egress_changed = settings.get("egress") != previous.get("egress")
+
             settings["public_mieru_host"] = host
             settings["public_mieru_port"] = port
             settings["subscription_base_url"] = base
@@ -1531,8 +2256,9 @@ class AdminHandler(CommonHandler):
                 write_json(SETTINGS_PATH, settings)
 
         return HTTPStatus.OK, {
-            "settings": settings,
-            "mita_reloaded": True,
+            "settings": admin_settings(settings),
+            "restart_required": egress_changed,
+            "mita_reloaded": settings.get("log_level", "INFO") != old_log_level,
             "mita_output": reload_output,
         }
 
@@ -1640,8 +2366,11 @@ class Server(ThreadingHTTPServer):
 
 
 def serve():
-    admin = Server(("0.0.0.0", ADMIN_PORT), AdminHandler)
+    admin_host = "127.0.0.1" if is_standalone() else "0.0.0.0"
+    admin = Server((admin_host, ADMIN_PORT), AdminHandler)
     sub = Server(("0.0.0.0", SUB_PORT), SubscriptionHandler)
+
+    stop_bridge = threading.Event()
 
     def shutdown_handler(signum, frame):
         threading.Thread(target=admin.shutdown, daemon=True).start()
@@ -1653,17 +2382,44 @@ def serve():
     threading.Thread(target=sub.serve_forever, name="subscription-server", daemon=True).start()
     threading.Thread(target=log_db_worker, name="postgres-log-forwarder", daemon=True).start()
     threading.Thread(target=backup_db_worker, name="postgres-backup-worker", daemon=True).start()
-    print("[web] admin UI listening on 8098 (Ingress only)", flush=True)
+    if sing_box_available():
+        threading.Thread(target=supervise_sing_box, args=(stop_bridge,), name="sing-box-supervisor", daemon=True).start()
+        threading.Thread(target=geo_refresh_worker, name="github-geo-refresh", daemon=True).start()
+    print(f"[web] admin UI listening on {admin_host}:{ADMIN_PORT}", flush=True)
     print("[web] subscription server listening on 8099", flush=True)
-    admin.serve_forever()
-    admin.server_close()
-    sub.server_close()
+    try:
+        admin.serve_forever()
+    finally:
+        stop_bridge.set()
+        with LOCK:
+            SING_BOX.stop()
+        admin.server_close()
+        sub.server_close()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--init", action="store_true")
+    parser.add_argument("--restore-postgres", metavar="BACKUP", help="latest or a numeric backup ID")
     args = parser.parse_args()
-    initialize()
+    if args.restore_postgres:
+        dsn = os.environ.get("MITA_POSTGRES_DSN", "").strip()
+        if not dsn:
+            parser.error("set MITA_POSTGRES_DSN to the database containing the backup")
+        try:
+            backup_id = None if args.restore_postgres == "latest" else int(args.restore_postgres)
+            identifier = restore_postgres_backup(dsn, backup_id)
+        except (ValueError, OSError, RuntimeError, tarfile.TarError) as exc:
+            parser.exit(1, f"Restore failed: {exc}\n")
+        except Exception:
+            parser.exit(1, "Restore failed while reading PostgreSQL. Check the DSN and table access.\n")
+        print(f"Restored PostgreSQL backup {identifier}")
+        raise SystemExit(0)
+    try:
+        if is_standalone() and not standalone_admin_password():
+            raise StateError("set MITA_ADMIN_PASSWORD to a password of at least 24 characters")
+        initialize()
+    except (StateError, ValueError, OSError) as exc:
+        parser.exit(1, f"Startup failed: {exc}\n")
     if not args.init:
         serve()

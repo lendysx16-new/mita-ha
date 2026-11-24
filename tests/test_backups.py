@@ -36,6 +36,57 @@ class BackupTests(unittest.TestCase):
         (self.root / "mita.log").write_text("private log record\n", encoding="utf-8")
         (self.root / "log-forwarder-state.json").write_text('{"offset":900}', encoding="utf-8")
 
+    def test_restore_round_trip_preserves_operational_state(self):
+        payload, names, checksum = app.build_backup_archive()
+        destination = self.root / "restored"
+        with mock.patch.object(app, "DATA_DIR", destination):
+            app.restore_backup_archive(payload, checksum, "postgresql://new-host/mita")
+            with self.assertRaisesRegex(ValueError, "empty data directory"):
+                app.restore_backup_archive(payload, checksum)
+
+        self.assertEqual(
+            {path.relative_to(destination).as_posix() for path in destination.rglob("*") if path.is_file()},
+            set(names),
+        )
+        for name in set(names) - {"settings.json"}:
+            self.assertEqual((destination / name).read_bytes(), (self.root / name).read_bytes())
+        settings = json.loads((destination / "settings.json").read_text())
+        self.assertEqual(settings["postgres_dsn"], "postgresql://new-host/mita")
+        self.assertEqual(settings["contact_email"], "support@example.com")
+
+    def test_interrupted_restore_blocks_start_and_can_be_retried(self):
+        payload, _, checksum = app.build_backup_archive()
+        destination = self.root / "restored"
+
+        def interrupt(*_):
+            (destination / "users.json").write_text("[]")
+            (destination / app.RESTORE_STAGE).mkdir()
+            raise KeyboardInterrupt
+
+        with mock.patch.object(app, "DATA_DIR", destination):
+            with mock.patch.object(app, "install_backup_archive", side_effect=interrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    app.restore_backup_archive(payload, checksum)
+            with self.assertRaisesRegex(app.StateError, "restore was interrupted"):
+                app.initialize()
+            app.restore_backup_archive(payload, checksum)
+        self.assertFalse((destination / app.RESTORE_MARKER).exists())
+        self.assertEqual((destination / "users.json").read_bytes(), (self.root / "users.json").read_bytes())
+        self.assertTrue((destination / "settings.json").exists())
+
+    def test_restore_rejects_corruption_and_unsafe_archive_without_writing(self):
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            archive.addfile(tarfile.TarInfo("mita-state/../../escape"))
+        payload = buffer.getvalue()
+        destination = self.root / "restored"
+        with mock.patch.object(app, "DATA_DIR", destination):
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                app.restore_backup_archive(payload, "invalid")
+            with self.assertRaisesRegex(ValueError, "unsupported or duplicate path"):
+                app.restore_backup_archive(payload, hashlib.sha256(payload).hexdigest())
+        self.assertEqual(list(destination.iterdir()), [])
+
     def test_snapshot_includes_userdata_settings_config_and_metrics_only(self):
         payload, names, checksum = app.build_backup_archive()
         self.assertEqual(hashlib.sha256(payload).hexdigest(), checksum)

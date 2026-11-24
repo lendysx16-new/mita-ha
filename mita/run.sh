@@ -26,10 +26,7 @@ with open("/data/users.json", "r", encoding="utf-8") as f:
 PY
 )"
 
-bashio::log.info "Starting mita on TCP port 2022"
-bashio::log.info "Configured users: ${USER_COUNT}"
-bashio::log.info "Admin UI is available through Home Assistant Ingress"
-bashio::log.info "Subscription server is listening on TCP port 8099"
+printf 'Starting Mita on TCP port 2022 with %s configured users\n' "${USER_COUNT}"
 
 touch /data/mita.log
 mita run > >(tee -a /data/mita.log) 2>&1 &
@@ -48,5 +45,5 @@ while kill -0 "${MITA_PID}" 2>/dev/null && kill -0 "${WEB_PID}" 2>/dev/null; do
   sleep 2
 done
 
-bashio::log.error "mita or admin/subscription server exited unexpectedly"
+echo "mita or admin/subscription server exited unexpectedly" >&2
 exit 1
