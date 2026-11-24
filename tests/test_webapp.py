@@ -105,6 +105,56 @@ class AdminAPITests(unittest.TestCase):
         users[0]["allow_loopback_ip"] = True
         self.assertFalse(app.build_mita_config(users, app.get_settings())["users"][0]["allowLoopbackIP"])
 
+    def test_subscription_preview_requires_auth_and_imports_grouped_clash_servers(self):
+        document = """
+proxies:
+  - {name: EU-A, type: trojan, server: a.example, port: 443, password: secret}
+  - {name: EU-B, type: ss, server: b.example, port: 8443, cipher: aes-128-gcm, password: secret}
+  - {name: Unavailable, type: wireguard, server: c.example, port: 443}
+proxy-groups:
+  - {name: Europe, type: select, proxies: [EU-A, EU-B]}
+  - {name: Main, type: select, proxies: [Europe, DIRECT]}
+"""
+        url = "https://provider.example/sub?token=private"
+        original = app.get_settings()
+        with mock.patch.object(app, "sing_box_available", return_value=True), mock.patch.object(
+            app, "fetch_outbound_subscription", return_value=document,
+        ) as fetch:
+            self.assertEqual(self.call("POST", "/api/outbound-subscription", {"url": url}, auth=False)[0], 401)
+            fetch.assert_not_called()
+            status, preview = self.call("POST", "/api/outbound-subscription", {"url": url})
+        self.assertEqual(status, 200)
+        fetch.assert_called_once_with(url)
+        self.assertEqual(preview["skipped"], 1)
+        self.assertEqual([node["name"] for node in preview["servers"]], ["EU-A", "EU-B"])
+        self.assertEqual([preview["groups"][i] for i in preview["servers"][1]["groups"]], ["Europe", "Main"])
+        self.assertEqual(preview["servers"][1]["config"]["type"], "shadowsocks")
+        self.assertNotIn(url, json.dumps(preview))
+        self.assertEqual(app.get_settings(), original)
+
+    def test_subscription_parser_reads_base64_share_links_and_sing_box_selectors(self):
+        uri = "trojan://secret@host.example:443#server-a"
+        encoded = base64.b64encode(uri.encode()).decode()
+        node = app.parse_subscription_servers(encoded)["servers"][0]
+        self.assertEqual(node["name"], "server-a")
+        profile = {"outbounds": [
+            {"tag": "select", "type": "selector", "outbounds": ["server-a"]},
+            dict(node["config"], tag="server-a"),
+        ]}
+        result = app.parse_subscription_servers(json.dumps(profile))
+        selected = result["servers"][0]
+        self.assertEqual([result["groups"][i] for i in selected["groups"]], ["select"])
+        self.assertNotIn("tag", selected["config"])
+
+    def test_subscription_download_keeps_targets_public(self):
+        for target in ("http://provider.example/sub", "https://u:p@provider.example"):
+            with self.assertRaises(ValueError):
+                app.fetch_outbound_subscription(target)
+        for ip in ("127.0.0.1", "192.168.1.1", "::1", "::ffff:127.0.0.1", "64:ff9b::7f00:1"):
+            with mock.patch.object(app.socket, "getaddrinfo", return_value=[(0, 0, 0, "", (ip, 443))]):
+                with self.assertRaisesRegex(ValueError, "public addresses"):
+                    app.public_subscription_address("provider.example", 443)
+
     def test_add_user_and_generate_password(self):
         status, data = self.call("POST", "/api/users", {"username": "second"})
         self.assertEqual(status, 201)

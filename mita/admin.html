@@ -479,6 +479,16 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
             <button id="addOutbound" class="btn" type="button">+ Add outbound</button>
           </div>
           <form id="outboundEditor" class="routing-editor" hidden autocomplete="off">
+            <details id="outboundSubscription">
+              <summary>Import from subscription URL</summary>
+              <div class="form-grid">
+                <label class="span-2">HTTPS subscription URL<input id="outboundSubscriptionUrl" type="password" maxlength="4096" autocomplete="off" spellcheck="false"></label>
+                <div class="span-2"><button id="loadOutboundSubscription" class="btn btn-secondary" type="button">Load servers</button></div>
+                <label id="outboundSubscriptionGroupField" hidden>Group<select id="outboundSubscriptionGroup"></select></label>
+                <label id="outboundSubscriptionServerField" hidden>Server<select id="outboundSubscriptionServer"></select></label>
+                <p id="outboundSubscriptionStatus" class="field-help span-2" role="status"></p>
+              </div>
+            </details>
             <div class="form-grid">
               <label>Name<input name="name" maxlength="64" pattern="[A-Za-z0-9_.\-]+" title="Letters, digits, _ . or -" placeholder="e.g. nl-hysteria" spellcheck="false"><span class="field-help" data-name-help>Used to pick this outbound in Routing or for an account. Leave empty to use the link's name. It cannot be renamed later.</span></label>
               <label class="span-2">Share link or sing-box JSON<textarea name="config" rows="6" required spellcheck="false" autocapitalize="off" placeholder="hysteria2://password@server:443?sni=server#NL&#10;vless://uuid@server:443?security=reality&amp;pbk=…#DE&#10;or one awgm-box outbound object"></textarea><span class="field-help">Supported links: hysteria2:// (hy2://), vless://, vmess://, trojan://, ss://, tuic://, socks5://, http://. The link is converted to an awgm-box outbound and checked by awgm-box before saving.</span></label>
@@ -634,6 +644,7 @@ const api = {
   deleteUser: username => request(userPath(username), {method: 'DELETE'}),
   updateUser: (username, body) => request(userPath(username), {method: 'PATCH', body}),
   removeDevice: (username, id) => request(userPath(username, 'devices', id), {method: 'DELETE'}),
+  outboundSubscription: url => request('api/outbound-subscription', {method: 'POST', body: {url}}),
   addOutbound: body => request('api/outbounds', {method: 'POST', body}),
   updateOutbound: (name, body) => request('api/outbounds/' + encodeURIComponent(name), {method: 'PUT', body}),
   deleteOutbound: name => request('api/outbounds/' + encodeURIComponent(name), {method: 'DELETE'}),
@@ -1452,14 +1463,90 @@ function renderRouting() {
     : html`<tr><td colspan="5" class="table-empty">No policies yet. All traffic connects directly.</td></tr>`);
 }
 
+let subscriptionServers = [];
+let subscriptionLoad = 0;
+let subscriptionSuggestedName = '';
+
+function clearOutboundSubscription() {
+  subscriptionLoad++;
+  subscriptionServers = [];
+  subscriptionSuggestedName = '';
+  $('#outboundSubscription').open = false;
+  $('#outboundSubscriptionUrl').value = '';
+  $('#outboundSubscriptionGroupField').hidden = true;
+  $('#outboundSubscriptionServerField').hidden = true;
+  $('#outboundSubscriptionGroup').value = '';
+  $('#outboundSubscriptionServer').value = '';
+  $('#outboundSubscriptionStatus').textContent = '';
+}
+
+function renderSubscriptionServers() {
+  const group = $('#outboundSubscriptionGroup').value;
+  const choices = subscriptionServers.map((server, index) => ({server, index}))
+    .filter(({server}) => !group || server.groups.includes(Number(group)));
+  setHTML($('#outboundSubscriptionServer'), [
+    html`<option value="">Choose a server</option>`,
+    ...choices.map(({server, index}) => html`<option value="${index}">${server.name} · ${protocolLabel(server.config)} · ${server.config.server}:${server.config.server_port}</option>`),
+  ]);
+  $('#outboundSubscriptionServer').value = '';
+}
+
+$('#loadOutboundSubscription').onclick = async () => {
+  const url = $('#outboundSubscriptionUrl').value.trim();
+  if (!url) { toast('Enter a subscription URL.', 'error'); return; }
+  const load = ++subscriptionLoad;
+  const status = $('#outboundSubscriptionStatus');
+  const button = $('#loadOutboundSubscription');
+  subscriptionServers = [];
+  $('#outboundSubscriptionGroupField').hidden = true;
+  $('#outboundSubscriptionServerField').hidden = true;
+  status.textContent = 'Loading servers…';
+  button.disabled = true;
+  try {
+    const result = await api.outboundSubscription(url);
+    if (load !== subscriptionLoad) return;
+    subscriptionServers = result.servers;
+    const groups = [...new Set(subscriptionServers.flatMap(server => server.groups))];
+    setHTML($('#outboundSubscriptionGroup'), [
+      html`<option value="">All servers</option>`,
+      ...groups.map(index => html`<option value="${index}">${result.groups[index]}</option>`),
+    ]);
+    $('#outboundSubscriptionGroup').value = '';
+    $('#outboundSubscriptionGroupField').hidden = !groups.length;
+    $('#outboundSubscriptionServerField').hidden = false;
+    renderSubscriptionServers();
+    status.textContent = plural(subscriptionServers.length, 'server', 'servers') + ' loaded'
+      + (result.skipped ? ' · ' + result.skipped + ' unsupported entries skipped' : '');
+  } catch (error) {
+    if (load === subscriptionLoad) status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+};
+
+$('#outboundSubscriptionGroup').onchange = renderSubscriptionServers;
+$('#outboundSubscriptionServer').onchange = () => {
+  const value = $('#outboundSubscriptionServer').value;
+  const server = value === '' ? null : subscriptionServers[Number(value)];
+  if (!server) return;
+  const fields = $('#outboundEditor').elements;
+  fields.config.value = JSON.stringify(server.config, null, 2);
+  if (!fields.name.readOnly && (!fields.name.value.trim() || fields.name.value === subscriptionSuggestedName)) {
+    subscriptionSuggestedName = server.name.replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+    fields.name.value = subscriptionSuggestedName;
+  }
+};
+
 function closeRoutingEditor(kind) {
   routingEdit[kind] = null;
   const form = $(kind === 'outbound' ? '#outboundEditor' : '#listEditor');
   form.hidden = true;
   if (typeof form.reset === 'function') form.reset();
+  if (kind === 'outbound') clearOutboundSubscription();
 }
 function openOutboundEditor(name) {
   closeRoutingEditor('list');
+  clearOutboundSubscription();
   const form = $('#outboundEditor');
   const saved = name ? savedOutbounds().find(o => o.name === name) : null;
   routingEdit.outbound = saved ? saved.name : '';

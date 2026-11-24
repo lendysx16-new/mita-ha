@@ -31,8 +31,13 @@ try:
     import psycopg2
 except ImportError:
     psycopg2 = None
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
 from http import HTTPStatus
-from http.client import HTTPException
+from http.client import HTTPException, HTTPSConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -1283,6 +1288,248 @@ def parse_outbound_config(value):
     outbound = {key: item for key, item in value.items() if key != "tag"}
     validate_sing_box_outbound(outbound)
     return outbound, suggested
+
+
+SUBSCRIPTION_MAX_BYTES = 2 * 1024 * 1024
+SUBSCRIPTION_MAX_SERVERS = 512
+SUBSCRIPTION_MAX_GROUP_LINKS = 8192
+
+
+def public_subscription_address(host, port):
+    addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    if not addresses:
+        raise ValueError("subscription host has no public address")
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        ip = getattr(ip, "ipv4_mapped", None) or ip
+        if (not ip.is_global or ip.is_multicast or
+                (ip.version == 6 and (ip not in ipaddress.ip_network("2000::/3") or ip.sixtofour or ip.teredo))):
+            raise ValueError("subscription URL must resolve only to public addresses")
+    return addresses[0][4][0]
+
+
+class SubscriptionHTTPSConnection(HTTPSConnection):
+    def connect(self):
+        # Pin the checked address while retaining TLS validation for the URL's host.
+        address = public_subscription_address(self.host, self.port)
+        sock = socket.create_connection((address, self.port), self.timeout)
+        try:
+            self.sock = ssl.create_default_context().wrap_socket(sock, server_hostname=self.host)
+        except Exception:
+            sock.close()
+            raise
+
+
+def fetch_outbound_subscription(url):
+    if not isinstance(url, str) or len(url) > 4096:
+        raise ValueError("enter an HTTPS subscription URL")
+    deadline = time.monotonic() + 15
+    for _ in range(4):
+        if any(ord(char) <= 32 or ord(char) == 127 for char in url):
+            raise ValueError("enter an HTTPS subscription URL without spaces")
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            port = parsed.port if parsed.port is not None else 443
+            host = parsed.hostname
+        except ValueError as exc:
+            raise ValueError("invalid subscription URL") from exc
+        if (parsed.scheme != "https" or not host or parsed.username is not None
+                or parsed.fragment or "%" in host or not 1 <= port <= 65535):
+            raise ValueError("enter an HTTPS subscription URL without embedded credentials or fragment")
+        target = parsed.path or "/"
+        if parsed.query:
+            target += "?" + parsed.query
+        timeout = deadline - time.monotonic()
+        if timeout <= 0:
+            raise ValueError("subscription request timed out")
+        connection = SubscriptionHTTPSConnection(host, port, timeout=min(5, timeout))
+        try:
+            connection.request("GET", target, headers={"Accept-Encoding": "identity", "User-Agent": "Mita-Outbound"})
+            response = connection.getresponse()
+            if response.status in (301, 302, 303, 307, 308):
+                location = response.getheader("Location")
+                if not location or len(location) > 4096:
+                    raise ValueError("invalid subscription redirect")
+                url = urllib.parse.urljoin(url, location)
+                continue
+            if response.status != 200:
+                raise ValueError(f"subscription endpoint returned HTTP {response.status}")
+            payload = bytearray()
+            while len(payload) <= SUBSCRIPTION_MAX_BYTES:
+                if time.monotonic() >= deadline:
+                    raise ValueError("subscription request timed out")
+                block = response.read1(min(65536, SUBSCRIPTION_MAX_BYTES + 1 - len(payload)))
+                if not block:
+                    return payload.decode("utf-8-sig")
+                payload.extend(block)
+        except (OSError, HTTPException, UnicodeError) as exc:
+            raise ValueError("could not read the HTTPS subscription") from exc
+        finally:
+            connection.close()
+        raise ValueError("subscription response exceeds 2 MiB")
+    raise ValueError("too many subscription redirects")
+
+
+def clash_outbound(proxy):
+    protocol = {"ss": "shadowsocks", "socks5": "socks"}.get(proxy.get("type"), proxy.get("type"))
+    if protocol not in {"vless", "vmess", "trojan", "shadowsocks", "hysteria2", "tuic", "socks", "http"}:
+        raise ValueError("unsupported Clash proxy")
+    if any(proxy.get(field) for field in ("plugin", "dialer-proxy", "smux", "shadow-tls", "ech-opts")):
+        raise ValueError("unsupported Clash proxy options")
+    port = proxy.get("port")
+    if isinstance(port, str) and port.isascii() and port.isdecimal() and len(port) <= 5:
+        port = int(port)
+    outbound = {"type": protocol, "server": proxy.get("server"), "server_port": port}
+    for key in ("uuid", "password", "username", "flow"):
+        if key in proxy:
+            outbound[key] = proxy[key]
+    if protocol == "vmess":
+        outbound.update(security=proxy.get("cipher") or "auto", alter_id=proxy.get("alterId", 0))
+    elif protocol == "shadowsocks":
+        outbound["method"] = proxy.get("cipher")
+    elif protocol == "socks":
+        outbound["version"] = "5"
+    elif protocol == "tuic":
+        for key in ("congestion-controller", "udp-relay-mode"):
+            if key in proxy:
+                outbound[key.replace("-", "_").replace("controller", "control")] = proxy[key]
+    if "encryption" in proxy and proxy["encryption"] not in ("", "none"):
+        raise ValueError("unsupported Clash encryption setting")
+    if proxy.get("obfs"):
+        if protocol != "hysteria2" or proxy["obfs"] != "salamander":
+            raise ValueError("unsupported Clash obfuscation")
+        outbound["obfs"] = {"type": "salamander", "password": proxy.get("obfs-password", "")}
+
+    reality = proxy.get("reality-opts") or {}
+    alpn = proxy.get("alpn") or []
+    tls = _link_tls({
+        "security": "reality" if reality else "tls" if (
+            proxy.get("tls") or protocol in {"trojan", "hysteria2", "tuic"}
+        ) else "none",
+        "sni": proxy.get("servername") or proxy.get("sni"),
+        "allowInsecure": proxy.get("skip-cert-verify"),
+        "fp": proxy.get("client-fingerprint"),
+        "alpn": ",".join(alpn) if isinstance(alpn, list) else alpn,
+        "pbk": reality.get("public-key"),
+        "sid": reality.get("short-id"),
+    }, False)
+    if tls:
+        outbound["tls"] = tls
+    network = proxy.get("network") or "tcp"
+    if network not in ("tcp", "ws", "grpc", "httpupgrade"):
+        raise ValueError("unsupported Clash transport")
+    ws = proxy.get("ws-opts") or {}
+    grpc = proxy.get("grpc-opts") or {}
+    upgrade = proxy.get("http-upgrade-opts") or {}
+    transport = _link_transport({
+        "type": network,
+        "path": ws.get("path") if network == "ws" else upgrade.get("path"),
+        "serviceName": grpc.get("grpc-service-name", ""),
+        "host": upgrade.get("host"),
+    })
+    if transport:
+        if network == "ws":
+            for src, dst in (("headers", "headers"), ("max-early-data", "max_early_data"),
+                             ("early-data-header-name", "early_data_header_name")):
+                if src in ws:
+                    transport[dst] = ws[src]
+        outbound["transport"] = transport
+    return outbound
+
+
+def read_clash_subscription(text):
+    if yaml is None:
+        raise ValueError("Clash subscription import requires PyYAML")
+    try:
+        if any(isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken)) for token in yaml.scan(text)):
+            raise ValueError("Clash subscription cannot use YAML aliases")
+        return yaml.safe_load(text)
+    except (yaml.YAMLError, RecursionError) as exc:
+        raise ValueError("Clash subscription YAML is invalid") from exc
+
+
+def parse_subscription_servers(text):
+    """Return concrete servers and membership of groups defined in the subscription."""
+    text = text.strip()
+    try:
+        value = json.loads(text)
+    except (ValueError, RecursionError):
+        value = None
+    if value is None and re.search(r"(?m)^proxies\s*:", text):
+        value = read_clash_subscription(text)
+    clash = isinstance(value, dict) and "proxies" in value
+    if isinstance(value, dict):
+        entries = value.get("proxies" if clash else "outbounds")
+        groups = value.get("proxy-groups", []) if clash else [
+            item for item in (entries if isinstance(entries, list) else []) if isinstance(item, dict)
+            and item.get("type") in ("selector", "urltest")
+        ]
+    elif isinstance(value, list):
+        entries, groups = value, []
+    else:
+        if "://" not in text:
+            try:
+                text = _b64decode(text)
+            except ValueError as exc:
+                raise ValueError("unsupported subscription format") from exc
+        entries, groups = text.splitlines(), []
+    if not isinstance(entries, list) or not isinstance(groups, list):
+        raise ValueError("subscription must contain a server list")
+    if len(entries) > SUBSCRIPTION_MAX_SERVERS or len(groups) > SUBSCRIPTION_MAX_SERVERS:
+        raise ValueError("subscription exceeds the limit of 512 servers or groups")
+
+    members = {}
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        label = group.get("name" if clash else "tag")
+        children = group.get("proxies" if clash else "outbounds")
+        if isinstance(label, str) and label and isinstance(children, list):
+            members[label] = {child for child in children[:SUBSCRIPTION_MAX_SERVERS] if isinstance(child, str)}
+
+    if sum(map(len, members.values())) > SUBSCRIPTION_MAX_GROUP_LINKS:
+        raise ValueError("subscription contains too many group links")
+
+    def expand_group(name):
+        expanded, pending = set(), [name]
+        while pending:
+            child = pending.pop()
+            if child not in expanded:
+                expanded.add(child)
+                pending.extend(members.get(child, ()))
+        return expanded
+
+    group_names = list(members)
+    group_servers = [expand_group(name) for name in group_names]
+    servers, skipped = [], 0
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("type") in ("selector", "urltest", "direct", "block", "dns"):
+            continue
+        if isinstance(entry, str) and (not entry.strip() or entry.lstrip().startswith("#")):
+            continue
+        try:
+            if clash:
+                if not isinstance(entry, dict):
+                    raise ValueError()
+                name = entry.get("name")
+                outbound = clash_outbound(entry)
+                validate_sing_box_outbound(outbound)
+            else:
+                outbound, name = parse_outbound_config(entry)
+                if isinstance(entry, dict):
+                    name = entry.get("tag")
+        except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
+            skipped += 1
+            continue
+        name = name if isinstance(name, str) and name.strip() else outbound["server"]
+        servers.append({
+            "name": name[:160],
+            "groups": [index for index, children in enumerate(group_servers) if name in children],
+            "config": outbound,
+        })
+    if not servers:
+        raise ValueError("subscription contains no supported concrete servers")
+    return {"servers": servers, "groups": [name[:160] for name in group_names], "skipped": skipped}
 
 
 def outbound_entries(settings):
@@ -2995,6 +3242,7 @@ ADMIN_ROUTES = [
     ("PUT", USER + r"/device-settings", "update_user"),  # kept for older UI builds
     ("PUT", r"/api/settings", "update_settings"),
     ("POST", r"/api/outbounds", "add_outbound"),
+    ("POST", r"/api/outbound-subscription", "outbound_subscription"),
     ("POST", r"/api/mita/restart", "restart_mita"),
     ("PUT", OUTBOUND, "update_outbound"),
     ("POST", OUTBOUND + r"/test", "test_outbound"),
@@ -3260,6 +3508,13 @@ class AdminHandler(CommonHandler):
     def apply_outbounds(self, settings, previous_settings):
         validate_outbound_assignments(get_users(), managed_egress(settings))
         apply_routing(settings, previous_settings)
+
+    def route_outbound_subscription(self):
+        self.require_sing_box()
+        body = self.read_json(max_bytes=8192)
+        url = body.get("url")
+        result = parse_subscription_servers(fetch_outbound_subscription(url.strip() if isinstance(url, str) else url))
+        self.send_json(HTTPStatus.OK, result, headers={"Cache-Control": "no-store"})
 
     def route_add_outbound(self):
         self.require_sing_box()

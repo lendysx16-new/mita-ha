@@ -45,7 +45,7 @@ RUN case "${TARGETARCH}" in \
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates python3 python3-psycopg2 \
+    && apt-get install -y --no-install-recommends bash ca-certificates python3 python3-psycopg2 python3-yaml \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=mita-routed-builder /out/mita /usr/bin/mita
