@@ -1,3 +1,7 @@
+## 3.40.0.1
+
+- Updated the bundled Mita core to 3.40.0 for amd64 and aarch64. The release fixes private IP checks on outbound traffic and a race in per-user metrics.
+
 ## 3.39.0.3
 
 - Subscription page: added **SlothClash** (desktop) and **ClashFest** (Android), which send `x-hwid` by default, plus **Clash Party** (formerly Mihomo Party) and **Clash Meta for Android** without HWID. Every download pattern was checked against the clients' latest GitHub releases.

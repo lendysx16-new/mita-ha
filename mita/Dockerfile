@@ -2,7 +2,7 @@ ARG BUILD_ARCH
 FROM debian:bookworm-slim AS downloader
 
 ARG BUILD_ARCH
-ARG MITA_VERSION=3.39.0
+ARG MITA_VERSION=3.40.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
