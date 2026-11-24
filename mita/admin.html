@@ -125,7 +125,7 @@ code { font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }
 .form-grid > .span-2 { grid-column: 1 / -1; }
 label:not(.check) { display: flex; flex-direction: column; gap: 7px; font-size: 12px; font-weight: 580; }
 label input, label select, label textarea { font-weight: 400; }
-input:not([type="checkbox"]), select, #outboundConfig { width: 100%; min-width: 0; min-height: 40px; border: 1px solid var(--input); border-radius: var(--radius-sm); background: var(--card); padding: 9px 11px; box-shadow: 0 1px 2px rgba(0,0,0,.025); }
+input:not([type="checkbox"]), select, #outboundConfig, #singBoxConfig, #singBoxDomains { width: 100%; min-width: 0; min-height: 40px; border: 1px solid var(--input); border-radius: var(--radius-sm); background: var(--card); padding: 9px 11px; box-shadow: 0 1px 2px rgba(0,0,0,.025); }
 input::placeholder { color: var(--muted-foreground); opacity: .75; }
 input:not([type="checkbox"]):hover, select:hover { border-color: var(--ring); }
 input:not([type="checkbox"]):focus, select:focus { border-color: var(--ring); outline: 2px solid color-mix(in srgb, var(--ring) 18%, transparent); outline-offset: 0; }
@@ -306,7 +306,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
-#outboundConfig {
+#outboundConfig, #singBoxConfig, #singBoxDomains {
   box-sizing: border-box;
   width: 100%;
   resize: vertical;
@@ -454,6 +454,20 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
           </div></div>
           <div class="card-actions"><button id="saveSettings" class="btn" type="submit">Save connection</button></div>
         </form>
+        <form class="card" id="singBoxForm" hidden>
+          <div class="card-header"><div><h2>Built-in sing-box</h2><p class="card-subtitle">Paste one sing-box outbound object and enter the domains to route through it.</p></div></div>
+          <div class="card-body">
+            <p id="singBoxStatus" role="status"></p>
+            <div class="form-grid">
+              <label class="span-2">Provider outbound (JSON)<textarea id="singBoxConfig" rows="8" required spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
+              <label class="span-2">Domains (one per line)<textarea id="singBoxDomains" rows="3" required spellcheck="false" placeholder="example.com" autocapitalize="off"></textarea></label>
+            </div>
+          </div>
+          <div class="card-actions">
+            <button id="disableSingBox" class="btn btn-secondary" type="button" hidden>Disable</button>
+            <button id="enableSingBox" class="btn" type="submit">Set up sing-box</button>
+          </div>
+        </form>
         <form class="card" id="outboundForm" hidden>
           <div class="card-header"><div><h2>Outbound</h2><p class="card-subtitle">Route destinations through SOCKS5, connect directly, or block them. Rules run top to bottom. Restart Mita after saving.</p></div></div>
           <div class="card-body">
@@ -549,6 +563,7 @@ const api = {
   deleteUser: username => request(userPath(username), {method: 'DELETE'}),
   updateUser: (username, body) => request(userPath(username), {method: 'PATCH', body}),
   removeDevice: (username, id) => request(userPath(username, 'devices', id), {method: 'DELETE'}),
+  saveSingBox: body => request('api/sing-box', {method: 'PUT', body}),
   saveSettings: body => request('api/settings', {method: 'PUT', body}),
 };
 
@@ -949,6 +964,14 @@ function fillSettings(s) {
   $('#contactEmail').value = s.contact_email || '';
   $('#logLevel').value = s.log_level || 'INFO';
   $('#postgresDsn').value = s.postgres_dsn || '';
+  const bridge = s.sing_box;
+  $('#singBoxForm').hidden = !state.sing_box_available;
+  $('#singBoxStatus').textContent = state.sing_box_running
+    ? 'Local SOCKS5 is running.' : (bridge ? 'Local SOCKS5 is stopped.' : 'Not configured.');
+  $('#singBoxConfig').value = bridge ? JSON.stringify(bridge.outbound, null, 2) : '';
+  $('#singBoxDomains').value = bridge ? bridge.domains.join('\n') : '';
+  $('#disableSingBox').hidden = !bridge;
+  $('#enableSingBox').textContent = bridge ? 'Update sing-box' : 'Set up sing-box';
   const outboundEnabled = state.outbound_enabled === true;
   $('#outboundForm').hidden = !outboundEnabled;
   $('#outboundConfig').value = outboundEnabled
@@ -972,6 +995,8 @@ async function load() {
   state.users = data.users || [];
   state.settings = data.settings || {};
   state.outbound_enabled = data.outbound_enabled === true;
+  state.sing_box_available = data.sing_box_available === true;
+  state.sing_box_running = data.sing_box_running === true;
   renderStats();
   renderUsers();
   renderDeviceDirectory();
@@ -1080,6 +1105,21 @@ $('#connectionForm').addEventListener('submit', async e => {
   }), 'Connection settings saved');
   if (ok) fillSettings(state.settings);
 });
+$('#singBoxForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const ok = await mutate($('#enableSingBox'), () => api.saveSingBox({
+    outbound: JSON.parse($('#singBoxConfig').value),
+    domains: $('#singBoxDomains').value.split(/\r?\n/).map(value => value.trim()).filter(Boolean),
+  }), 'sing-box started. Restart Mita to apply the routing rule.');
+  if (ok) fillSettings(state.settings);
+});
+$('#disableSingBox').onclick = async () => {
+  if (!await confirmAction('Disable sing-box?', 'Affected domains will need a Mita restart to use the remaining rules.', 'Disable')) return;
+  const ok = await mutate($('#disableSingBox'), () => api.saveSingBox({
+    enabled: false,
+  }), 'sing-box stopped. Restart Mita to apply the routing change.');
+  if (ok) fillSettings(state.settings);
+};
 $('#outboundForm').addEventListener('submit', async e => {
   e.preventDefault();
   await mutate($('#saveOutbound'), () => api.saveSettings({

@@ -184,6 +184,49 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(app.get_settings()["egress"], settings["egress"])
 
+    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
+    @mock.patch.object(app, "sing_box_available", return_value=True)
+    def test_managed_sing_box_registers_proxy_and_rule(self, _available):
+        outbound = {
+            "type": "vless", "server": "provider.example", "server_port": 443,
+            "uuid": "00000000-0000-4000-8000-000000000000",
+        }
+        def persist(updated, previous, save):
+            save()
+
+        with mock.patch.object(app.SING_BOX, "replace", side_effect=persist) as replace:
+            status, result = self.call("PUT", "/api/sing-box", {
+                "outbound": outbound, "domains": ["Example.COM"],
+            })
+            self.assertEqual(status, 200)
+            self.assertTrue(result["restart_required"])
+            replace.assert_called_once()
+            settings = app.get_settings()
+            config = app.build_mita_config(app.get_users(), settings)["egress"]
+            self.assertEqual(config["rules"][0]["domainNames"], ["example.com"])
+            self.assertEqual(config["rules"][0]["proxyNames"], [app.SING_BOX_PROXY_NAME])
+            auth = config["proxies"][0]["socks5Authentication"]
+            self.assertEqual(auth["password"], settings["sing_box"]["password"])
+            _, state = self.call("GET", "/api/state")
+            self.assertNotIn("password", state["settings"]["sing_box"])
+
+            replace.side_effect = ValueError("sing-box rejected the config")
+            status, _ = self.call("PUT", "/api/sing-box", {
+                "outbound": outbound, "domains": ["new.example"],
+            })
+            self.assertEqual(status, 400)
+            self.assertEqual(app.get_settings(), settings)
+
+            replace.side_effect = persist
+            status, _ = self.call("PUT", "/api/sing-box", {"enabled": False})
+            self.assertEqual(status, 200)
+            self.assertNotIn("sing_box", app.get_settings())
+
+    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "0"})
+    def test_managed_sing_box_is_unavailable_on_home_assistant(self):
+        status, _ = self.call("PUT", "/api/sing-box", {"enabled": False})
+        self.assertEqual(status, 404)
+
     def test_settings_without_log_change_does_not_reload(self):
         status, _ = self.call("PUT", "/api/settings", {"public_mieru_port": 443})
         self.assertEqual(status, 200)

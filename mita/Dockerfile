@@ -18,7 +18,7 @@ RUN apt-get update \
        "https://github.com/enfein/mieru/releases/download/v${MITA_VERSION}/mita_${MITA_VERSION}_${DEB_ARCH}.deb" \
     && dpkg-deb -x /tmp/mita.deb /tmp/mita-root
 
-FROM ${MITA_BASE_IMAGE}
+FROM ${MITA_BASE_IMAGE} AS mita-runtime
 
 ARG BUILD_VERSION
 ARG BUILD_ARCH
@@ -47,3 +47,10 @@ RUN chmod 0755 /usr/bin/mita /run.sh /app/webapp.py \
     && chmod 0644 /app/subscription.html /app/admin.html /app/clients.json
 
 CMD ["/run.sh"]
+
+FROM ghcr.io/sagernet/sing-box:v1.14.4 AS sing-box
+
+FROM mita-runtime AS linux
+COPY --from=sing-box /usr/local/bin/sing-box /usr/local/bin/sing-box
+
+FROM mita-runtime AS home-assistant

@@ -93,6 +93,21 @@ For authentication, add `"socks5Authentication": {"user": "...", "password": "..
 to the proxy. PostgreSQL snapshots include the outbound settings and their
 credentials. The external sing-box configuration is a separate file.
 
+### Set up the built-in sing-box on Linux
+
+Build or update the Linux image with `docker compose up -d --build mita`.
+In **Settings → Built-in sing-box**, paste one provider outbound object in
+sing-box JSON format, enter the destination domains, then click **Set up
+sing-box**. The Linux image already contains the executable. The button
+validates the outbound, starts an authenticated local SOCKS5 listener on
+`127.0.0.1:1081`, and adds a rule for the selected domains ahead of the manual
+rules. Restart Mita with `docker compose restart mita` to apply the route.
+
+The provider config and domains are included in PostgreSQL backups. Treat
+these backups as confidential because the provider config may contain keys.
+The **Disable** button removes the managed rule and stops the listener.
+Restart Mita after disabling so it applies the remaining rules.
+
 ### Optional sing-box service on Linux
 
 Copy `sing-box/config.example.json` to `sing-box/config.json`. Keep its SOCKS5

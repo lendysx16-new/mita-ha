@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import signal
+import socket
 import subprocess
 import tarfile
 import tempfile
@@ -882,6 +883,160 @@ def normalize_egress(value):
     return {"proxies": proxies, "rules": rules}
 
 
+SING_BOX_BINARY = Path("/usr/local/bin/sing-box")
+SING_BOX_PORT = 1081
+SING_BOX_PROXY_NAME = "managed-sing-box"
+SING_BOX_TYPES = {"vless", "shadowsocks", "trojan", "hysteria2", "socks"}
+
+
+def sing_box_available():
+    return is_standalone() and os.access(SING_BOX_BINARY, os.X_OK)
+
+
+def validate_sing_box_outbound(outbound):
+    if not isinstance(outbound, dict) or not isinstance(outbound.get("type"), str):
+        raise ValueError("provide one sing-box outbound JSON object")
+    protocol = outbound["type"]
+    if protocol not in SING_BOX_TYPES:
+        raise ValueError("supported outbound types: VLESS, Shadowsocks, Trojan, Hysteria2 and SOCKS")
+    server = outbound.get("server")
+    if not isinstance(server, str) or not server.strip() or any(c.isspace() for c in server):
+        raise ValueError("sing-box outbound requires a server hostname or IP")
+    port = outbound.get("server_port")
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("sing-box outbound requires server_port between 1 and 65535")
+    required = {
+        "vless": ("uuid",),
+        "shadowsocks": ("method", "password"),
+        "trojan": ("password",),
+        "hysteria2": ("password",),
+        "socks": (),
+    }
+    for key in required[protocol]:
+        if not isinstance(outbound.get(key), str) or not outbound[key].strip():
+            raise ValueError(f"sing-box outbound requires {key}")
+
+
+def sing_box_config(settings):
+    validate_sing_box_outbound(settings["outbound"])
+    return {
+        "inbounds": [{
+            "type": "socks",
+            "listen": "127.0.0.1",
+            "listen_port": SING_BOX_PORT,
+            "users": [{"username": "mita", "password": settings["password"]}],
+        }],
+        "outbounds": [dict(settings["outbound"], tag="upstream")],
+        "route": {"final": "upstream"},
+    }
+
+
+def managed_egress(settings):
+    egress = normalize_egress(settings.get("egress", {}))
+    bridge = settings.get("sing_box")
+    if bridge is None:
+        return egress
+    if any(proxy["name"] == SING_BOX_PROXY_NAME for proxy in egress["proxies"]):
+        raise ValueError(f"{SING_BOX_PROXY_NAME} is reserved while built-in sing-box is enabled")
+    egress["proxies"].append({
+        "name": SING_BOX_PROXY_NAME,
+        "host": "127.0.0.1",
+        "port": SING_BOX_PORT,
+        "socks5Authentication": {"user": "mita", "password": bridge["password"]},
+    })
+    egress["rules"].insert(0, {
+        "domainNames": bridge["domains"],
+        "action": "PROXY",
+        "proxyNames": [SING_BOX_PROXY_NAME],
+    })
+    return normalize_egress(egress)
+
+
+class SingBoxBridge:
+    """Manage the bundled SOCKS5 listener within the Linux container."""
+
+    def __init__(self):
+        self.process = None
+
+    def running(self):
+        return self.process is not None and self.process.poll() is None
+
+    def stop(self):
+        if self.running():
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
+        self.process = None
+
+    def start(self, settings):
+        try:
+            with socket.socket() as probe:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe.bind(("127.0.0.1", SING_BOX_PORT))
+        except OSError as exc:
+            raise ValueError(f"sing-box needs loopback port {SING_BOX_PORT} to be free") from exc
+
+        with tempfile.TemporaryDirectory(prefix="mita-sing-box-") as directory:
+            config = Path(directory) / "config.json"
+            write_json(config, sing_box_config(settings))
+            args = [str(SING_BOX_BINARY), "run", "-c", str(config)]
+            self.process = subprocess.Popen(
+                args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            for _ in range(30):
+                if not self.running():
+                    break
+                try:
+                    with socket.create_connection(("127.0.0.1", SING_BOX_PORT), timeout=0.1):
+                        return
+                except OSError:
+                    time.sleep(0.1)
+        self.stop()
+        raise ValueError("sing-box could not start its local SOCKS5 listener")
+
+    def replace(self, updated, previous, persist):
+        if updated is not None:
+            payload = json.dumps(sing_box_config(updated))
+            try:
+                result = subprocess.run(
+                    [str(SING_BOX_BINARY), "check", "-c", "/dev/stdin"],
+                    input=payload, text=True, capture_output=True, timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise ValueError("could not validate the sing-box configuration") from exc
+            if result.returncode:
+                raise ValueError("sing-box rejected the outbound configuration; check the provider JSON")
+
+        self.stop()
+        try:
+            if updated is not None:
+                self.start(updated)
+            persist()
+        except (ValueError, OSError):
+            self.stop()
+            if previous is not None:
+                self.start(previous)
+            raise
+
+
+SING_BOX = SingBoxBridge()
+
+
+def admin_settings(settings):
+    settings = settings.copy()
+    if not is_standalone():
+        settings.pop("egress", None)
+        settings.pop("sing_box", None)
+    elif settings.get("sing_box"):
+        settings["sing_box"] = {
+            key: settings["sing_box"][key] for key in ("domains", "outbound")
+        }
+    return settings
+
+
 def build_mita_config(users, settings):
     """Construct the Mita config without filesystem or subprocess side effects."""
     dns_policy = "PREFER_IPv4" if settings.get("prefer_ipv4", True) else "USE_FIRST_IP"
@@ -910,8 +1065,8 @@ def build_mita_config(users, settings):
         "loggingLevel": settings.get("log_level", "INFO"),
         "dns": {"dualStack": dns_policy},
     }
-    if is_standalone() and "egress" in settings:
-        config["egress"] = normalize_egress(settings["egress"])
+    if is_standalone() and ("egress" in settings or settings.get("sing_box")):
+        config["egress"] = managed_egress(settings)
     return config
 
 
@@ -1482,6 +1637,7 @@ ADMIN_ROUTES = [
     ("PATCH", USER, "update_user"),
     ("PUT", USER + r"/device-settings", "update_user"),  # kept for older UI builds
     ("PUT", r"/api/settings", "update_settings"),
+    ("PUT", r"/api/sing-box", "sing_box"),
     ("DELETE", USER + r"/devices/(?P<device_id>[A-Fa-f0-9]{16})", "delete_device"),
     ("DELETE", USER, "delete_user"),
 ]
@@ -1549,14 +1705,12 @@ class AdminHandler(CommonHandler):
         self.send_bytes(HTTPStatus.OK, "text/html; charset=utf-8", PAGE, headers=ADMIN_PAGE_HEADERS)
 
     def route_get_state(self):
-        settings = get_settings()
-        outbound_enabled = is_standalone()
-        if not outbound_enabled:
-            settings.pop("egress", None)
         return HTTPStatus.OK, {
             "users": [public_user(u) for u in get_users()],
-            "settings": settings,
-            "outbound_enabled": outbound_enabled,
+            "settings": admin_settings(get_settings()),
+            "outbound_enabled": is_standalone(),
+            "sing_box_available": sing_box_available(),
+            "sing_box_running": sing_box_available() and SING_BOX.running(),
         }
 
     def route_get_traffic(self):
@@ -1676,6 +1830,31 @@ class AdminHandler(CommonHandler):
         return HTTPStatus.OK, {"deleted": username, "mita_reloaded": True, "mita_output": reload_output}
 
     # ----- settings -----
+    def route_sing_box(self):
+        if not sing_box_available():
+            raise ApiError(HTTPStatus.NOT_FOUND, "built-in sing-box is only available in the Linux image")
+        body = self.read_json()
+        with LOCK:
+            settings = get_settings()
+            previous = settings.get("sing_box")
+            outbound = body.get("outbound")
+            if outbound is None and body.get("enabled") is False:
+                updated = None
+                settings.pop("sing_box", None)
+            else:
+                validate_sing_box_outbound(outbound)
+                domains = body.get("domains")
+                rule = normalize_egress({"rules": [{"domainNames": domains, "action": "DIRECT"}]})
+                domains = rule["rules"][0]["domainNames"]
+                if "*" in domains:
+                    raise ValueError("enter explicit domains for the managed sing-box rule")
+                password = previous["password"] if previous else secrets.token_urlsafe(24)
+                updated = {"outbound": outbound, "domains": domains, "password": password}
+                settings["sing_box"] = updated
+                managed_egress(settings)
+            SING_BOX.replace(updated, previous, lambda: write_json(SETTINGS_PATH, settings))
+        return HTTPStatus.OK, {"restart_required": True}
+
     def route_update_settings(self):
         body = self.read_json()
         with LOCK:
@@ -1710,6 +1889,7 @@ class AdminHandler(CommonHandler):
                 if not is_standalone():
                     raise ValueError("outbound is only available on standalone Linux")
                 settings["egress"] = normalize_egress(body["egress"])
+                managed_egress(settings)
             egress_changed = settings.get("egress") != previous.get("egress")
 
             settings["public_mieru_host"] = host
@@ -1721,10 +1901,8 @@ class AdminHandler(CommonHandler):
             else:
                 write_json(SETTINGS_PATH, settings)
 
-        if not is_standalone():
-            settings.pop("egress", None)
         return HTTPStatus.OK, {
-            "settings": settings,
+            "settings": admin_settings(settings),
             "restart_required": egress_changed,
             "mita_reloaded": settings.get("log_level", "INFO") != old_log_level,
             "mita_output": reload_output,
@@ -1838,6 +2016,14 @@ def serve():
     admin = Server((admin_host, ADMIN_PORT), AdminHandler)
     sub = Server(("0.0.0.0", SUB_PORT), SubscriptionHandler)
 
+    if sing_box_available():
+        bridge = get_settings().get("sing_box")
+        if bridge is not None:
+            try:
+                SING_BOX.start(bridge)
+            except (ValueError, OSError):
+                print("[web] built-in sing-box failed to start; check the Outbound settings", flush=True)
+
     def shutdown_handler(signum, frame):
         threading.Thread(target=admin.shutdown, daemon=True).start()
         threading.Thread(target=sub.shutdown, daemon=True).start()
@@ -1850,9 +2036,13 @@ def serve():
     threading.Thread(target=backup_db_worker, name="postgres-backup-worker", daemon=True).start()
     print(f"[web] admin UI listening on {admin_host}:{ADMIN_PORT}", flush=True)
     print("[web] subscription server listening on 8099", flush=True)
-    admin.serve_forever()
-    admin.server_close()
-    sub.server_close()
+    try:
+        admin.serve_forever()
+    finally:
+        with LOCK:
+            SING_BOX.stop()
+        admin.server_close()
+        sub.server_close()
 
 
 if __name__ == "__main__":

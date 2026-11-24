@@ -2,6 +2,7 @@ services:
   mita:
     build:
       context: ./mita
+      target: linux
       args:
         MITA_BASE_IMAGE: debian:bookworm-slim
     entrypoint: ["/bin/bash", "/run.sh"]
