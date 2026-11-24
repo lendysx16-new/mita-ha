@@ -93,3 +93,12 @@ jobs:
           docker run --rm --network none --entrypoint /usr/local/bin/awgm-box mita-ci version
           docker build --target awgm-box-runtime -t awgm-box-ci mita
           docker run --rm --network none awgm-box-ci version
+
+      - name: awgm-box accepts the router config Mita generates
+        run: |
+          # Every outbound type the share-link parser produces, policies with a local
+          # rule set, reject/direct, Everything else and the PostgreSQL forward.
+          out="$PWD/ci-router"
+          python3 tests/render_router_config.py "$out"
+          docker run --rm --network none -v "$out:$out:ro" \
+            --entrypoint /usr/local/bin/awgm-box mita-ci check -c "$out/config.json"

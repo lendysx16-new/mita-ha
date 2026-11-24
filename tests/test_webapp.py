@@ -1498,3 +1498,32 @@ class GeoDatTests(unittest.TestCase):
             with mock.patch.object(app, "GEO_DAT_MAX_BYTES", 3), self.assertRaisesRegex(ValueError, "exceeds"):
                 app.fetch_geo_dat("geoip", "https://github.com/o/r/releases/latest/download/geoip.dat")
             self.assertFalse((self.dir / "geo-cache" / "geoip.dat").exists())
+
+
+class RouterConfigRenderTests(unittest.TestCase):
+    """tests/render_router_config.py feeds `awgm-box check` in CI; keep it complete."""
+
+    def test_rendered_config_covers_everything_mita_generates(self):
+        spec = importlib.util.spec_from_file_location(
+            "render_router_config", Path(__file__).resolve().parent / "render_router_config.py")
+        render = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(render)
+        with tempfile.TemporaryDirectory() as out:
+            config = render.render(out)
+            self.assertEqual(json.loads((Path(out) / "config.json").read_text()), config)
+            types = {outbound["type"] for outbound in config["outbounds"]}
+            self.assertEqual(types, {"hysteria2", "vless", "trojan", "shadowsocks", "tuic", "vmess", "socks", "direct"})
+            tags = {inbound["tag"] for inbound in config["inbounds"]}
+            self.assertTrue({"router", "probe-0", "via-0", "postgres"} <= tags)
+            rules = config["route"]["rules"]
+            self.assertTrue(any(rule.get("action") == "sniff" for rule in rules))
+            self.assertTrue(any(rule.get("action") == "reject" for rule in rules))
+            self.assertTrue(any(rule.get("outbound") == "direct" for rule in rules))
+            self.assertIn({"inbound": ["postgres"], "outbound": "out-2"}, rules)
+            rule_sets = config["route"]["rule_set"]
+            self.assertEqual(len(rule_sets), 1)
+            self.assertTrue(Path(rule_sets[0]["path"]).is_file())
+            self.assertTrue(rule_sets[0]["path"].startswith(str(Path(out).resolve())))
+            self.assertTrue(any(rule.get("rule_set") == [rule_sets[0]["tag"]] for rule in rules))
+            reality = next(o for o in config["outbounds"] if o.get("tls", {}).get("reality"))
+            self.assertEqual(len(base64.urlsafe_b64decode(reality["tls"]["reality"]["public_key"] + "=")), 32)

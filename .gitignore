@@ -23,3 +23,6 @@ Thumbs.db
 # Standalone sing-box configuration (may contain proxy credentials)
 /sing-box/config.json
 /awgm-box/config.json
+
+# Router config rendered for `awgm-box check` (tests/render_router_config.py)
+/ci-router/
