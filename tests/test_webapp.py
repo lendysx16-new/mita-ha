@@ -213,6 +213,9 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(put([{"domainNames": ["Example.COM"], "action": "DIRECT"},
                               {"ipRanges": ["198.51.100.7/24"], "action": "REJECT"}])[0], 200)
         self.assertEqual(app.get_settings()["egress"]["rules"][0]["domainNames"], ["example.com"])
+        self.assertEqual(put([{"domainNames": ["*.ru", ".su", "ru", "xn--p1ai"], "action": "DIRECT"}])[0], 200)
+        self.assertEqual(app.get_settings()["egress"]["rules"][0]["domainNames"], ["ru", "su", "xn--p1ai"])
+        self.assertEqual(put([{"domainNames": ["*.*.ru"], "action": "DIRECT"}])[0], 400)
         status, data = put([{"name": "All", "domainNames": ["*"], "action": "DIRECT"}])
         self.assertEqual(status, 400)
         self.assertIn("Everything else", data["error"])

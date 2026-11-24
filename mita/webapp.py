@@ -886,6 +886,16 @@ EGRESS_RULE_DESTINATION_LIMIT = 4096
 EGRESS_RULE_NAME_MAX = 64
 
 
+def strip_domain_wildcard(value):
+    if isinstance(value, str):
+        value = value.strip()
+        if value.startswith("*."):
+            return value[2:]
+        if value.startswith(".") and len(value) > 1:
+            return value[1:]
+    return value
+
+
 def normalize_egress(value, *, destination_limit=EGRESS_RULE_DESTINATION_LIMIT, extra_proxy_names=()):
     """Validate the supported subset of Mita's native egress schema.
 
@@ -947,7 +957,10 @@ def normalize_egress(value, *, destination_limit=EGRESS_RULE_DESTINATION_LIMIT, 
         ):
             raise ValueError(f"list names must be at most {EGRESS_RULE_NAME_MAX} characters without control characters")
         rule_name = rule_name.strip()
-        domains = [normalize_egress_domain(v, wildcard=True) for v in items(rule, "domainNames", destination_limit)]
+        # A domain already covers its subdomains, so "*.ru" and ".ru" mean the same as "ru".
+        domains = list(dict.fromkeys(
+            normalize_egress_domain(strip_domain_wildcard(v), wildcard=True)
+            for v in items(rule, "domainNames", destination_limit)))
         ranges = []
         for value in items(rule, "ipRanges", destination_limit):
             if not isinstance(value, str) or (value != "*" and "/" not in value):
