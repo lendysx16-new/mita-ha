@@ -86,3 +86,6 @@ jobs:
           PY
           node --check /tmp/mita-subscription.js
           node --test tests/test_subscription.mjs
+
+      - name: Build and test Linux Mita routing core
+        run: docker build --target mita-routed-builder mita

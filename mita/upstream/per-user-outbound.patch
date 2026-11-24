@@ -1,0 +1,71 @@
+--- a/pkg/appctl/proto/base.proto
++++ b/pkg/appctl/proto/base.proto
+@@ -109,6 +109,9 @@
+     // Allow user to use loopback IP as the destination.
+     // This field has no effect at the client side.
+     optional bool allowLoopbackIP = 6;
++
++    // Overrides the named outbound only when a server egress rule selects PROXY.
++    optional string proxyOutbound = 7;
+ }
+ 
+ message Quota {
+--- a/pkg/appctl/server.go
++++ b/pkg/appctl/server.go
+@@ -131,6 +131,7 @@
+ 		mux.Close()
+ 		return nil, fmt.Errorf(stderror.CreateSocks5ServerFailedErr, err)
+ 	}
++	socks5Server.SetProxyOutbounds(config.GetUsers())
+ 	return &serverProxy{mux: mux, socks5Server: socks5Server}, nil
+ }
+ 
+@@ -319,6 +320,9 @@
+ 		}
+ 
+ 		// Adjust users.
++		if server := socks5ServerRef.Load(); server != nil {
++			server.SetProxyOutbounds(config.GetUsers())
++		}
+ 		mux.SetServerUsers(appctlcommon.UserListToMap(config.GetUsers()))
+ 
+ 		// Adjust advanced settings: user hint is mandatory.
+--- a/pkg/socks5/egress.go
++++ b/pkg/socks5/egress.go
+@@ -85,7 +85,7 @@
+ 			return action
+ 		}
+ 		// 2. Check if the request should be forwarded to another proxy.
+-		return s.forwardToProxyAction(ctx, req)
++		return s.selectUserOutbound(in.Env["user"], s.forwardToProxyAction(ctx, req))
+ 	}
+ 	return egress.Action{
+ 		Action: appctlpb.EgressAction_DIRECT,
+--- a/pkg/socks5/socks5.go
++++ b/pkg/socks5/socks5.go
+@@ -6,6 +6,7 @@
+ 	"fmt"
+ 	"net"
+ 	"strconv"
++	"sync/atomic"
+ 	"time"
+ 
+ 	apicommon "github.com/enfein/mieru/v3/apis/common"
+@@ -84,11 +85,12 @@
+ // Server is responsible for accepting connections and handling
+ // the details of the SOCKS5 protocol
+ type Server struct {
+-	config      *Config
+-	listener    net.Listener
+-	chAccept    chan net.Conn
+-	chAcceptErr chan error
+-	die         chan struct{}
++	proxyOutbounds atomic.Pointer[map[string]string]
++	config         *Config
++	listener       net.Listener
++	chAccept       chan net.Conn
++	chAcceptErr    chan error
++	die            chan struct{}
+ }
+ 
+ // New creates a new Server and potentially returns an error.

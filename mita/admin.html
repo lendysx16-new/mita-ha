@@ -820,6 +820,10 @@ function renderUserDetail() {
         <label class="check"><input name="allow_private_ip" type="checkbox"${attr('checked', u.allow_private_ip)}>Allow private / LAN IPs</label>
         <label class="check"><input name="allow_loopback_ip" type="checkbox"${attr('checked', u.allow_loopback_ip)}>Allow loopback</label>
       </div>
+      ${state.outbound_enabled ? html`<label>Outbound for PROXY<select name="proxy_outbound">
+        <option value=""${attr('selected', !u.proxy_outbound)}>Routing rule default</option>
+        ${state.proxy_outbounds.map(name => html`<option value="${name}"${attr('selected', name === u.proxy_outbound)}>${name}</option>`)}
+      </select><span class="field-help">Applies to this account and all its devices when a server rule selects PROXY.</span></label>` : ''}
       <button class="btn" type="submit">Save</button>
     </form>
     <p class="field-help device-settings-note">With legacy disabled, clients without X-HWID cannot fetch the subscription. Supported clients can still register a new HWID on their first refresh.</p>
@@ -832,6 +836,7 @@ async function saveDeviceSettings(form) {
     legacy_enabled: form.elements.legacy_enabled.checked,
     allow_private_ip: form.elements.allow_private_ip.checked,
     allow_loopback_ip: form.elements.allow_loopback_ip.checked,
+    ...(form.elements.proxy_outbound ? {proxy_outbound: form.elements.proxy_outbound.value} : {}),
   }), 'User settings saved');
 }
 function hideDetailPassword() {
@@ -1005,6 +1010,7 @@ async function load() {
   state.users = data.users || [];
   state.settings = data.settings || {};
   state.outbound_enabled = data.outbound_enabled === true;
+  state.proxy_outbounds = data.proxy_outbounds || [];
   state.sing_box_available = data.sing_box_available === true;
   state.sing_box_running = data.sing_box_running === true;
   renderStats();

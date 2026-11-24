@@ -119,6 +119,21 @@ Restart Mita after disabling so it applies the remaining rules. If the
 built-in sing-box process exits, Mita retries it with increasing delays up
 to one minute.
 
+#### Choose an outbound for an account
+
+Define named SOCKS5 outbounds under **Settings → Outbound**, or use the
+built-in `managed-sing-box` outbound. Restart Mita after adding or changing an
+outbound or a routing rule. In the user's settings, select **Outbound for
+PROXY**. The selection applies to new connections from the account and its
+HWID devices. **Routing rule default** clears the override.
+
+All users share the same server-side GeoSite, GeoIP and other routing rules.
+Only a matched `PROXY` rule uses the selected outbound. `DIRECT`, `REJECT`
+and unmatched destinations keep their existing behavior. Client subscription
+URLs and configs stay the same. Clear any account selections before deleting
+the referenced outbound. This feature is available in the standalone Linux
+image.
+
 #### Import GeoSite and GeoIP lists
 
 Use **Import GeoSite / GeoIP** in the built-in sing-box form to select

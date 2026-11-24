@@ -1204,6 +1204,18 @@ def managed_egress(settings):
     return egress
 
 
+def proxy_outbound_names(egress):
+    return {proxy["name"] for proxy in egress["proxies"]}
+
+
+def validate_outbound_assignments(users, egress):
+    names = proxy_outbound_names(egress)
+    for user in users:
+        outbound = user.get("proxy_outbound", "")
+        if outbound and outbound not in names:
+            raise ValueError(f"Outbound {outbound!r} is still assigned to {user['username']}")
+
+
 class SingBoxBridge:
     """Manage the bundled SOCKS5 listener within the Linux container."""
 
@@ -1324,12 +1336,15 @@ def admin_settings(settings):
 def build_mita_config(users, settings):
     """Construct the Mita config without filesystem or subprocess side effects."""
     dns_policy = "PREFER_IPv4" if settings.get("prefer_ipv4", True) else "USE_FIRST_IP"
+    standalone = is_standalone()
     mita_users = []
     for user in users:
         access = {
             "allowPrivateIP": bool(user.get("allow_private_ip", False)),
-            "allowLoopbackIP": not is_standalone() and bool(user.get("allow_loopback_ip", False)),
+            "allowLoopbackIP": not standalone and bool(user.get("allow_loopback_ip", False)),
         }
+        if standalone and user.get("proxy_outbound"):
+            access["proxyOutbound"] = user["proxy_outbound"]
         if user.get("legacy_enabled", True):
             mita_users.append({
                 "name": user["username"],
@@ -1349,7 +1364,7 @@ def build_mita_config(users, settings):
         "loggingLevel": settings.get("log_level", "INFO"),
         "dns": {"dualStack": dns_policy},
     }
-    if is_standalone() and ("egress" in settings or settings.get("sing_box")):
+    if standalone and ("egress" in settings or settings.get("sing_box")):
         config["egress"] = managed_egress(settings)
     return config
 
@@ -1722,6 +1737,7 @@ def public_user(user):
         "default_password": user.get("password") == PLACEHOLDER_PASSWORD,
         "device_limit": int(user.get("device_limit", 0) or 0),
         "devices": [public_device(d) for d in user.get("devices", [])],
+        **({"proxy_outbound": user.get("proxy_outbound", "")} if is_standalone() else {}),
     }
 
 
@@ -2016,10 +2032,13 @@ class AdminHandler(CommonHandler):
         self.send_bytes(HTTPStatus.OK, "text/html; charset=utf-8", PAGE, headers=ADMIN_PAGE_HEADERS)
 
     def route_get_state(self):
+        settings = get_settings()
+        standalone = is_standalone()
         return HTTPStatus.OK, {
             "users": [public_user(u) for u in get_users()],
-            "settings": admin_settings(get_settings()),
-            "outbound_enabled": is_standalone(),
+            "settings": admin_settings(settings),
+            "outbound_enabled": standalone,
+            "proxy_outbounds": sorted(proxy_outbound_names(managed_egress(settings))) if standalone else [],
             "sing_box_available": sing_box_available(),
             "sing_box_running": sing_box_available() and SING_BOX.running(),
         }
@@ -2106,9 +2125,22 @@ class AdminHandler(CommonHandler):
             limit = parse_int(body, "device_limit", int(user.get("device_limit", 0) or 0), 0, 100)
             if limit > 0 and len(user.get("devices", [])) > limit:
                 raise ValueError("device_limit is lower than the number of registered devices")
+            previous_outbound = user.get("proxy_outbound", "")
+            outbound = body.get("proxy_outbound", previous_outbound)
+            if "proxy_outbound" in body:
+                if not is_standalone():
+                    raise ValueError("outbound selection is only available on standalone Linux")
+                if not isinstance(outbound, str) or (
+                    outbound and outbound not in proxy_outbound_names(managed_egress(get_settings()))
+                ):
+                    raise ValueError("choose a configured proxy outbound or use the routing rule default")
+                if outbound:
+                    user["proxy_outbound"] = outbound
+                else:
+                    user.pop("proxy_outbound", None)
             user.update(after)
             user["device_limit"] = limit
-            if after != before:  # Access flags and legacy credentials live in the mita config.
+            if after != before or outbound != previous_outbound:
                 persist_and_reload(USERS_PATH, users, previous)
             else:
                 write_json(USERS_PATH, users)
@@ -2173,7 +2205,7 @@ class AdminHandler(CommonHandler):
                     snapshot = limit_geo_snapshot(snapshot, domains, ip_ranges)
                     updated.update(geo_urls=urls, geo_snapshot=snapshot, geo_updated_at=utc_now())
                 settings["sing_box"] = updated
-                managed_egress(settings)
+            validate_outbound_assignments(get_users(), managed_egress(settings))
             SING_BOX.replace(updated, previous, lambda: write_json(SETTINGS_PATH, settings))
         return HTTPStatus.OK, {"restart_required": True}
 
@@ -2211,7 +2243,7 @@ class AdminHandler(CommonHandler):
                 if not is_standalone():
                     raise ValueError("outbound is only available on standalone Linux")
                 settings["egress"] = normalize_egress(body["egress"])
-                managed_egress(settings)
+                validate_outbound_assignments(get_users(), managed_egress(settings))
             egress_changed = settings.get("egress") != previous.get("egress")
 
             settings["public_mieru_host"] = host

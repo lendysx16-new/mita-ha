@@ -195,6 +195,55 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(app.build_mita_config(app.get_users(), app.get_settings())["egress"]["rules"], [])
 
+    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
+    def test_proxy_outbound_applies_to_account_and_devices_without_changing_subscription(self):
+        users = app.get_users()
+        device = {"mita_username": "dev_first", "password": "device-secret"}
+        users[0]["devices"] = [device]
+        app.write_json(app.USERS_PATH, users)
+        subscriptions = [
+            app.subscription_yaml(users[0]),
+            app.subscription_yaml(users[0], {**device, "username": "dev_first"}),
+        ]
+        rule = {"domainNames": ["example.com"], "action": "PROXY", "proxyNames": ["default"]}
+        proxies = [
+            {"name": "default", "host": "127.0.0.1", "port": 1081},
+            {"name": "west", "host": "127.0.0.1", "port": 1082},
+        ]
+        self.assertEqual(self.call("PUT", "/api/settings", {"egress": {"proxies": proxies, "rules": [rule]}})[0], 200)
+
+        path = "/api/users/first"
+        self.assertEqual(self.call("PATCH", path, {"proxy_outbound": "unknown"})[0], 400)
+        self.reload_mock.assert_not_called()
+        self.assertEqual(self.call("PATCH", path, {"proxy_outbound": "west"})[0], 200)
+        self.reload_mock.assert_called_once()
+        _, state = self.call("GET", "/api/state")
+        self.assertEqual(state["proxy_outbounds"], ["default", "west"])
+        self.assertEqual(state["users"][0]["proxy_outbound"], "west")
+
+        users = app.get_users()
+        config = app.build_mita_config(users, app.get_settings())
+        self.assertEqual({u["name"]: u["proxyOutbound"] for u in config["users"]},
+                         {"first": "west", "dev_first": "west"})
+        self.assertEqual(config["egress"]["rules"][0]["proxyNames"], ["default"])
+        self.assertEqual([
+            app.subscription_yaml(users[0]),
+            app.subscription_yaml(users[0], {**device, "username": "dev_first"}),
+        ], subscriptions)
+        self.assertEqual(self.call("PUT", "/api/settings", {
+            "egress": {"proxies": proxies[:1], "rules": [rule]},
+        })[0], 400)
+
+        self.reload_mock.side_effect = [(False, "reload failed"), (True, "")]
+        self.assertEqual(self.call("PATCH", path, {"proxy_outbound": ""})[0], 503)
+        self.assertEqual(app.get_users()[0]["proxy_outbound"], "west")
+        self.reload_mock.side_effect = None
+        self.assertEqual(self.call("PATCH", path, {"proxy_outbound": ""})[0], 200)
+        self.assertNotIn("proxy_outbound", app.get_users()[0])
+        self.assertEqual(self.call("PUT", "/api/settings", {
+            "egress": {"proxies": proxies[:1], "rules": [rule]},
+        })[0], 200)
+
     @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "0"})
     def test_home_assistant_ignores_and_hides_restored_outbound(self):
         settings = app.get_settings()

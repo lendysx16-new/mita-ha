@@ -246,6 +246,40 @@ test('outbound editor is available only in standalone Linux mode', async () => {
   }
 });
 
+test('account settings show and save a named outbound only on standalone Linux', async () => {
+  for (const enabled of [false, true]) {
+    const {ctx, element, state} = setup({outboundEnabled: enabled});
+    state.proxy_outbounds = ['east', 'west'];
+    state.users[0].proxy_outbound = 'west';
+    await ctx.load();
+    ctx.openUser('alice');
+    const details = element('#detailDeviceUsers').innerHTML;
+    if (!enabled) {
+      assert.doesNotMatch(details, /name="proxy_outbound"/);
+      continue;
+    }
+    assert.match(details, /<option value="east">east<\/option>/);
+    assert.match(details, /<option value="west" selected>west<\/option>/);
+    let payload;
+    const fetchState = ctx.fetch;
+    ctx.fetch = async (url, options) => {
+      if (options?.method === 'PATCH') {
+        payload = JSON.parse(options.body);
+        return {ok: true, json: async () => ({})};
+      }
+      return fetchState(url, options);
+    };
+    await ctx.saveDeviceSettings({
+      dataset: {deviceForm: 'alice'},
+      elements: {device_limit: {value: '2'}, legacy_enabled: {checked: true},
+        allow_private_ip: {checked: false}, allow_loopback_ip: {checked: false},
+        proxy_outbound: {value: 'east'}},
+      querySelector() { return element('#formSubmit'); },
+    });
+    assert.equal(payload.proxy_outbound, 'east');
+  }
+});
+
 test('Geo source import preserves suffix and CIDR selectors and rejects unsupported matches', () => {
   const {ctx} = setup();
   const source = {version: 3, rules: [
