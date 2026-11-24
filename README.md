@@ -137,6 +137,15 @@ snapshots and can be replaced by clearing the corresponding field and
 importing an updated file. Save and restart Mita to apply. The imported
 destinations are included in PostgreSQL backups.
 
+To track a GitHub list, paste up to four public GitHub file links or Raw JSON
+URLs into **GitHub Geo lists**. Saving downloads and validates the files.
+The running Linux service checks again every 24 hours. Successful changes
+replace the downloaded entries and preserve your manually entered lists.
+A failed download or invalid update keeps the last working snapshot.
+Restart Mita to apply a downloaded update. Links pinned to a commit or tag
+keep using that revision, while links to a branch follow its updates.
+[Example GeoIP source on GitHub](https://github.com/MetaCubeX/meta-rules-dat/blob/sing/geo/geoip/cn.json).
+
 ### Optional sing-box service on Linux
 
 Copy `sing-box/config.example.json` to `sing-box/config.json`. Keep its SOCKS5

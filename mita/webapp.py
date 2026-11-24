@@ -28,6 +28,7 @@ try:
 except ImportError:
     psycopg2 = None
 from http import HTTPStatus
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -931,6 +932,113 @@ def sing_box_config(settings):
     }
 
 
+GEO_REFRESH_INTERVAL = 24 * 60 * 60
+GEO_MAX_BYTES = 1024 * 1024
+
+
+class NoGeoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # A repository URL must not turn into a request to another service.
+        return None
+
+
+def normalize_geo_urls(urls):
+    if not isinstance(urls, list) or len(urls) > 4:
+        raise ValueError("provide up to four GitHub GeoSite / GeoIP URLs")
+    normalized = []
+    for url in urls:
+        if not isinstance(url, str) or len(url) > 2048:
+            raise ValueError("invalid GitHub Geo URL")
+        parsed = urllib.parse.urlsplit(url.strip())
+        parts = parsed.path.split("/")[1:]
+        if (parsed.scheme != "https" or parsed.query or parsed.fragment
+                or not all(re.fullmatch(r"[A-Za-z0-9_.-]+", part) and part not in (".", "..")
+                           for part in parts)):
+            raise ValueError("use an HTTPS GitHub link to a source JSON file")
+        if parsed.netloc == "github.com" and len(parts) >= 5 and parts[2] == "blob":
+            parts.pop(2)
+        elif parsed.netloc != "raw.githubusercontent.com":
+            raise ValueError("use github.com/.../blob/... or raw.githubusercontent.com")
+        if len(parts) < 4 or not parts[-1].lower().endswith(".json"):
+            raise ValueError("Geo links must point to a source .json file")
+        normalized.append("https://raw.githubusercontent.com/" + "/".join(parts))
+    return list(dict.fromkeys(normalized))
+
+
+def parse_geo_source(source):
+    if (not isinstance(source, dict) or type(source.get("version")) is not int
+            or source["version"] not in (1, 2, 3, 4)
+            or not isinstance(source.get("rules"), list) or not source["rules"]):
+        raise ValueError("expected a sing-box source rule set with version and rules")
+    domains, ip_ranges = [], []
+    for rule in source["rules"]:
+        if not isinstance(rule, dict) or rule.get("type", "default") != "default":
+            raise ValueError("Geo rules must use only domain_suffix or ip_cidr")
+        keys = set(rule) - {"type"}
+        if keys not in ({"domain_suffix"}, {"ip_cidr"}):
+            raise ValueError("Geo rules must use only domain_suffix or ip_cidr")
+        key = next(iter(keys))
+        values = rule[key]
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, list) or not values or any(not isinstance(item, str) for item in values):
+            raise ValueError("Geo rule entries must be nonempty strings")
+        target = domains if key == "domain_suffix" else ip_ranges
+        target.extend(values)
+        if len(target) > 16384:
+            raise ValueError("Geo rule set exceeds 16384 entries per selector")
+    return domains, ip_ranges
+
+
+def download_geo_sources(urls):
+    opener = urllib.request.build_opener(NoGeoRedirects())
+    domains, ip_ranges = [], []
+    for url in normalize_geo_urls(urls):
+        try:
+            with opener.open(url, timeout=8) as response:
+                payload = response.read(GEO_MAX_BYTES + 1)
+        except (OSError, ValueError, HTTPException) as exc:
+            raise ValueError("could not download GitHub Geo rule set") from exc
+        if len(payload) > GEO_MAX_BYTES:
+            raise ValueError("GitHub Geo rule set exceeds 1 MiB")
+        try:
+            source = json.loads(payload)
+        except (ValueError, RecursionError) as exc:
+            raise ValueError("GitHub Geo rule set is not valid JSON") from exc
+        source_domains, source_ranges = parse_geo_source(source)
+        domains.extend(source_domains)
+        ip_ranges.extend(source_ranges)
+    return {"domains": list(dict.fromkeys(domains)), "ip_ranges": list(dict.fromkeys(ip_ranges))}
+
+
+def refresh_geo_sources():
+    with LOCK:
+        bridge = get_settings().get("sing_box") or {}
+        urls = bridge.get("geo_urls", [])
+    if not urls:
+        return
+    downloaded = download_geo_sources(urls)
+    with LOCK:
+        settings = get_settings()
+        current = settings.get("sing_box")
+        if current != bridge or current.get("geo_snapshot") == downloaded:
+            return
+        current["geo_snapshot"] = downloaded
+        current["geo_updated_at"] = utc_now()
+        managed_egress(settings)
+        write_json(SETTINGS_PATH, settings)
+        print("[web] GitHub Geo lists updated; restart Mita to apply", flush=True)
+
+
+def geo_refresh_worker():
+    while True:
+        time.sleep(GEO_REFRESH_INTERVAL)
+        try:
+            refresh_geo_sources()
+        except (ValueError, OSError, StateError):
+            print("[web] GitHub Geo update failed; keeping the previous lists", flush=True)
+
+
 def managed_egress(settings):
     egress = normalize_egress(settings.get("egress", {}))
     bridge = settings.get("sing_box")
@@ -938,6 +1046,9 @@ def managed_egress(settings):
         return egress
     if any(proxy["name"] == SING_BOX_PROXY_NAME for proxy in egress["proxies"]):
         raise ValueError(f"{SING_BOX_PROXY_NAME} is reserved while built-in sing-box is enabled")
+    snapshot = bridge.get("geo_snapshot", {})
+    domains = list(dict.fromkeys(bridge["domains"] + snapshot.get("domains", [])))
+    ip_ranges = list(dict.fromkeys(bridge.get("ip_ranges", []) + snapshot.get("ip_ranges", [])))
     managed = normalize_egress({
         "proxies": [{
             "name": SING_BOX_PROXY_NAME,
@@ -946,12 +1057,18 @@ def managed_egress(settings):
             "socks5Authentication": {"user": "mita", "password": bridge["password"]},
         }],
         "rules": [{
-            "domainNames": bridge["domains"],
-            "ipRanges": bridge.get("ip_ranges", []),
+            "domainNames": domains,
+            "ipRanges": ip_ranges,
             "action": "PROXY",
             "proxyNames": [SING_BOX_PROXY_NAME],
         }],
     }, destination_limit=16384)
+    rule = managed["rules"][0]
+    if "*" in rule["domainNames"] or any(
+        value == "*" or ipaddress.ip_network(value).prefixlen == 0
+        for value in rule["ipRanges"]
+    ):
+        raise ValueError("enter explicit domains or IP ranges for the managed sing-box rule")
     egress["proxies"].extend(managed["proxies"])
     egress["rules"] = managed["rules"] + egress["rules"]
     return egress
@@ -1037,7 +1154,7 @@ def admin_settings(settings):
         settings.pop("sing_box", None)
     elif settings.get("sing_box"):
         settings["sing_box"] = {
-            key: settings["sing_box"][key] for key in ("domains", "outbound", "ip_ranges")
+            key: settings["sing_box"][key] for key in ("domains", "outbound", "ip_ranges", "geo_urls", "geo_updated_at")
             if key in settings["sing_box"]
         }
     return settings
@@ -1840,32 +1957,32 @@ class AdminHandler(CommonHandler):
         if not sing_box_available():
             raise ApiError(HTTPStatus.NOT_FOUND, "built-in sing-box is only available in the Linux image")
         body = self.read_json(max_bytes=1024 * 1024)
+        outbound = body.get("outbound")
+        disabling = outbound is None and body.get("enabled") is False
+        if not disabling:
+            validate_sing_box_outbound(outbound)
+            urls = normalize_geo_urls(body.get("geo_urls", []))
+            snapshot = download_geo_sources(urls) if urls else {}
+            domains = body.get("domains", [])
+            ip_ranges = body.get("ip_ranges", [])
+            if not isinstance(domains, list) or not isinstance(ip_ranges, list) or any(
+                not isinstance(value, str) for value in domains + ip_ranges
+            ):
+                raise ValueError("domains and IP ranges must be arrays of strings")
         with LOCK:
             settings = get_settings()
             previous = settings.get("sing_box")
-            outbound = body.get("outbound")
-            if outbound is None and body.get("enabled") is False:
+            if disabling:
                 updated = None
                 settings.pop("sing_box", None)
             else:
-                validate_sing_box_outbound(outbound)
-                rule = normalize_egress({"rules": [{
-                    "domainNames": body.get("domains", []),
-                    "ipRanges": body.get("ip_ranges", []),
-                    "action": "DIRECT",
-                }]}, destination_limit=16384)["rules"][0]
-                domains = list(dict.fromkeys(rule["domainNames"]))
-                ip_ranges = list(dict.fromkeys(rule["ipRanges"]))
-                if "*" in domains or any(
-                    value == "*" or ipaddress.ip_network(value).prefixlen == 0
-                    for value in ip_ranges
-                ):
-                    raise ValueError("enter explicit domains or IP ranges for the managed sing-box rule")
                 password = previous["password"] if previous else secrets.token_urlsafe(24)
                 updated = {
                     "outbound": outbound, "domains": domains,
                     "ip_ranges": ip_ranges, "password": password,
                 }
+                if urls:
+                    updated.update(geo_urls=urls, geo_snapshot=snapshot, geo_updated_at=utc_now())
                 settings["sing_box"] = updated
                 managed_egress(settings)
             SING_BOX.replace(updated, previous, lambda: write_json(SETTINGS_PATH, settings))
@@ -2050,6 +2167,8 @@ def serve():
     threading.Thread(target=sub.serve_forever, name="subscription-server", daemon=True).start()
     threading.Thread(target=log_db_worker, name="postgres-log-forwarder", daemon=True).start()
     threading.Thread(target=backup_db_worker, name="postgres-backup-worker", daemon=True).start()
+    if sing_box_available():
+        threading.Thread(target=geo_refresh_worker, name="github-geo-refresh", daemon=True).start()
     print(f"[web] admin UI listening on {admin_host}:{ADMIN_PORT}", flush=True)
     print("[web] subscription server listening on 8099", flush=True)
     try:

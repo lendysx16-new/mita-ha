@@ -229,6 +229,50 @@ class AdminAPITests(unittest.TestCase):
         status, _ = self.call("PUT", "/api/sing-box", {"enabled": False})
         self.assertEqual(status, 404)
 
+    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
+    def test_github_geo_refresh_replaces_remote_entries_and_keeps_manual_rules(self):
+        settings = app.get_settings()
+        settings["sing_box"] = {
+            "outbound": {"type": "socks", "server": "upstream.example", "server_port": 1080},
+            "password": "bridge-secret",
+            "domains": ["manual.example"],
+            "geo_urls": ["https://raw.githubusercontent.com/owner/repo/main/geosite.json"],
+            "geo_snapshot": {"domains": ["old.example"], "ip_ranges": []},
+        }
+        app.write_json(app.SETTINGS_PATH, settings)
+        with mock.patch.object(app, "download_geo_sources", return_value={
+            "domains": ["new.example"], "ip_ranges": ["198.51.100.0/24"],
+        }) as download:
+            app.refresh_geo_sources()
+            download.assert_called_once_with(settings["sing_box"]["geo_urls"])
+        updated = app.get_settings()
+        rule = app.build_mita_config(app.get_users(), updated)["egress"]["rules"][0]
+        self.assertEqual(rule["domainNames"], ["manual.example", "new.example"])
+        self.assertEqual(rule["ipRanges"], ["198.51.100.0/24"])
+
+        with mock.patch.object(app, "download_geo_sources", return_value={
+            "domains": ["*"], "ip_ranges": [],
+        }):
+            with self.assertRaises(ValueError):
+                app.refresh_geo_sources()
+        self.assertEqual(app.get_settings(), updated)
+
+    def test_github_geo_urls_and_source_validation(self):
+        self.assertEqual(app.normalize_geo_urls([
+            "https://github.com/owner/repo/blob/main/geosite.json",
+            "https://raw.githubusercontent.com/owner/repo/main/geosite.json",
+        ]), ["https://raw.githubusercontent.com/owner/repo/main/geosite.json"])
+        for url in ("http://raw.githubusercontent.com/owner/repo/main/list.json",
+                    "https://raw.githubusercontent.com@other.example/owner/repo/main/list.json",
+                    "https://github.com/owner/repo/blob/main/%2e%2e/list.json"):
+            with self.assertRaises(ValueError):
+                app.normalize_geo_urls([url])
+        self.assertEqual(app.parse_geo_source({"version": 3, "rules": [
+            {"domain_suffix": ["example.com"]}, {"ip_cidr": "198.51.100.0/24"},
+        ]}), (["example.com"], ["198.51.100.0/24"]))
+        with self.assertRaises(ValueError):
+            app.parse_geo_source({"version": 3, "rules": [{"domain_regex": [".*"]}]})
+
     def test_settings_without_log_change_does_not_reload(self):
         status, _ = self.call("PUT", "/api/settings", {"public_mieru_port": 443})
         self.assertEqual(status, 200)
