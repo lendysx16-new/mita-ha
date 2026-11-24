@@ -89,6 +89,11 @@ same tables does not synchronize changes and mixes their snapshot histories.
 
 The standalone Linux admin UI configures this in two tabs. Build or update
 the Linux image with `docker compose up -d --build mita`; it bundles sing-box.
+Changes are saved right away and applied with the **Restart Mita** button at
+the top of both tabs. It runs `mita stop` and `mita start` inside the
+container, so active connections drop for a few seconds while the admin panel
+and sing-box keep running. The button turns prominent when saved changes are
+waiting for a restart.
 
 1. **Outbounds**: add your provider servers. Paste a share link
    (`hysteria2://` / `hy2://`, `vless://` including REALITY, `vmess://`,
@@ -98,7 +103,7 @@ the Linux image with `docker compose up -d --build mita`; it bundles sing-box.
    outbound (from `127.0.0.1:1081` up); Mita sends routed traffic there.
    sing-box checks each outbound before it is saved. Editing an outbound
    restarts only sing-box; a new outbound becomes usable after
-   `docker compose restart mita`. An outbound that a policy or an account still
+   **Restart Mita**. An outbound that a policy or an account still
    uses cannot be deleted, and outbounds cannot be renamed. If sing-box exits,
    it is restarted with increasing delays up to one minute.
    The **Status** column shows whether each outbound actually works: Mita
@@ -115,12 +120,19 @@ the Linux image with `docker compose up -d --build mita`; it bundles sing-box.
    `geosite:category-ads-all`. Names come from
    [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat/tree/sing/geo)
    (`sing` branch); a GitHub link to any other sing-box source `.json` works
-   too. A wrong name fails on save with "HTTP 404 (no such category?)". Policies are checked top to bottom
+   too. A wrong name fails on save with "HTTP 404 (no such category?)".
+   Under **Geo sources** you can instead point `geosite:` and/or `geoip:` at a
+   v2ray `geosite.dat` / `geoip.dat` link on GitHub (release downloads work) or
+   jsDelivr, for example Runet Freedom's
+   `https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat`
+   for `geosite:ru-blocked`. The files are cached in `/data/geo-cache` and
+   refreshed daily; `geosite:<name>@<attribute>` keeps only entries with that
+   attribute. As with JSON lists, only domain suffixes and CIDRs are used. Policies are checked top to bottom
    (reorder them with the arrows) and the first match wins; unmatched traffic
    connects directly. Categories are downloaded on save and refreshed daily.
    A policy holds up to 4,096 domains and 4,096 networks of its own (16,384
    with category entries), and a GeoSite / GeoIP file can also be imported into
-   it. Changes apply after `docker compose restart mita`. **Advanced: edit as
+   it. Changes apply after **Restart Mita**. **Advanced: edit as
    JSON** shows the policies in Mita's egress format.
 
 Rules are evaluated in order. `domainNames` entries match the domain and its

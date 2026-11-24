@@ -8,6 +8,7 @@ import html
 import hashlib
 import fcntl
 import io
+import mmap
 import json
 import os
 import re
@@ -1416,20 +1417,261 @@ def policy_geo_urls(settings):
     return list(dict.fromkeys(urls))
 
 
-def download_geo_snapshot(url):
-    snapshot = download_geo_sources([url])
+# ---------- v2ray geosite.dat / geoip.dat sources ----------
+# When a .dat URL is set for a kind, geosite:<name> / geoip:<name> categories are read
+# from that file (for example Runet Freedom's ru-blocked) instead of MetaCubeX JSON.
+GEO_KINDS = ("geosite", "geoip")
+GEO_DAT_HOSTS = {"github.com", "raw.githubusercontent.com", "cdn.jsdelivr.net", "fastly.jsdelivr.net",
+                 "testingcf.jsdelivr.net"}
+# GitHub release downloads redirect to its asset storage.
+GEO_DAT_REDIRECT_HOSTS = GEO_DAT_HOSTS | {"objects.githubusercontent.com", "release-assets.githubusercontent.com"}
+GEO_DAT_MAX_BYTES = 128 * 1024 * 1024
+
+
+def normalize_geo_sources(value):
+    if not isinstance(value, dict) or set(value) - set(GEO_KINDS):
+        raise ValueError("geo_sources must be an object with geosite and/or geoip URLs")
+    sources = {}
+    for kind in GEO_KINDS:
+        url = value.get(kind, "")
+        if not isinstance(url, str) or len(url) > 2048:
+            raise ValueError(f"invalid {kind}.dat URL")
+        url = url.strip()
+        if not url:
+            continue
+        parsed = urllib.parse.urlsplit(url)
+        if (parsed.scheme != "https" or parsed.hostname not in GEO_DAT_HOSTS or parsed.username
+                or parsed.port or not parsed.path.lower().endswith(".dat")):
+            raise ValueError(f"{kind}.dat must be an https link to a .dat file on GitHub or jsDelivr")
+        sources[kind] = url
+    return sources
+
+
+class GeoDatRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = urllib.parse.urlsplit(newurl)
+        if target.scheme != "https" or target.hostname not in GEO_DAT_REDIRECT_HOSTS:
+            return None  # urllib then raises HTTPError for the redirect status
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def geo_cache_dir():
+    return DATA_DIR / "geo-cache"
+
+
+def fetch_geo_dat(kind, url, force=False):
+    """Return a cached .dat path for url, downloading it when missing, stale or forced."""
+    directory = geo_cache_dir()
+    path, meta_path = directory / f"{kind}.dat", directory / f"{kind}.json"
+    meta = load_json(meta_path, {})
+    age = time.time() - float(meta.get("downloaded", 0) or 0)
+    if not force and path.exists() and meta.get("url") == url and age < GEO_REFRESH_INTERVAL:
+        return path
+    directory.mkdir(parents=True, exist_ok=True)
+    opener = urllib.request.build_opener(GeoDatRedirects())
+    temp = directory / f".{kind}.dat.download"
+    size = 0
+    try:
+        with opener.open(urllib.request.Request(url, headers={"User-Agent": "mita-geo"}), timeout=30) as response, \
+                temp.open("wb") as out:
+            while chunk := response.read(1024 * 1024):
+                size += len(chunk)
+                if size > GEO_DAT_MAX_BYTES:
+                    raise ValueError(f"{kind}.dat exceeds {GEO_DAT_MAX_BYTES // (1024 * 1024)} MiB")
+                out.write(chunk)
+    except urllib.error.HTTPError as exc:
+        temp.unlink(missing_ok=True)
+        raise ValueError(f"could not download {kind}.dat: HTTP {exc.code}") from exc
+    except (OSError, HTTPException) as exc:
+        temp.unlink(missing_ok=True)
+        raise ValueError(f"could not download {kind}.dat") from exc
+    except ValueError:
+        temp.unlink(missing_ok=True)
+        raise
+    if not size:
+        temp.unlink(missing_ok=True)
+        raise ValueError(f"{kind}.dat is empty")
+    temp.replace(path)
+    write_json(meta_path, {"url": url, "downloaded": time.time(), "downloaded_at": utc_now(), "bytes": size})
+    return path
+
+
+def geo_dat_status():
+    status = {}
+    for kind in GEO_KINDS:
+        meta = load_json(geo_cache_dir() / f"{kind}.json", {})
+        if meta.get("url"):
+            status[kind] = {"url": meta["url"], "downloaded_at": meta.get("downloaded_at"), "bytes": meta.get("bytes")}
+    return status
+
+
+def _pb_varint(buf, pos):
+    result = shift = 0
+    while True:
+        if pos >= len(buf) or shift > 63:
+            raise ValueError("corrupt .dat file")
+        byte = buf[pos]
+        pos += 1
+        result |= (byte & 0x7F) << shift
+        if byte < 0x80:
+            return result, pos
+        shift += 7
+
+
+def _pb_fields(buf, start, end):
+    """Yield (field, wire_type, value) of one protobuf message; bytes fields as (start, end)."""
+    pos = start
+    while pos < end:
+        key, pos = _pb_varint(buf, pos)
+        field, wire = key >> 3, key & 7
+        if wire == 0:
+            value, pos = _pb_varint(buf, pos)
+        elif wire == 2:
+            length, pos = _pb_varint(buf, pos)
+            value = (pos, pos + length)
+            pos += length
+        elif wire == 1:
+            value, pos = None, pos + 8
+        elif wire == 5:
+            value, pos = None, pos + 4
+        else:
+            raise ValueError("corrupt .dat file")
+        if pos > end:
+            raise ValueError("corrupt .dat file")
+        yield field, wire, value
+
+
+def _pb_text(buf, span):
+    return bytes(buf[span[0]:span[1]]).decode("utf-8", "replace")
+
+
+def read_dat_category(path, kind, name):
+    """Extract one category from a v2ray geosite.dat / geoip.dat (GeoSiteList / GeoIPList)."""
+    name, _, attribute = name.partition("@")
+    with path.open("rb") as handle:
+        if os.fstat(handle.fileno()).st_size == 0:
+            raise ValueError(f"{kind}.dat is empty")
+        with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as buf:
+            for field, wire, entry in _pb_fields(buf, 0, len(buf)):
+                if field != 1 or wire != 2:
+                    continue
+                code = next((_pb_text(buf, v) for f, w, v in _pb_fields(buf, *entry) if f == 1 and w == 2), "")
+                if code.lower() != name:
+                    continue
+                if kind == "geosite":
+                    return _dat_geosite(buf, entry, attribute)
+                return _dat_geoip(buf, entry)
+    raise ValueError(f"no category {name!r} in {kind}.dat")
+
+
+def _dat_geosite(buf, entry, attribute):
+    # Domain.Type: 0 keyword, 1 regex, 2 domain (suffix), 3 full (exact)
+    domains, skipped = [], set()
+    labels = {0: "domain_keyword", 1: "domain_regex", 3: "domain"}
+    for field, wire, span in _pb_fields(buf, *entry):
+        if field != 2 or wire != 2:
+            continue
+        kind, value, attributes = 0, "", set()
+        for f, w, v in _pb_fields(buf, *span):
+            if f == 1 and w == 0:
+                kind = v
+            elif f == 2 and w == 2:
+                value = _pb_text(buf, v)
+            elif f == 3 and w == 2:
+                attributes.update(_pb_text(buf, av) for af, aw, av in _pb_fields(buf, *v) if af == 1 and aw == 2)
+        if attribute and attribute not in attributes:
+            continue
+        if kind != 2:
+            skipped.add(labels.get(kind, "unknown domain types"))
+            continue
+        try:
+            if not value.isascii():
+                raise ValueError
+            domains.append(normalize_egress_domain(value))
+        except ValueError:
+            skipped.add("invalid domain suffixes")
+    if not domains:
+        raise ValueError("the category has no domain suffixes Mita can use")
+    return {"domains": list(dict.fromkeys(domains)), "ip_ranges": [], "skipped": sorted(skipped)}
+
+
+def _dat_geoip(buf, entry):
+    ranges, skipped = [], set()
+    for field, wire, value in _pb_fields(buf, *entry):
+        if field == 3 and wire == 0 and value:
+            raise ValueError("reverse-match GeoIP categories are not supported")
+        if field != 2 or wire != 2:
+            continue
+        address, prefix = b"", 0
+        for f, w, v in _pb_fields(buf, *value):
+            if f == 1 and w == 2:
+                address = bytes(buf[v[0]:v[1]])
+            elif f == 2 and w == 0:
+                prefix = v
+        try:
+            network = ipaddress.ip_network((ipaddress.ip_address(address), prefix), strict=False)
+        except ValueError:
+            skipped.add("invalid CIDRs")
+            continue
+        if network.prefixlen == 0:
+            skipped.add("catch-all networks")
+            continue
+        ranges.append(str(network))
+    if not ranges:
+        raise ValueError("the category has no networks")
+    return {"domains": [], "ip_ranges": list(dict.fromkeys(ranges)), "skipped": sorted(skipped)}
+
+
+def geo_category(item):
+    label = geo_label(item)
+    return tuple(label.split(":", 1)) if label != item else None
+
+
+def geo_snapshot_source(item, sources):
+    """Where a policy list entry is read from: a .dat URL, or "json" (MetaCubeX / GitHub JSON)."""
+    category = geo_category(item)
+    return sources.get(category[0], "json") if category else "json"
+
+
+def download_geo_snapshot(item, sources=None):
+    if sources is None:
+        sources = get_settings().get("geo_sources") or {}
+    source = geo_snapshot_source(item, sources)
+    if source == "json":
+        snapshot = download_geo_sources([item])
+    else:
+        kind, name = geo_category(item)
+        try:
+            snapshot = read_dat_category(fetch_geo_dat(kind, source), kind, name)
+        except ValueError as exc:
+            raise ValueError(f"{kind}:{name}: {exc}") from exc
+    snapshot["source"] = source
     snapshot["updated_at"] = utc_now()
     return snapshot
 
 
+def stale_geo_snapshots(items, snapshots, sources):
+    """Policy list entries that have no snapshot yet, or one taken from another source."""
+    return [item for item in items
+            if item not in snapshots or snapshots[item].get("source", "json") != geo_snapshot_source(item, sources)]
+
+
 def refresh_geo_sources():
-    """Re-download every GitHub list used by a routing policy; keep old data on failure."""
+    """Re-download every list used by a routing policy; keep old data on failure."""
     with LOCK:
-        urls = policy_geo_urls(get_settings())
+        settings = get_settings()
+        urls = policy_geo_urls(settings)
+        sources = settings.get("geo_sources") or {}
+    for kind, url in sources.items():
+        if any(geo_snapshot_source(item, sources) == url for item in urls):
+            try:
+                fetch_geo_dat(kind, url, force=True)
+            except ValueError as exc:
+                print(f"[web] {kind}.dat update failed ({exc}); using the cached copy", flush=True)
     fresh = {}
     for url in urls:
         try:
-            fresh[url] = download_geo_snapshot(url)
+            fresh[url] = download_geo_snapshot(url, sources)
         except ValueError:
             print(f"[web] Geo update failed for {geo_label(url)}; keeping the previous list", flush=True)
     with LOCK:
@@ -1437,16 +1679,19 @@ def refresh_geo_sources():
         used = set(policy_geo_urls(settings))
         snapshots = {url: snap for url, snap in settings.get("geo_snapshots", {}).items() if url in used}
         changed = len(snapshots) != len(settings.get("geo_snapshots", {}))
+        current_sources = settings.get("geo_sources") or {}
         for url, snapshot in fresh.items():
             old = snapshots.get(url, {})
-            if url in used and (old.get("domains"), old.get("ip_ranges")) != (snapshot["domains"], snapshot["ip_ranges"]):
+            if (url in used and snapshot["source"] == geo_snapshot_source(url, current_sources)
+                    and (old.get("domains"), old.get("ip_ranges"), old.get("source", "json"))
+                    != (snapshot["domains"], snapshot["ip_ranges"], snapshot["source"])):
                 snapshots[url] = snapshot
                 changed = True
         if changed:
             settings["geo_snapshots"] = snapshots
             managed_egress(settings)
             write_json(SETTINGS_PATH, settings)
-            print("[web] GitHub Geo lists updated; restart Mita to apply", flush=True)
+            print("[web] Geo lists updated; restart Mita to apply", flush=True)
 
 
 def geo_refresh_worker(stop_event=None):
@@ -1456,7 +1701,7 @@ def geo_refresh_worker(stop_event=None):
         try:
             refresh_geo_sources()
         except (ValueError, OSError, StateError):
-            print("[web] GitHub Geo update failed; keeping the previous lists", flush=True)
+            print("[web] Geo update failed; keeping the previous lists", flush=True)
 
 
 def egress_extra_proxy_names(settings):
@@ -1510,24 +1755,65 @@ def applied_outbounds_path():
     return DATA_DIR / "mita-applied-outbounds.json"
 
 
-def record_applied_proxy_outbounds(persist=False):
-    global APPLIED_PROXY_OUTBOUNDS
+APPLIED_EGRESS = None  # fingerprint of the egress config the running Mita uses
+
+
+def egress_fingerprint(settings):
     try:
-        APPLIED_PROXY_OUTBOUNDS = proxy_outbound_names(managed_egress(get_settings()))
+        egress = build_mita_config([], settings).get("egress", {})
+    except (ValueError, StateError):
+        return None
+    return hashlib.sha256(json.dumps(egress, sort_keys=True).encode()).hexdigest()
+
+
+def record_applied_proxy_outbounds(persist=False):
+    global APPLIED_PROXY_OUTBOUNDS, APPLIED_EGRESS
+    settings = get_settings()
+    try:
+        APPLIED_PROXY_OUTBOUNDS = proxy_outbound_names(managed_egress(settings))
     except (ValueError, StateError):
         APPLIED_PROXY_OUTBOUNDS = set()
+    APPLIED_EGRESS = egress_fingerprint(settings)
     if persist:
-        write_json(applied_outbounds_path(), sorted(APPLIED_PROXY_OUTBOUNDS))
+        write_json(applied_outbounds_path(), {"outbounds": sorted(APPLIED_PROXY_OUTBOUNDS), "egress": APPLIED_EGRESS})
 
 
 def load_applied_proxy_outbounds():
-    """Read what `--init` recorded for the running Mita; unknown means nothing is live."""
-    global APPLIED_PROXY_OUTBOUNDS
+    """Read what `--init` or the last restart recorded for the running Mita; unknown means nothing is live."""
+    global APPLIED_PROXY_OUTBOUNDS, APPLIED_EGRESS
     value = load_json(applied_outbounds_path(), None)
-    if isinstance(value, list) and all(isinstance(name, str) for name in value):
-        APPLIED_PROXY_OUTBOUNDS = set(value)
+    if isinstance(value, list):  # written by older versions
+        value = {"outbounds": value}
+    names = value.get("outbounds") if isinstance(value, dict) else None
+    if isinstance(names, list) and all(isinstance(name, str) for name in names):
+        APPLIED_PROXY_OUTBOUNDS = set(names)
+        APPLIED_EGRESS = value.get("egress") if isinstance(value.get("egress"), str) else None
     else:
-        APPLIED_PROXY_OUTBOUNDS = set()
+        APPLIED_PROXY_OUTBOUNDS, APPLIED_EGRESS = set(), None
+
+
+def restart_pending(settings):
+    """True when saved routing differs from what the running Mita started with."""
+    return APPLIED_EGRESS is not None and egress_fingerprint(settings) != APPLIED_EGRESS
+
+
+def restart_mita():
+    """Apply the saved config with `mita stop` + `mita start`; the daemon and this panel keep running."""
+    with LOCK:
+        rebuild_mita_config()
+        output = []
+        for command in ("stop", "start"):
+            for attempt in range(2):
+                proc = subprocess.run(["/usr/bin/mita", command], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                      text=True, timeout=30, env=os.environ.copy())
+                if proc.returncode == 0:
+                    break
+                time.sleep(1)
+            output.append(proc.stdout.strip())
+            if proc.returncode:
+                raise MitaReloadError(f"mita {command} failed: {proc.stdout.strip()}")
+        record_applied_proxy_outbounds(persist=True)
+    return "\n".join(filter(None, output))
 
 
 def split_proxy_outbounds(settings):
@@ -2436,6 +2722,7 @@ ADMIN_ROUTES = [
     ("PUT", USER + r"/device-settings", "update_user"),  # kept for older UI builds
     ("PUT", r"/api/settings", "update_settings"),
     ("POST", r"/api/outbounds", "add_outbound"),
+    ("POST", r"/api/mita/restart", "restart_mita"),
     ("PUT", OUTBOUND, "update_outbound"),
     ("POST", OUTBOUND + r"/test", "test_outbound"),
     ("DELETE", OUTBOUND, "delete_outbound"),
@@ -2545,6 +2832,8 @@ class AdminHandler(CommonHandler):
             "sing_box_available": sing_box_available(),
             "sing_box_running": sing_box_available() and SING_BOX.running(),
             "outbound_health": dict(OUTBOUND_HEALTH) if standalone else {},
+            "restart_pending": standalone and restart_pending(settings),
+            "geo_dat": geo_dat_status() if standalone else {},
         }
 
     def route_get_traffic(self):
@@ -2681,6 +2970,15 @@ class AdminHandler(CommonHandler):
         return HTTPStatus.OK, {"deleted": username, "mita_reloaded": True, "mita_output": reload_output}
 
     # ----- settings -----
+    def route_restart_mita(self):
+        if not is_standalone():
+            raise ApiError(HTTPStatus.NOT_FOUND, "restarting Mita from the panel is only available on standalone Linux")
+        try:
+            output = restart_mita()
+        except (MitaReloadError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
+            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, f"Mita restart failed: {exc}") from exc
+        return HTTPStatus.OK, {"restarted": True, "mita_output": output}
+
     def require_sing_box(self):
         if not sing_box_available():
             raise ApiError(HTTPStatus.NOT_FOUND, "outbounds are only available in the Linux image")
@@ -2755,16 +3053,22 @@ class AdminHandler(CommonHandler):
     def route_update_settings(self):
         body = self.read_json(max_bytes=4 * 1024 * 1024)  # domain lists can be large
         downloaded = {}
-        if "egress" in body and is_standalone():
-            # Fetch lists the policies newly reference before taking the lock.
-            known = get_settings().get("geo_snapshots", {})
-            for url in policy_geo_urls({"egress": {"rules": [
-                dict(rule, geoUrls=normalize_geo_urls(rule["geoUrls"]))
-                for rule in (body["egress"].get("rules") if isinstance(body["egress"], dict) else None) or []
-                if isinstance(rule, dict) and "geoUrls" in rule
-            ]}}):
-                if url not in known:
-                    downloaded[url] = download_geo_snapshot(url)
+        if ("egress" in body or "geo_sources" in body) and is_standalone():
+            # Download lists that are new or whose source changed before taking the lock;
+            # a large geosite.dat can take a while.
+            current = get_settings()
+            sources = normalize_geo_sources(body["geo_sources"]) if "geo_sources" in body \
+                else current.get("geo_sources") or {}
+            if "egress" in body:
+                rules = (body["egress"].get("rules") if isinstance(body["egress"], dict) else None) or []
+                items = policy_geo_urls({"egress": {"rules": [
+                    dict(rule, geoUrls=normalize_geo_urls(rule["geoUrls"]))
+                    for rule in rules if isinstance(rule, dict) and "geoUrls" in rule
+                ]}})
+            else:
+                items = policy_geo_urls(current)
+            for item in stale_geo_snapshots(items, current.get("geo_snapshots", {}), sources):
+                downloaded[item] = download_geo_snapshot(item, sources)
         with LOCK:
             settings = get_settings()
             previous = copy.deepcopy(settings)
@@ -2793,6 +3097,14 @@ class AdminHandler(CommonHandler):
             if "contact_email" in body:
                 settings["contact_email"] = normalize_contact_email(body["contact_email"])
 
+            if "geo_sources" in body:
+                if not is_standalone():
+                    raise ValueError("Geo sources are only available on standalone Linux")
+                settings["geo_sources"] = normalize_geo_sources(body["geo_sources"])
+                snapshots = {**settings.get("geo_snapshots", {}), **downloaded}
+                if stale_geo_snapshots(policy_geo_urls(settings), snapshots, settings["geo_sources"]):
+                    raise ValueError("a Geo list changed while saving; save again")
+                settings["geo_snapshots"] = snapshots
             if "egress" in body:
                 if not is_standalone():
                     raise ValueError("outbound is only available on standalone Linux")
@@ -2800,9 +3112,8 @@ class AdminHandler(CommonHandler):
                     body["egress"], extra_proxy_names=egress_extra_proxy_names(settings))
                 used = set(policy_geo_urls(settings))
                 snapshots = {**settings.get("geo_snapshots", {}), **downloaded}
-                missing = used - set(snapshots)
-                if missing:
-                    raise ValueError("a GitHub list changed while saving; save again")
+                if stale_geo_snapshots(used, snapshots, settings.get("geo_sources") or {}):
+                    raise ValueError("a Geo list changed while saving; save again")
                 settings["geo_snapshots"] = {url: snap for url, snap in snapshots.items() if url in used}
                 validate_outbound_assignments(get_users(), managed_egress(settings))
             egress_changed = settings.get("egress") != previous.get("egress")

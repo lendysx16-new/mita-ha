@@ -330,7 +330,10 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
 .health[data-state="ok"]::before { background: var(--success); }
 .health[data-state="error"] { color: var(--destructive); }
 .health[data-state="error"]::before { background: var(--destructive); }
-.routing-restart, #singBoxStatus { margin-bottom: 16px; }
+.restart-bar, #singBoxStatus { margin-bottom: 16px; }
+.restart-bar { align-items: center; }
+.restart-bar .btn { margin-left: auto; }
+.restart-bar:empty { display: none; }
 .routing-restart code { display: inline; padding: 1px 6px; background: var(--card); border-radius: 4px; }
 #routingJson > summary { cursor: pointer; list-style: none; border-bottom: 0; }
 #routingJson > summary::-webkit-details-marker { display: none; }
@@ -474,6 +477,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
       </div>
 
       <div id="outboundsTab" class="tab-panel settings-stack" aria-label="Outbounds">
+        <div class="status-line restart-bar" id="restartBarOutbounds" role="status"></div>
         <div id="singBoxStatus" class="status-line" role="status">Checking sing-box…</div>
         <section class="card" id="outboundsCard">
           <div class="card-header">
@@ -495,7 +499,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
       </div>
 
       <div id="routingTab" class="tab-panel settings-stack" aria-label="Routing">
-        <div class="status-line routing-restart" data-state="warn" role="status">Changes are saved right away. Restart Mita to apply them: <code>docker compose restart mita</code></div>
+        <div class="status-line restart-bar" id="restartBarRouting" role="status"></div>
         <section class="card" id="listsCard">
           <div class="card-header">
             <div><h2>Routing policies</h2><p class="card-subtitle">Each policy is a list of domains and networks bound to one saved outbound, or sent directly, or blocked. Policies are checked top to bottom and the first match wins; unmatched traffic connects directly.</p></div>
@@ -517,6 +521,17 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
             <tbody id="listRows"></tbody>
           </table></div>
         </section>
+        <form class="card" id="geoSourcesForm" autocomplete="off">
+          <div class="card-header"><div><h2>Geo sources</h2><p class="card-subtitle">Where <code>geosite:</code> and <code>geoip:</code> categories come from. Leave a field empty to use MetaCubeX categories; set a v2ray <code>.dat</code> link to read categories from it instead, for example Runet Freedom's <code>geosite:ru-blocked</code>.</p></div></div>
+          <div class="card-body">
+            <div class="form-grid">
+              <label class="span-2">geosite.dat URL (optional)<input name="geosite" type="url" spellcheck="false" placeholder="https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat"><span class="field-help" data-dat-status="geosite"></span></label>
+              <label class="span-2">geoip.dat URL (optional)<input name="geoip" type="url" spellcheck="false" placeholder="https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geoip.dat"><span class="field-help" data-dat-status="geoip"></span></label>
+            </div>
+            <p class="field-help">Links must point to GitHub (including release downloads) or jsDelivr. Files are downloaded on save, cached, and refreshed daily together with the categories. Category names are those inside the file, e.g. <code>geosite:ru-blocked</code>, <code>geoip:ru-blocked</code>; <code>geosite:google@cn</code> keeps only entries with that attribute.</p>
+          </div>
+          <div class="card-actions"><button id="saveGeoSources" class="btn" type="submit">Save Geo sources</button></div>
+        </form>
         <form class="card" id="outboundForm" hidden>
           <details id="routingJson"><summary class="card-header"><div><h2>Advanced: edit as JSON</h2><p class="card-subtitle">The same outbounds and lists in Mita's egress format. Saving replaces everything above.</p></div></summary>
           <div class="card-body">
@@ -629,6 +644,7 @@ const api = {
   addOutbound: body => request('api/outbounds', {method: 'POST', body}),
   updateOutbound: (name, body) => request('api/outbounds/' + encodeURIComponent(name), {method: 'PUT', body}),
   deleteOutbound: name => request('api/outbounds/' + encodeURIComponent(name), {method: 'DELETE'}),
+  restartMita: () => request('api/mita/restart', {method: 'POST', body: {}}),
   testOutbound: name => request('api/outbounds/' + encodeURIComponent(name) + '/test', {method: 'POST', body: {}}),
   saveSettings: body => request('api/settings', {method: 'PUT', body}),
 };
@@ -789,14 +805,15 @@ let pollTimer = null;
 function pollTask() {
   if (state.tab === 'trafficTab') return loadTraffic;
   if (state.tab === 'confTab') return loadStatuses;
-  if (state.tab === 'usersTab' || state.tab === 'devicesTab') return refreshState;
+  if (state.tab === 'usersTab' || state.tab === 'devicesTab' || ROUTING_TABS.includes(state.tab)) return refreshState;
   return null;
 }
 function syncPolling() {
   clearInterval(pollTimer);
   pollTimer = null;
   const task = pollTask();
-  if (task && !document.hidden) pollTimer = setInterval(task, state.tab === 'trafficTab' || state.tab === 'confTab' ? 30000 : 60000);
+  const fast = state.tab === 'trafficTab' || state.tab === 'confTab' || ROUTING_TABS.includes(state.tab);
+  if (task && !document.hidden) pollTimer = setInterval(task, fast ? 30000 : 60000);
 }
 const refreshState = () => load().catch(e => toast('Unable to refresh: ' + e.message, 'error'));
 
@@ -1048,6 +1065,12 @@ function fillSettings(s) {
   $('#contactEmail').value = s.contact_email || '';
   $('#logLevel').value = s.log_level || 'INFO';
   $('#postgresDsn').value = s.postgres_dsn || '';
+  // Filled here (on load and after saves), not on every refresh, so polling never
+  // overwrites a URL that is being typed.
+  const geoForm = $('#geoSourcesForm');
+  if (geoForm.elements) {
+    for (const kind of ['geosite', 'geoip']) geoForm.elements[kind].value = (s.geo_sources || {})[kind] || '';
+  }
   const outboundEnabled = state.outbound_enabled === true;
   $('#outboundForm').hidden = !outboundEnabled;
   $('#outboundConfig').value = outboundEnabled
@@ -1076,6 +1099,8 @@ async function load() {
   state.sing_box_available = data.sing_box_available === true;
   state.sing_box_running = data.sing_box_running === true;
   state.outbound_health = data.outbound_health || {};
+  state.restart_pending = data.restart_pending === true;
+  state.geo_dat = data.geo_dat || {};
   renderStats();
   renderUsers();
   renderDeviceDirectory();
@@ -1358,10 +1383,34 @@ function renderSingBoxStatus() {
   }
 }
 
+function renderRestartBars() {
+  const text = state.restart_pending
+    ? 'Saved changes are waiting for a Mita restart. Active connections drop for a few seconds.'
+    : 'Mita runs the saved outbounds and routing.';
+  for (const id of ['#restartBarOutbounds', '#restartBarRouting']) {
+    const bar = $(id);
+    bar.dataset.state = state.restart_pending ? 'warn' : 'ok';
+    setHTML(bar, html`<span>${text}</span><button type="button" class="btn btn-sm ${state.restart_pending ? '' : 'btn-secondary'}" data-routing="restart-mita">Restart Mita</button>`);
+  }
+}
+function renderGeoSources() {
+  const sources = state.settings.geo_sources || {};
+  for (const kind of ['geosite', 'geoip']) {
+    const info = (state.geo_dat || {})[kind];
+    const el = $('[data-dat-status="' + kind + '"]');
+    el.textContent = !sources[kind] ? 'Using MetaCubeX ' + kind + ' categories.'
+      : info && info.url === sources[kind]
+        ? 'Downloaded ' + displayRelativeTime(info.downloaded_at) + (info.bytes ? ' · ' + (info.bytes / 1048576).toFixed(1) + ' MiB' : '') + '.'
+        : 'Not downloaded yet.';
+  }
+}
+
 function renderRouting() {
   const enabled = state.outbound_enabled === true;
   for (const id of ROUTING_TABS) $('.tab[data-tab="' + id + '"]').hidden = !enabled;
   if (!enabled) return;
+  renderRestartBars();
+  renderGeoSources();
   renderSingBoxStatus();
   $('#addOutbound').disabled = !state.sing_box_available;
   const egress = currentEgress();
@@ -1486,6 +1535,14 @@ function listFromEditor() {
 }
 
 $('#addOutbound').onclick = () => openOutboundEditor('');
+$('#geoSourcesForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = $('#geoSourcesForm').elements;
+  await mutate($('#saveGeoSources'), () => api.saveSettings({
+    geo_sources: {geosite: f.geosite.value.trim(), geoip: f.geoip.value.trim()},
+  }), 'Geo sources saved; categories re-read. Restart Mita to apply.');
+  fillSettings(state.settings);
+});
 $('#addList').onclick = () => openListEditor(-1);
 $('#outboundEditor').addEventListener('submit', async e => {
   e.preventDefault();
@@ -1541,6 +1598,11 @@ async function onRoutingClick(e) {
   const egress = currentEgress();
   switch (button.dataset.routing) {
     case 'edit-outbound': openOutboundEditor(button.dataset.name); break;
+    case 'restart-mita': {
+      if (!await confirmAction('Restart Mita?', 'Mita applies the saved outbounds and routing. Active connections drop for a few seconds; this panel stays available.', 'Restart')) return;
+      await mutate(button, () => api.restartMita(), 'Mita restarted with the saved settings.');
+      break;
+    }
     case 'test-outbound': {
       const name = button.dataset.name;
       let health;

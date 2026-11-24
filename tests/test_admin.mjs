@@ -476,3 +476,35 @@ test('outbound status shows the last check and Test refreshes it', async () => {
   assert.match(element('#outboundRows').innerHTML, /OK · 77 ms/);
   assert.match(element('#msg').textContent, /fi works \(77 ms\)/);
 });
+
+test('restart bar and Geo sources reflect the server state', async () => {
+  const {ctx, element, state} = setup({outboundEnabled: true});
+  state.restart_pending = true;
+  state.settings.geo_sources = {geosite: 'https://github.com/o/r/releases/latest/download/geosite.dat'};
+  state.geo_dat = {geosite: {url: 'https://github.com/o/r/releases/latest/download/geosite.dat', downloaded_at: '2026-11-24T20:00:00Z', bytes: 3145728}};
+  await ctx.load();
+  for (const id of ['#restartBarOutbounds', '#restartBarRouting']) {
+    assert.equal(element(id).dataset.state, 'warn');
+    assert.match(element(id).innerHTML, /waiting for a Mita restart[\s\S]*data-routing="restart-mita"/);
+  }
+  assert.match(element('[data-dat-status="geosite"]').textContent, /^Downloaded .* · 3\.0 MiB\.$/);
+  assert.equal(element('[data-dat-status="geoip"]').textContent, 'Using MetaCubeX geoip categories.');
+
+  state.restart_pending = false;
+  state.geo_dat = {};
+  await ctx.load();
+  assert.equal(element('#restartBarRouting').dataset.state, 'ok');
+  assert.match(element('#restartBarRouting').innerHTML, /Mita runs the saved outbounds and routing/);
+  assert.equal(element('[data-dat-status="geosite"]').textContent, 'Not downloaded yet.');
+
+  let restarted;
+  const fetchState = ctx.fetch;
+  ctx.fetch = async (url, options) => {
+    if (String(url).endsWith('api/mita/restart')) { restarted = options.method; return {ok: true, json: async () => ({restarted: true})}; }
+    return fetchState(url, options);
+  };
+  await ctx.onRoutingClick({target: {closest: selector => selector === '[data-routing]'
+    ? {dataset: {routing: 'restart-mita'}, disabled: false, setAttribute() {}} : null}});
+  assert.equal(restarted, 'POST');
+  assert.match(element('#msg').textContent, /Mita restarted/);
+});

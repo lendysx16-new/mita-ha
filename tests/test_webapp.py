@@ -462,6 +462,74 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(app.get_settings()["geo_snapshots"], {})
 
     @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
+    def test_geo_categories_come_from_dat_sources_when_set(self):
+        dat = Path(self.temp.name) / "geosite-test.dat"
+        dat.write_bytes(geosite_dat([("RU-BLOCKED", [(2, "blocked.example", [])])]))
+        source = "https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat"
+        policy = {"name": "RU", "geoUrls": ["geosite:ru-blocked"], "action": "REJECT"}
+        with mock.patch.object(app, "fetch_geo_dat", return_value=dat) as fetch, \
+                mock.patch.object(app, "download_geo_sources") as json_download:
+            status, data = self.call("PUT", "/api/settings", {"geo_sources": {"geosite": source}, "egress": {"rules": [policy]}})
+            self.assertEqual(status, 200, data)
+            fetch.assert_called_once_with("geosite", source)
+            json_download.assert_not_called()
+        rule = app.build_mita_config(app.get_users(), app.get_settings())["egress"]["rules"][0]
+        self.assertEqual(rule["domainNames"], ["blocked.example"])
+        key = app.policy_geo_urls(app.get_settings())[0]
+        self.assertEqual(app.get_settings()["geo_snapshots"][key]["source"], source)
+
+        # A category missing from the .dat refuses the save with a clear message.
+        missing = dict(policy, geoUrls=["geosite:nope"])
+        with mock.patch.object(app, "fetch_geo_dat", return_value=dat):
+            status, data = self.call("PUT", "/api/settings", {"egress": {"rules": [missing]}})
+        self.assertEqual(status, 400)
+        self.assertIn("geosite:nope: no category 'nope' in geosite.dat", data["error"])
+
+        # Clearing the source switches the category back to MetaCubeX JSON.
+        with mock.patch.object(app, "download_geo_sources", return_value={
+                "domains": ["meta.example"], "ip_ranges": [], "skipped": []}) as json_download:
+            self.assertEqual(self.call("PUT", "/api/settings", {"geo_sources": {}})[0], 200)
+            json_download.assert_called_once()
+        self.assertEqual(app.get_settings()["geo_snapshots"][key]["source"], "json")
+        _, state = self.call("GET", "/api/state")
+        self.assertIn("geo_dat", state)
+
+    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
+    def test_restart_button_applies_saved_routing_without_container_restart(self):
+        self.addCleanup(setattr, app, "APPLIED_EGRESS", app.APPLIED_EGRESS)
+        self.addCleanup(setattr, app, "APPLIED_PROXY_OUTBOUNDS", app.APPLIED_PROXY_OUTBOUNDS)
+        app.record_applied_proxy_outbounds(persist=True)
+        self.assertFalse(self.call("GET", "/api/state")[1]["restart_pending"])
+        rules = {"rules": [{"domainNames": ["ads.example"], "action": "REJECT"}]}
+        self.assertEqual(self.call("PUT", "/api/settings", {"egress": rules})[0], 200)
+        self.assertTrue(self.call("GET", "/api/state")[1]["restart_pending"])
+
+        done = app.subprocess.CompletedProcess([], 0, stdout="ok")
+        with mock.patch.object(app.subprocess, "run", return_value=done) as run:
+            status, data = self.call("POST", "/api/mita/restart", {})
+        self.assertEqual((status, data["restarted"]), (200, True))
+        self.assertEqual([c.args[0] for c in run.call_args_list], [["/usr/bin/mita", "stop"], ["/usr/bin/mita", "start"]])
+        self.assertFalse(self.call("GET", "/api/state")[1]["restart_pending"])
+        saved = json.loads(app.applied_outbounds_path().read_text())
+        self.assertEqual(saved["egress"], app.egress_fingerprint(app.get_settings()))
+
+        failed = app.subprocess.CompletedProcess([], 1, stdout="config invalid")
+        with mock.patch.object(app.subprocess, "run", side_effect=[done, failed, failed]), \
+                mock.patch.object(app.time, "sleep"):
+            status, data = self.call("POST", "/api/mita/restart", {})
+        self.assertEqual(status, 503)
+        self.assertIn("mita start failed: config invalid", data["error"])
+
+        # Older versions stored only a list; that still loads.
+        app.write_json(app.applied_outbounds_path(), ["nl"])
+        app.load_applied_proxy_outbounds()
+        self.assertEqual((app.APPLIED_PROXY_OUTBOUNDS, app.APPLIED_EGRESS), ({"nl"}, None))
+
+    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "0"})
+    def test_restart_button_is_standalone_only(self):
+        self.assertEqual(self.call("POST", "/api/mita/restart", {})[0], 404)
+
+    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
     def test_legacy_built_in_sing_box_moves_to_outbound_and_policy(self):
         url = "https://raw.githubusercontent.com/owner/repo/main/geosite.json"
         settings = app.get_settings()
@@ -1070,3 +1138,112 @@ class OutboundProbeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 app.probe_target()
         self.assertEqual(app.probe_target(), ("https", "www.gstatic.com", 443, "/generate_204"))
+
+
+def _pb(field, value):
+    """Tiny protobuf encoder for building test geosite.dat / geoip.dat files."""
+    def varint(n):
+        out = b""
+        while True:
+            byte, n = n & 0x7F, n >> 7
+            out += bytes([byte | (0x80 if n else 0)])
+            if not n:
+                return out
+    if isinstance(value, int):
+        return varint(field << 3) + varint(value)
+    if isinstance(value, str):
+        value = value.encode()
+    return varint(field << 3 | 2) + varint(len(value)) + value
+
+
+def geosite_dat(categories):
+    return b"".join(_pb(1, _pb(1, code) + b"".join(
+        _pb(2, _pb(1, kind) + _pb(2, value) + b"".join(_pb(3, _pb(1, attr) + _pb(2, 1)) for attr in attrs))
+        for kind, value, attrs in domains)) for code, domains in categories)
+
+
+def geoip_dat(categories):
+    return b"".join(_pb(1, _pb(1, code) + b"".join(
+        _pb(2, _pb(1, app.ipaddress.ip_address(ip).packed) + _pb(2, prefix)) for ip, prefix in cidrs)
+        + (_pb(3, 1) if reverse else b"")) for code, cidrs, reverse in categories)
+
+
+class GeoDatTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.dir = Path(self.temp.name)
+
+    def write(self, name, data):
+        path = self.dir / name
+        path.write_bytes(data)
+        return path
+
+    def test_read_geosite_and_geoip_categories(self):
+        site = self.write("geosite.dat", geosite_dat([
+            ("CN", [(2, "baidu.com", [])]),
+            ("RU-BLOCKED", [(2, "Blocked.example", []), (3, "exact.example", []), (0, "keyword", []),
+                            (1, "^re$", []), (2, "пример.рф", []), (2, "cn-only.example", ["cn"])]),
+        ]))
+        self.assertEqual(app.read_dat_category(site, "geosite", "ru-blocked"), {
+            "domains": ["blocked.example", "cn-only.example"], "ip_ranges": [],
+            "skipped": ["domain", "domain_keyword", "domain_regex", "invalid domain suffixes"]})
+        self.assertEqual(app.read_dat_category(site, "geosite", "ru-blocked@cn")["domains"], ["cn-only.example"])
+        with self.assertRaisesRegex(ValueError, "no category 'missing'"):
+            app.read_dat_category(site, "geosite", "missing")
+
+        ip = self.write("geoip.dat", geoip_dat([
+            ("RU-BLOCKED", [("198.51.100.7", 24), ("2001:db8::", 32), ("0.0.0.0", 0)], False),
+            ("REV", [("10.0.0.0", 8)], True),
+        ]))
+        self.assertEqual(app.read_dat_category(ip, "geoip", "ru-blocked"), {
+            "domains": [], "ip_ranges": ["198.51.100.0/24", "2001:db8::/32"], "skipped": ["catch-all networks"]})
+        with self.assertRaisesRegex(ValueError, "reverse-match"):
+            app.read_dat_category(ip, "geoip", "rev")
+        with self.assertRaisesRegex(ValueError, "corrupt|empty"):
+            app.read_dat_category(self.write("bad.dat", b"\x0a\xff\xff\xff\xff\x0f"), "geosite", "x")
+        with self.assertRaisesRegex(ValueError, "empty"):
+            app.read_dat_category(self.write("empty.dat", b""), "geosite", "x")
+
+    def test_geo_sources_validation_and_redirects(self):
+        url = "https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat"
+        self.assertEqual(app.normalize_geo_sources({"geosite": f" {url} ", "geoip": ""}), {"geosite": url})
+        for bad in ("http://github.com/a/b/geosite.dat", "https://evil.example/geosite.dat",
+                    "https://github.com/a/b/geosite.json", "https://user@github.com/a/geosite.dat",
+                    "https://github.com:8443/a/geosite.dat"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                app.normalize_geo_sources({"geosite": bad})
+        with self.assertRaises(ValueError):
+            app.normalize_geo_sources({"other": url})
+        handler = app.GeoDatRedirects()
+        request = app.urllib.request.Request(url)
+        self.assertIsNone(handler.redirect_request(request, None, 302, "Found", {}, "https://evil.example/x.dat"))
+        self.assertIsNotNone(handler.redirect_request(
+            request, None, 302, "Found", {}, "https://release-assets.githubusercontent.com/x"))
+
+    def test_fetch_geo_dat_caches_daily_and_redownloads_on_change(self):
+        payloads = []
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+        class Opener:
+            def open(self, request, timeout):
+                payloads.append(request.full_url)
+                return Response(b"DATA-" + str(len(payloads)).encode())
+
+        with mock.patch.object(app, "DATA_DIR", self.dir), \
+                mock.patch.object(app.urllib.request, "build_opener", return_value=Opener()):
+            url = "https://github.com/o/r/releases/latest/download/geosite.dat"
+            path = app.fetch_geo_dat("geosite", url)
+            self.assertEqual(path.read_bytes(), b"DATA-1")
+            app.fetch_geo_dat("geosite", url)
+            self.assertEqual(len(payloads), 1, "cached copy is reused within a day")
+            self.assertEqual(app.fetch_geo_dat("geosite", url, force=True).read_bytes(), b"DATA-2")
+            app.fetch_geo_dat("geosite", url.replace("o/r", "o/other"))
+            self.assertEqual(len(payloads), 3, "a different URL is downloaded")
+            self.assertEqual(app.geo_dat_status()["geosite"]["bytes"], 6)
+            with mock.patch.object(app, "GEO_DAT_MAX_BYTES", 3), self.assertRaisesRegex(ValueError, "exceeds"):
+                app.fetch_geo_dat("geoip", "https://github.com/o/r/releases/latest/download/geoip.dat")
+            self.assertFalse((self.dir / "geo-cache" / "geoip.dat").exists())
