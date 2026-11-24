@@ -1059,10 +1059,15 @@ SING_BOX_BINARY = Path("/usr/local/bin/awgm-box")
 SING_BOX_FIRST_PORT = 1081
 SING_BOX_MAX_OUTBOUNDS = 32
 LEGACY_SING_BOX_NAME = "managed-sing-box"
-OUTBOUND_TYPES = {"vless", "vmess", "trojan", "shadowsocks", "hysteria2", "hysteria", "tuic", "socks", "http"}
+OUTBOUND_ENDPOINT_TYPES = {"awg", "masque-client"}
+OUTBOUND_TYPES = {
+    "vless", "vmess", "trojan", "shadowsocks", "hysteria2", "hysteria", "tuic",
+    "socks", "http", "mieru", "trusttunnel", *OUTBOUND_ENDPOINT_TYPES,
+}
 OUTBOUND_REQUIRED = {
     "vless": ("uuid",), "vmess": ("uuid",), "trojan": ("password",), "hysteria2": ("password",),
     "shadowsocks": ("method", "password"), "tuic": ("uuid",),
+    "mieru": ("username", "password", "transport"), "awg": ("private_key",),
 }
 OUTBOUND_MAX_BYTES = 64 * 1024
 
@@ -1076,18 +1081,29 @@ def validate_sing_box_outbound(outbound):
         raise ValueError("provide a share link or one sing-box outbound JSON object")
     protocol = outbound["type"]
     if protocol not in OUTBOUND_TYPES:
-        raise ValueError("supported protocols: VLESS, VMess, Trojan, Shadowsocks, Hysteria2, Hysteria, TUIC, SOCKS and HTTP")
+        raise ValueError("unsupported awgm-box outbound type")
     if "detour" in outbound:
         raise ValueError("chaining outbounds with detour is not supported")
-    server = outbound.get("server")
-    if not isinstance(server, str) or not server.strip() or any(c.isspace() for c in server):
-        raise ValueError("the outbound needs a server hostname or IP")
-    port = outbound.get("server_port")
-    if type(port) is not int or not 1 <= port <= 65535:
-        raise ValueError("the outbound needs server_port between 1 and 65535")
+    if protocol == "awg":
+        if outbound.get("useIntegratedTun", False) is not False:
+            raise ValueError("AmneziaWG must use the userspace network stack (useIntegratedTun: false)")
+        if not outbound.get("address") or not isinstance(outbound.get("peers"), list) or not outbound["peers"]:
+            raise ValueError("AmneziaWG requires local addresses and peers")
+    else:
+        server = outbound.get("server")
+        if not isinstance(server, str) or not server.strip() or any(c.isspace() for c in server):
+            raise ValueError("the outbound needs a server hostname or IP")
+        port = outbound.get("server_port")
+        if not (protocol == "mieru" and port in (None, 0) and outbound.get("server_ports")):
+            if type(port) is not int or not 1 <= port <= 65535:
+                raise ValueError("the outbound needs server_port between 1 and 65535")
+    if protocol == "masque-client" and outbound.get("system", False) is not False:
+        raise ValueError("MASQUE must use its userspace network stack")
     for key in OUTBOUND_REQUIRED.get(protocol, ()):
         if not isinstance(outbound.get(key), str) or not outbound[key].strip():
             raise ValueError(f"{protocol} outbound requires {key}")
+    if protocol == "mieru" and outbound.get("transport") not in ("TCP", "UDP"):
+        raise ValueError("Mieru transport must be TCP or UDP")
     if len(json.dumps(outbound)) > OUTBOUND_MAX_BYTES:
         raise ValueError("the outbound configuration is too large")
 
@@ -1152,11 +1168,62 @@ def _link_tls(query, enabled_by_default):
     return tls
 
 
+XHTTP_FIELDS = {
+    "host": "host", "path": "path", "mode": "mode", "headers": "headers",
+    "noGRPCHeader": "no_grpc_header", "noSSEHeader": "no_sse_header",
+    "xPaddingBytes": "x_padding_bytes", "xPaddingObfsMode": "x_padding_obfs_mode",
+    "xPaddingKey": "x_padding_key", "xPaddingHeader": "x_padding_header",
+    "xPaddingPlacement": "x_padding_placement", "xPaddingMethod": "x_padding_method",
+    "uplinkHTTPMethod": "uplink_http_method", "sessionPlacement": "session_placement",
+    "sessionKey": "session_key", "seqPlacement": "seq_placement", "seqKey": "seq_key",
+    "uplinkDataPlacement": "uplink_data_placement", "uplinkDataKey": "uplink_data_key",
+    "uplinkChunkSize": "uplink_chunk_size", "scMaxEachPostBytes": "sc_max_each_post_bytes",
+    "scMinPostsIntervalMs": "sc_min_posts_interval_ms", "scMaxBufferedPosts": "sc_max_buffered_posts",
+    "scStreamUpServerSecs": "sc_stream_up_server_secs", "sessionIDTable": "session_id_table",
+    "sessionIDLength": "session_id_length", "session-table": "session_id_table",
+    "session-length": "session_id_length",
+}
+XHTTP_XMUX_FIELDS = {
+    "maxConcurrency": "max_concurrency", "maxConnections": "max_connections",
+    "cMaxReuseTimes": "c_max_reuse_times", "hMaxRequestTimes": "h_max_request_times",
+    "hMaxReusableSecs": "h_max_reusable_secs", "hKeepAlivePeriod": "h_keep_alive_period",
+}
+
+
+def xhttp_options(options, fields, label):
+    keys = {alias: target for source, target in fields.items()
+            for alias in (source, target, target.replace("_", "-"))}
+    if not isinstance(options, dict) or any(key not in keys for key in options):
+        raise ValueError(f"unsupported {label} options; use native awgm-box JSON")
+    return {keys[key]: value for key, value in options.items()}
+
+
+def xhttp_transport(options):
+    if not isinstance(options, dict):
+        raise ValueError("XHTTP options must be an object")
+    options = options.copy()
+    xmux = options.pop("xmux", options.pop("reuse-settings", None))
+    transport = {"type": "xhttp", **xhttp_options(options, XHTTP_FIELDS, "XHTTP")}
+    if xmux is not None:
+        transport["xmux"] = xhttp_options(xmux, XHTTP_XMUX_FIELDS, "XHTTP reuse")
+    return transport
+
+
 def _link_transport(query):
     kind = (query.get("type") or query.get("net") or "tcp").lower()
     host, path = query.get("host", ""), query.get("path", "")
     if kind in ("tcp", "raw", ""):
         return None
+    if kind in ("xhttp", "splithttp"):
+        extra = {}
+        if query.get("extra"):
+            try:
+                extra = json.loads(query["extra"])
+            except ValueError as exc:
+                raise ValueError("XHTTP extra must be a JSON object") from exc
+            if not isinstance(extra, dict):
+                raise ValueError("XHTTP extra must be a JSON object")
+        return xhttp_transport({**extra, **{key: query[key] for key in ("host", "path", "mode") if query.get(key)}})
     if kind == "ws":
         transport = {"type": "ws"}
         if path:
@@ -1254,6 +1321,8 @@ def parse_share_link(link):
         outbound = {"type": "vless", "server": server, "server_port": port, "uuid": user}
         if query.get("flow"):
             outbound["flow"] = query["flow"]
+        if query.get("encryption") not in (None, "", "none"):
+            outbound["encryption"] = query["encryption"]
     elif scheme == "trojan":
         outbound = {"type": "trojan", "server": server, "server_port": port, "password": user}
     elif scheme == "tuic":
@@ -1302,6 +1371,9 @@ def parse_outbound_config(value):
     if not isinstance(value, dict):
         raise ValueError("provide a share link or one sing-box outbound JSON object")
     outbound = {key: item for key, item in value.items() if key != "tag"}
+    if outbound.get("type") in ("awg", "amneziawg"):
+        outbound["type"] = "awg"
+        outbound.setdefault("useIntegratedTun", False)
     validate_sing_box_outbound(outbound)
     return outbound, suggested
 
@@ -1432,7 +1504,7 @@ def fetch_outbound_subscription(url, headers=None):
 
 def clash_outbound(proxy):
     protocol = {"ss": "shadowsocks", "socks5": "socks"}.get(proxy.get("type"), proxy.get("type"))
-    if protocol not in {"vless", "vmess", "trojan", "shadowsocks", "hysteria2", "tuic", "socks", "http"}:
+    if protocol not in {"vless", "vmess", "trojan", "shadowsocks", "hysteria2", "tuic", "socks", "http", "mieru"}:
         raise ValueError("unsupported Clash proxy")
     if any(proxy.get(field) for field in ("plugin", "dialer-proxy", "smux", "shadow-tls", "ech-opts")):
         raise ValueError("unsupported Clash proxy options")
@@ -1443,6 +1515,18 @@ def clash_outbound(proxy):
     for key in ("uuid", "password", "username", "flow"):
         if key in proxy:
             outbound[key] = proxy[key]
+    if protocol == "mieru":
+        for key in ("transport", "multiplexing"):
+            if key in proxy:
+                outbound[key] = proxy[key]
+        if proxy.get("port-range"):
+            ranges = proxy["port-range"]
+            outbound["server_ports"] = ranges if isinstance(ranges, list) else [ranges]
+        if proxy.get("traffic-pattern"):
+            outbound["traffic_pattern"] = proxy["traffic-pattern"]
+        if port is None:
+            outbound.pop("server_port")
+        return outbound
     if protocol == "vmess":
         outbound.update(security=proxy.get("cipher") or "auto", alter_id=proxy.get("alterId", 0))
     elif protocol == "shadowsocks":
@@ -1453,8 +1537,10 @@ def clash_outbound(proxy):
         for key in ("congestion-controller", "udp-relay-mode"):
             if key in proxy:
                 outbound[key.replace("-", "_").replace("controller", "control")] = proxy[key]
-    if "encryption" in proxy and proxy["encryption"] not in ("", "none"):
-        raise ValueError("unsupported Clash encryption setting")
+    if proxy.get("encryption") not in (None, "", "none"):
+        if protocol != "vless" or not isinstance(proxy["encryption"], str):
+            raise ValueError("unsupported Clash encryption setting")
+        outbound["encryption"] = proxy["encryption"]
     if proxy.get("obfs"):
         if protocol != "hysteria2" or proxy["obfs"] != "salamander":
             raise ValueError("unsupported Clash obfuscation")
@@ -1478,6 +1564,9 @@ def clash_outbound(proxy):
     if tls:
         outbound["tls"] = tls
     network = proxy.get("network") or "tcp"
+    if network in ("xhttp", "splithttp"):
+        outbound["transport"] = xhttp_transport(proxy.get("xhttp-opts") or {})
+        return outbound
     if network not in ("tcp", "ws", "grpc", "httpupgrade"):
         raise ValueError("unsupported Clash transport")
     ws = proxy.get("ws-opts") or {}
@@ -1534,11 +1623,13 @@ def parse_subscription_servers(text):
         value = read_clash_subscription(text)
     clash = isinstance(value, dict) and "proxies" in value
     if isinstance(value, dict):
-        entries = value.get("proxies" if clash else "outbounds")
+        entries = value.get("proxies") if clash else value.get("outbounds", [])
         groups = value.get("proxy-groups", []) if clash else [
             item for item in (entries if isinstance(entries, list) else []) if isinstance(item, dict)
-            and item.get("type") in ("selector", "urltest")
+            and item.get("type") in ("selector", "urltest", "fallback")
         ]
+        if not clash and isinstance(entries, list) and isinstance(value.get("endpoints"), list):
+            entries = entries + value["endpoints"]
     elif isinstance(value, list):
         entries, groups = value, []
     else:
@@ -1578,7 +1669,7 @@ def parse_subscription_servers(text):
     group_servers = [expand_group(name) for name in group_names]
     servers, skipped = [], 0
     for entry in entries:
-        if isinstance(entry, dict) and entry.get("type") in ("selector", "urltest", "direct", "block", "dns"):
+        if isinstance(entry, dict) and entry.get("type") in ("selector", "urltest", "fallback", "direct", "block", "dns"):
             continue
         if isinstance(entry, str) and (not entry.strip() or entry.lstrip().startswith("#")):
             continue
@@ -1597,7 +1688,7 @@ def parse_subscription_servers(text):
         except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
             skipped += 1
             continue
-        name = name if isinstance(name, str) and name.strip() else outbound["server"]
+        name = name if isinstance(name, str) and name.strip() else outbound.get("server") or outbound["type"]
         servers.append({
             "name": name[:160],
             "selector": hashlib.sha256(json.dumps([name, outbound["type"]]).encode()).hexdigest(),
@@ -1635,8 +1726,11 @@ def selected_subscription_config(result, binding, current):
         return candidates[0]
     if current in candidates:
         return current
-    endpoint = (current["server"], current["server_port"])
-    matching = [config for config in candidates if (config["server"], config["server_port"]) == endpoint]
+    endpoint = (current.get("server"), current.get("server_port"), current.get("peers"))
+    matching = [
+        config for config in candidates
+        if (config.get("server"), config.get("server_port"), config.get("peers")) == endpoint
+    ]
     if len(matching) == 1:
         return matching[0]
     raise ValueError("Several subscription servers have the same name and protocol")
@@ -2305,12 +2399,18 @@ def sing_box_config(settings):
                 "users": [{"username": "mita", "password": password}]}
 
     inbounds = [socks("router", ROUTER_PORT, router_password(settings))]
-    outbounds, rules, rule_sets = [], [], {}
+    outbounds, endpoints, rules, rule_sets = [], [], [], {}
     for i, entry in enumerate(entries):
         validate_sing_box_outbound(entry["outbound"])
         inbounds.append(socks(f"probe-{i}", entry["port"], entry["password"]))
         inbounds.append(socks(f"via-{i}", entry["port"] + VIA_PORT_OFFSET, entry["password"]))
-        outbounds.append(dict(entry["outbound"], tag=f"out-{i}"))
+        outbound = dict(entry["outbound"], tag=f"out-{i}")
+        if outbound["type"] in OUTBOUND_ENDPOINT_TYPES:
+            if outbound["type"] == "awg":
+                outbound.setdefault("useIntegratedTun", False)
+            endpoints.append(outbound)
+        else:
+            outbounds.append(outbound)
         rules.append({"inbound": [f"probe-{i}"], "outbound": f"out-{i}"})
     outbounds.append({"type": "direct", "tag": "direct"})
     via_db = settings.get("postgres_outbound") or ""
@@ -2353,6 +2453,8 @@ def sing_box_config(settings):
         rules.append({"inbound": [inbound], **target(final_action, final, via)})
     config = {"log": {"level": "warn"}, "inbounds": inbounds, "outbounds": outbounds,
               "route": {"rules": rules, "final": "direct"}}
+    if endpoints:
+        config["endpoints"] = endpoints
     if rule_sets:
         config["route"]["rule_set"] = list(rule_sets.values())
     return config

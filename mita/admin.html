@@ -1307,7 +1307,8 @@ function readGeoRuleSet(source) {
 // outbound by name; they are saved as a whole through /api/settings.
 const routingEdit = {outbound: null, list: null};  // outbound name / policy index; '' or -1 for new
 const PROTOCOL_LABELS = {vless: 'VLESS', vmess: 'VMess', trojan: 'Trojan', shadowsocks: 'Shadowsocks',
-  hysteria2: 'Hysteria2', hysteria: 'Hysteria', tuic: 'TUIC', socks: 'SOCKS', http: 'HTTP'};
+  hysteria2: 'Hysteria2', hysteria: 'Hysteria', tuic: 'TUIC', socks: 'SOCKS', http: 'HTTP',
+  mieru: 'Mieru', awg: 'AmneziaWG', 'masque-client': 'MASQUE', trusttunnel: 'TrustTunnel'};
 
 function currentEgress() {
   const egress = JSON.parse(JSON.stringify(state.settings.egress || {}));
@@ -1329,6 +1330,12 @@ function outboundNames() {
 function protocolLabel(outbound) {
   const label = PROTOCOL_LABELS[outbound.type] || outbound.type;
   return outbound.tls && outbound.tls.reality && outbound.tls.reality.enabled ? label + ' REALITY' : label;
+}
+function outboundEndpoint(outbound) {
+  const peer = outbound.type === 'awg' ? outbound.peers?.[0] : null;
+  const host = peer ? peer.address : outbound.server;
+  const port = peer ? peer.port : outbound.server_port || outbound.server_ports?.join(', ');
+  return host ? host + (port ? ':' + port : '') : '—';
 }
 function ruleTargetValue(rule) {
   return rule.action === 'PROXY' ? 'proxy:' + (rule.proxyNames || [])[0] : rule.action;
@@ -1428,7 +1435,7 @@ function renderRouting() {
     return html`<tr>
       <td data-label="Name"><span class="target-badge">${name}</span></td>
       <td data-label="Protocol">${protocolLabel(outbound)}</td>
-      <td data-label="Server"><code>${outbound.server}:${outbound.server_port}</code></td>
+      <td data-label="Server"><code>${outboundEndpoint(outbound)}</code></td>
       <td data-label="Status">${healthCell(name)}
         ${subscription ? html`<div class="field-help">Subscription auto-refresh
           ${subscription.error ? ' · ' + subscription.error : subscription.checked_at ? ' · ' + displayTime(subscription.checked_at) : ''}
@@ -1499,7 +1506,7 @@ function renderSubscriptionServers() {
     .filter(({server}) => !group || server.groups.includes(Number(group)));
   setHTML($('#outboundSubscriptionServer'), [
     html`<option value="">Choose a server</option>`,
-    ...choices.map(({server, index}) => html`<option value="${index}">${server.name} · ${protocolLabel(server.config)} · ${server.config.server}:${server.config.server_port}</option>`),
+    ...choices.map(({server, index}) => html`<option value="${index}">${server.name} · ${protocolLabel(server.config)} · ${outboundEndpoint(server.config)}</option>`),
   ]);
   $('#outboundSubscriptionServer').value = '';
 }
@@ -1551,6 +1558,12 @@ $('#outboundSubscriptionServer').onchange = () => {
   $('#outboundSubscriptionRefresh').checked = true;
   if (!fields.name.readOnly && (!fields.name.value.trim() || fields.name.value === subscriptionSuggestedName)) {
     subscriptionSuggestedName = server.name.replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+    if (!subscriptionSuggestedName) {
+      const used = new Set(outboundNames());
+      let index = Number(value) + 1;
+      while (used.has('server-' + index)) index++;
+      subscriptionSuggestedName = 'server-' + index;
+    }
     fields.name.value = subscriptionSuggestedName;
   }
 };

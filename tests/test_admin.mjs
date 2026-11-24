@@ -529,7 +529,7 @@ test('subscription groups filter concrete servers and only the chosen config is 
     assert.equal(JSON.parse(request.body).headers, 'User-Agent: My client\nX-Device-OS: iOS');
     return {ok: true, json: async () => ({servers: [
       makeServer('A <script>', 0, 'a.example'),
-      makeServer('B Asia', 1, 'b.example'),
+      makeServer('🇳🇱 Нидерланды', 1, 'b.example'),
     ], groups: ['Europe', 'Asia'], skipped: 1})};
   };
   element('#outboundEditor').elements = {name: {value: '', focus() {}}, config: {value: '', focus() {}}};
@@ -547,7 +547,7 @@ test('subscription groups filter concrete servers and only the chosen config is 
   options.value = '1';
   options.onchange();
   const fields = element('#outboundEditor').elements;
-  assert.equal(fields.name.value, 'B-Asia');
+  assert.equal(fields.name.value, 'server-2');
   assert.equal(JSON.parse(fields.config.value).server, 'b.example');
   assert.equal(element('#outboundSubscriptionRefresh').checked, true);
   ctx.closeRoutingEditor('outbound');

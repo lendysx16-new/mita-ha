@@ -42,6 +42,11 @@ RUN case "${TARGETARCH}" in \
     && echo "${checksum}  /tmp/awgm-box" | sha256sum -c - \
     && install -m 0755 /tmp/awgm-box /usr/local/bin/awgm-box
 
+FROM debian:bookworm-slim AS awgm-box-runtime
+COPY --from=awgm-box-downloader /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=awgm-box-downloader /usr/local/bin/awgm-box /usr/local/bin/awgm-box
+ENTRYPOINT ["/usr/local/bin/awgm-box"]
+
 FROM debian:bookworm-slim
 
 RUN apt-get update \

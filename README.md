@@ -103,6 +103,13 @@ name (the link's own name is used if you leave it empty). awgm-box checks the
 outbound before it is saved. Outbounds cannot be renamed, and one that a
 policy, **Everything else** or an account still uses cannot be deleted.
 
+VLESS XHTTP links and Clash `xhttp-opts` are supported. The importer maps the
+path, host, mode and common XHTTP options to awgm-box. For advanced layouts
+such as a separate download transport, use native awgm-box JSON.
+Native JSON also supports Mieru, TrustTunnel, AmneziaWG (`type: awg`), and
+MASQUE (`type: masque-client`). AmneziaWG and MASQUE use the userspace network
+stack. Mieru can also be imported from Clash subscriptions.
+
 For REALITY, awgm-box 42 leaves X25519MLKEM768 enabled by default with
 compatible uTLS fingerprints. The importer preserves an explicit
 `support-x25519mlkem768` flag from Clash `reality-opts` or a share-link query.

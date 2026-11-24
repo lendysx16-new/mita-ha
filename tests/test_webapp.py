@@ -105,6 +105,7 @@ class AdminAPITests(unittest.TestCase):
         users[0]["allow_loopback_ip"] = True
         self.assertFalse(app.build_mita_config(users, app.get_settings())["users"][0]["allowLoopbackIP"])
 
+    @unittest.skipUnless(app.yaml, "PyYAML is required for Clash YAML import tests")
     def test_subscription_preview_requires_auth_and_imports_grouped_clash_servers(self):
         document = """
 proxies:
@@ -258,6 +259,46 @@ proxy-groups:
         status, _ = self.call("PUT", "/api/outbounds/tracked", {"config": current["outbound"], "subscription": None})
         self.assertEqual(status, 200)
         self.assertNotIn("subscription", app.get_settings()["outbounds"][0])
+
+    def test_xhttp_share_link_and_clash_subscription_preserve_transport(self):
+        uri = (
+            "vless://11111111-1111-4111-8111-111111111111@example.com:443"
+            "?security=reality&pbk=example&type=xhttp&host=front.example&path=%2Fsub&mode=packet-up"
+            "&extra=%7B%22xPaddingBytes%22%3A%22100-500%22%7D"
+        )
+        outbound, _ = app.parse_outbound_config(uri)
+        self.assertEqual(outbound["transport"], {
+            "type": "xhttp", "host": "front.example", "path": "/sub",
+            "mode": "packet-up", "x_padding_bytes": "100-500",
+        })
+        result = app.parse_subscription_servers(json.dumps({"proxies": [{
+            "name": "xhttp", "type": "vless", "server": "example.com", "port": 443,
+            "uuid": "11111111-1111-4111-8111-111111111111", "network": "xhttp",
+            "xhttp-opts": {"path": "/sub", "mode": "stream-up", "no-grpc-header": True},
+        }]}))
+        self.assertEqual(result["servers"][0]["config"]["transport"], {
+            "type": "xhttp", "path": "/sub", "mode": "stream-up", "no_grpc_header": True,
+        })
+
+    def test_awgm_box_outbound_types_generate_correct_config_sections(self):
+        options = [
+            {"type": "mieru", "server": "example.com", "server_ports": ["2022-2024"],
+             "username": "user", "password": "test", "transport": "TCP"},
+            {"type": "trusttunnel", "server": "example.com", "server_port": 443},
+            {"type": "amneziawg", "address": ["10.0.0.2/32"], "private_key": "key",
+             "peers": [{"address": "192.0.2.1", "port": 51820, "public_key": "key"}]},
+            {"type": "masque-client", "server": "example.com", "server_port": 443},
+        ]
+        prepared = [app.parse_outbound_config(entry)[0] for entry in options]
+        config = app.sing_box_config({
+            "router_password": "bridge-secret",
+            "outbounds": [{"name": f"route-{i}", "password": "test", "port": 2081 + i, "outbound": entry}
+                          for i, entry in enumerate(prepared)],
+        })
+        self.assertEqual([entry["type"] for entry in config["outbounds"]], ["mieru", "trusttunnel", "direct"])
+        self.assertEqual([entry["type"] for entry in config["endpoints"]], ["awg", "masque-client"])
+        self.assertFalse(config["endpoints"][0]["useIntegratedTun"])
+        self.assertEqual(config["endpoints"][0]["tag"], "out-2")
 
     def test_add_user_and_generate_password(self):
         status, data = self.call("POST", "/api/users", {"username": "second"})
