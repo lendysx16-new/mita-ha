@@ -466,7 +466,7 @@ def pg_connect(dsn, direct=False):
     if not via:
         return psycopg2.connect(dsn, **PG_CONNECT_OPTIONS)
     if not SING_BOX.running():
-        raise PgRouteError(f"sing-box is not running, so the PostgreSQL connection through {via!r} is unavailable")
+        raise PgRouteError(f"awgm-box is not running, so the PostgreSQL connection through {via!r} is unavailable")
     return psycopg2.connect(dsn, hostaddr="127.0.0.1", port=PG_FORWARD_PORT, **PG_CONNECT_OPTIONS)
 
 
@@ -1048,7 +1048,7 @@ def normalize_egress(value, *, destination_limit=EGRESS_RULE_DESTINATION_LIMIT, 
     return {"proxies": proxies, "rules": rules}
 
 
-SING_BOX_BINARY = Path("/usr/local/bin/sing-box")
+SING_BOX_BINARY = Path("/usr/local/bin/awgm-box")
 # Every outbound runs in one sing-box process. Each gets its own authenticated
 # SOCKS5 inbound on loopback, starting at this port, which Mita uses as a proxy.
 SING_BOX_FIRST_PORT = 1081
@@ -2072,10 +2072,10 @@ class SingBoxBridge:
                 input=json.dumps(config), text=True, capture_output=True, timeout=10,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise ValueError("could not validate the sing-box configuration") from exc
+            raise ValueError("could not validate the awgm-box configuration") from exc
         if result.returncode:
             detail = (result.stderr or result.stdout).strip().splitlines()
-            raise ValueError("sing-box rejected the configuration" + (f": {detail[-1][:300]}" if detail else ""))
+            raise ValueError("awgm-box rejected the configuration" + (f": {detail[-1][:300]}" if detail else ""))
 
     def start(self, config):
         ports = [inbound["listen_port"] for inbound in config["inbounds"]]
@@ -2085,9 +2085,9 @@ class SingBoxBridge:
                     probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     probe.bind(("127.0.0.1", port))
             except OSError as exc:
-                raise ValueError(f"sing-box needs loopback port {port} to be free") from exc
+                raise ValueError(f"awgm-box needs loopback port {port} to be free") from exc
 
-        with tempfile.TemporaryDirectory(prefix="mita-sing-box-") as directory:
+        with tempfile.TemporaryDirectory(prefix="mita-awgm-box-") as directory:
             path = Path(directory) / "config.json"
             write_json(path, config)
             process = subprocess.Popen(
@@ -2112,7 +2112,7 @@ class SingBoxBridge:
             finally:
                 if self.process is not process:
                     self.stop_process(process)
-        raise ValueError("sing-box could not start its local SOCKS5 listeners")
+        raise ValueError("awgm-box could not start its local SOCKS5 listeners")
 
     def replace(self, updated, previous, persist):
         """Switch to the updated config (None stops sing-box), or roll back to the previous one."""
@@ -2129,7 +2129,7 @@ class SingBoxBridge:
                 try:
                     self.start(previous)
                 except (ValueError, OSError) as rollback:
-                    raise ValueError(f"{original}; previous sing-box also failed to restart: {rollback}") from original
+                    raise ValueError(f"{original}; previous awgm-box also failed to restart: {rollback}") from original
             raise
 
 
@@ -2146,11 +2146,11 @@ def supervise_sing_box(stop_event):
                 config = sing_box_config_or_none(get_settings())
                 if config and not SING_BOX.running():
                     SING_BOX.start(config)
-                    print("[web] sing-box restarted", flush=True)
+                    print("[web] awgm-box restarted", flush=True)
                 delay = 1
             except (ValueError, OSError, StateError):
                 delay = min(delay * 2, 60)
-                print(f"[web] sing-box unavailable; retrying in {delay}s", flush=True)
+                print(f"[web] awgm-box unavailable; retrying in {delay}s", flush=True)
 
 
 # ---------- Outbound health ----------
@@ -2182,7 +2182,7 @@ def _recv_exact(sock, size):
     while len(data) < size:
         chunk = sock.recv(size - len(data))
         if not chunk:
-            raise ConnectionError("sing-box closed the connection")
+            raise ConnectionError("awgm-box closed the connection")
         data += chunk
     return data
 
@@ -2196,17 +2196,17 @@ def probe_outbound(entry, timeout=PROBE_TIMEOUT):
         try:
             sock = socket.create_connection(("127.0.0.1", entry["port"]), timeout=timeout)
         except OSError:
-            result["error"] = "sing-box is not listening for this outbound"
+            result["error"] = "awgm-box is not listening for this outbound"
             return result
         with sock:
             sock.settimeout(timeout)
             sock.sendall(b"\x05\x01\x02")  # SOCKS5, one method: username/password
             if _recv_exact(sock, 2) != b"\x05\x02":
-                raise ConnectionError("sing-box refused the local SOCKS5 login")
+                raise ConnectionError("awgm-box refused the local SOCKS5 login")
             user, password = b"mita", entry["password"].encode()
             sock.sendall(b"\x01" + bytes([len(user)]) + user + bytes([len(password)]) + password)
             if _recv_exact(sock, 2)[1] != 0:
-                raise ConnectionError("sing-box rejected the local SOCKS5 credentials")
+                raise ConnectionError("awgm-box rejected the local SOCKS5 credentials")
             name = host.encode("idna")
             sock.sendall(b"\x05\x01\x00\x03" + bytes([len(name)]) + name + port.to_bytes(2, "big"))
             reply = _recv_exact(sock, 4)
@@ -3413,7 +3413,7 @@ class AdminHandler(CommonHandler):
                         try:
                             apply_routing(previous, settings)
                         except (ValueError, OSError) as exc:
-                            print(f"[web] could not restore the previous sing-box routing: {exc}", flush=True)
+                            print(f"[web] could not restore the previous awgm-box routing: {exc}", flush=True)
                     raise
             elif not routing_changed:
                 write_json(SETTINGS_PATH, settings)
@@ -3550,7 +3550,7 @@ def serve():
     threading.Thread(target=log_db_worker, name="postgres-log-forwarder", daemon=True).start()
     threading.Thread(target=backup_db_worker, name="postgres-backup-worker", daemon=True).start()
     if sing_box_available():
-        threading.Thread(target=supervise_sing_box, args=(stop_bridge,), name="sing-box-supervisor", daemon=True).start()
+        threading.Thread(target=supervise_sing_box, args=(stop_bridge,), name="awgm-box-supervisor", daemon=True).start()
         threading.Thread(target=geo_refresh_worker, args=(stop_bridge,), name="github-geo-refresh", daemon=True).start()
         threading.Thread(target=outbound_health_worker, args=(stop_bridge,), name="outbound-health", daemon=True).start()
     print(f"[web] admin UI listening on {admin_host}:{ADMIN_PORT}", flush=True)

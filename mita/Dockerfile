@@ -27,7 +27,20 @@ RUN patch --batch --fuzz=0 -p1 < /tmp/per-user-outbound.patch \
     && go test ./pkg/socks5 -run TestPerUserProxyOutbound \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/mita ./cmd/mita
 
-FROM ghcr.io/sagernet/sing-box:v1.14.4 AS sing-box
+FROM debian:bookworm-slim AS awgm-box-downloader
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+ARG TARGETARCH
+RUN case "${TARGETARCH}" in \
+      amd64) asset="linux-amd64"; checksum="d8438f3ed030a5b964b23175c870b3749ecff9b844f48fe96723cfcd11e16f8d" ;; \
+      arm64) asset="aarch64-3.10"; checksum="e286e0704ac4daf9b0039f0fce5d6b9fc0dcf1b0ad5092615ee037eeac580dfd" ;; \
+      *) echo "Unsupported awgm-box architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -fL --retry 3 -o /tmp/awgm-box \
+       "https://github.com/hoaxisr/awgm-box/releases/download/42/awgm-box-42-${asset}" \
+    && echo "${checksum}  /tmp/awgm-box" | sha256sum -c - \
+    && install -m 0755 /tmp/awgm-box /usr/local/bin/awgm-box
 
 FROM debian:bookworm-slim
 
@@ -36,7 +49,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=mita-routed-builder /out/mita /usr/bin/mita
-COPY --from=sing-box /usr/local/bin/sing-box /usr/local/bin/sing-box
+COPY --from=awgm-box-downloader /usr/local/bin/awgm-box /usr/local/bin/awgm-box
 COPY run.sh /run.sh
 COPY webapp.py /app/webapp.py
 COPY subscription.html /app/subscription.html

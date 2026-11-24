@@ -472,16 +472,16 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
 
       <div id="outboundsTab" class="tab-panel settings-stack" aria-label="Outbounds">
         <div class="status-line restart-bar" id="restartBarOutbounds" role="status"></div>
-        <div id="singBoxStatus" class="status-line" role="status">Checking sing-box…</div>
+        <div id="singBoxStatus" class="status-line" role="status">Checking awgm-box…</div>
         <section class="card" id="outboundsCard">
           <div class="card-header">
-            <div><h2>Outbounds</h2><p class="card-subtitle">Your provider servers. Every outbound runs through the bundled sing-box, so Hysteria2, VLESS (incl. REALITY), Trojan, Shadowsocks, TUIC and SOCKS all work. Bind outbounds to domains in the <a href="#/routing">Routing</a> tab.</p></div>
+            <div><h2>Outbounds</h2><p class="card-subtitle">Your provider servers. Every outbound runs through the bundled awgm-box, so Hysteria2, VLESS (incl. REALITY), Trojan, Shadowsocks, TUIC and SOCKS all work. Bind outbounds to domains in the <a href="#/routing">Routing</a> tab.</p></div>
             <button id="addOutbound" class="btn" type="button">+ Add outbound</button>
           </div>
           <form id="outboundEditor" class="routing-editor" hidden autocomplete="off">
             <div class="form-grid">
               <label>Name<input name="name" maxlength="64" pattern="[A-Za-z0-9_.\-]+" title="Letters, digits, _ . or -" placeholder="e.g. nl-hysteria" spellcheck="false"><span class="field-help" data-name-help>Used to pick this outbound in Routing or for an account. Leave empty to use the link's name. It cannot be renamed later.</span></label>
-              <label class="span-2">Share link or sing-box JSON<textarea name="config" rows="6" required spellcheck="false" autocapitalize="off" placeholder="hysteria2://password@server:443?sni=server#NL&#10;vless://uuid@server:443?security=reality&amp;pbk=…#DE&#10;or one sing-box outbound object"></textarea><span class="field-help">Supported links: hysteria2:// (hy2://), vless://, vmess://, trojan://, ss://, tuic://, socks5://, http://. The link is converted to a sing-box outbound and checked by sing-box before saving.</span></label>
+              <label class="span-2">Share link or sing-box JSON<textarea name="config" rows="6" required spellcheck="false" autocapitalize="off" placeholder="hysteria2://password@server:443?sni=server#NL&#10;vless://uuid@server:443?security=reality&amp;pbk=…#DE&#10;or one awgm-box outbound object"></textarea><span class="field-help">Supported links: hysteria2:// (hy2://), vless://, vmess://, trojan://, ss://, tuic://, socks5://, http://. The link is converted to an awgm-box outbound and checked by awgm-box before saving.</span></label>
             </div>
             <div class="editor-actions"><button class="btn btn-secondary" type="button" data-cancel-editor>Cancel</button><button class="btn" type="submit" data-save-outbound>Save outbound</button></div>
           </form>
@@ -496,7 +496,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
         <div class="status-line restart-bar" id="restartBarRouting" role="status"></div>
         <section class="card" id="listsCard">
           <div class="card-header">
-            <div><h2>Routing policies</h2><p class="card-subtitle">sing-box routes all traffic: each policy sends its domains, networks and GeoSite / GeoIP categories to one saved outbound, directly, or blocks them. Policies are checked top to bottom; the first match wins. Saving applies instantly, without restarting Mita.</p></div>
+            <div><h2>Routing policies</h2><p class="card-subtitle">awgm-box routes all traffic: each policy sends its domains, networks and GeoSite / GeoIP categories to one saved outbound, directly, or blocks them. Policies are checked top to bottom; the first match wins. Saving applies instantly, without restarting Mita.</p></div>
             <button id="addList" class="btn" type="button">+ Add policy</button>
           </div>
           <form id="listEditor" class="routing-editor" hidden autocomplete="off">
@@ -532,7 +532,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
           <div class="card-actions"><button id="saveGeoSources" class="btn" type="submit">Save Geo sources</button></div>
         </form>
         <section class="card" id="routePreviewCard">
-          <details id="routePreview"><summary class="card-header"><div><h2>Generated sing-box route</h2><p class="card-subtitle">Read-only: the routing rules sing-box runs, built from the policies above.</p></div></summary>
+          <details id="routePreview"><summary class="card-header"><div><h2>Generated awgm-box route</h2><p class="card-subtitle">Read-only: the routing rules awgm-box runs, built from the policies above.</p></div></summary>
             <div class="card-body"><pre id="routePreviewJson" class="route-preview">Routing is off until you add an outbound or a policy.</pre></div>
           </details>
         </section>
@@ -737,7 +737,7 @@ const VIEWS = {
   userDetailTab: {slug: 'users', title: 'User details', description: 'Subscription link, devices and access for this account.'},
   devicesTab: {slug: 'devices', title: 'Devices', description: 'Every registered HWID across all users.'},
   trafficTab: {slug: 'traffic', title: 'Traffic', description: 'Per-user and per-device transfer statistics.'},
-  outboundsTab: {slug: 'outbounds', title: 'Outbounds', description: 'Provider servers, run through the bundled sing-box.'},
+  outboundsTab: {slug: 'outbounds', title: 'Outbounds', description: 'Provider servers, run through the bundled awgm-box.'},
   routingTab: {slug: 'routing', title: 'Routing', description: 'Domain lists bound to saved outbounds, checked top to bottom.'},
   confTab: {slug: 'settings', title: 'Settings', description: 'Public connection, logging and backups.'},
 };
@@ -1289,7 +1289,7 @@ function readGeoRuleSet(source) {
 }
 
 /* ---------- Outbounds and routing policies ---------- */
-// Outbounds live in settings.outbounds (each one runs inside sing-box) and are edited
+// Outbounds live in settings.outbounds (each one runs inside awgm-box) and are edited
 // through /api/outbounds. Routing policies are Mita egress rules that reference an
 // outbound by name; they are saved as a whole through /api/settings.
 const routingEdit = {outbound: null, list: null};  // outbound name / policy index; '' or -1 for new
@@ -1358,22 +1358,22 @@ function renderSingBoxStatus() {
   const count = savedOutbounds().length;
   if (!state.sing_box_available) {
     el.dataset.state = 'error';
-    el.textContent = 'sing-box is not installed in this image. Rebuild with: docker compose up -d --build mita';
+    el.textContent = 'awgm-box is not installed in this image. Rebuild with: docker compose up -d --build mita';
   } else if (!state.routing_active) {
     el.dataset.state = '';
-    el.textContent = 'Routing is off: Mita connects directly. Add an outbound or a policy to route through sing-box.';
+    el.textContent = 'Routing is off: Mita connects directly. Add an outbound or a policy to route through awgm-box.';
   } else {
     el.dataset.state = state.sing_box_running ? 'ok' : 'error';
     el.textContent = state.sing_box_running
-      ? 'sing-box routes all traffic' + (count ? ' with ' + plural(count, 'outbound', 'outbounds') : '') + '.'
-      : 'sing-box is not running, so routed traffic fails. It is restarted automatically; check the outbounds.';
+      ? 'awgm-box routes all traffic' + (count ? ' with ' + plural(count, 'outbound', 'outbounds') : '') + '.'
+      : 'awgm-box is not running, so routed traffic fails. It is restarted automatically; check the outbounds.';
   }
 }
 
 function renderRestartBars() {
   const text = state.restart_pending
     ? 'Mita needs a restart to pick up new or removed outbounds (for per-account outbounds). Active connections drop for a few seconds.'
-    : 'Mita is up to date. Policy changes apply instantly through sing-box.';
+    : 'Mita is up to date. Policy changes apply instantly through awgm-box.';
   for (const id of ['#restartBarOutbounds', '#restartBarRouting']) {
     const bar = $(id);
     bar.dataset.state = state.restart_pending ? 'warn' : 'ok';
@@ -1495,7 +1495,7 @@ function openListEditor(index) {
 }
 
 async function saveEgress(egress, button, success) {
-  const ok = await mutate(button, () => api.saveSettings({egress}), success + ' sing-box applied it.');
+  const ok = await mutate(button, () => api.saveSettings({egress}), success + ' awgm-box applied it.');
   if (ok) fillSettings(state.settings);
   return ok;
 }
@@ -1520,7 +1520,7 @@ $('#addOutbound').onclick = () => openOutboundEditor('');
 $('#finalForm').addEventListener('submit', async e => {
   e.preventDefault();
   await mutate($('#saveFinal'), () => api.saveSettings({routing_final: $('#routingFinal').value}),
-    'Everything else saved; sing-box applied it.');
+    'Everything else saved; awgm-box applied it.');
 });
 $('#geoSourcesForm').addEventListener('submit', async e => {
   e.preventDefault();
@@ -1545,7 +1545,7 @@ $('#outboundEditor').addEventListener('submit', async e => {
   if (!ok) return;
   closeRoutingEditor('outbound');
   const name = result.outbound ? result.outbound.name : editing;
-  const saved = editing ? 'Outbound updated; sing-box restarted.'
+  const saved = editing ? 'Outbound updated; awgm-box restarted.'
     : 'Outbound added; policies can use it now.' + (result.restart_required ? ' Restart Mita to choose it for accounts.' : '');
   const health = result.health;
   // Saving keeps the outbound even when the check fails: the server may be down only briefly.

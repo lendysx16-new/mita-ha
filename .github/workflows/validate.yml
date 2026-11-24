@@ -87,5 +87,7 @@ jobs:
           node --check /tmp/mita-subscription.js
           node --test tests/test_subscription.mjs
 
-      - name: Build the image (patched Mita core with its tests, sing-box, web app)
-        run: docker build mita
+      - name: Build the image and verify bundled awgm-box
+        run: |
+          docker build -t mita-ci mita
+          docker run --rm --network none --entrypoint /usr/local/bin/awgm-box mita-ci version

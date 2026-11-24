@@ -248,7 +248,7 @@ test('routing tab shows Everything else and the generated sing-box route', async
   await ctx.load();
   assert.match(element('#routingFinal').innerHTML, /value="direct"[\s\S]*value="block"[\s\S]*value="nl" selected/);
   assert.match(element('#routePreviewJson').textContent, /"outbound": "out-0"/);
-  assert.match(element('#singBoxStatus').textContent, /sing-box routes all traffic with 1 outbound/);
+  assert.match(element('#singBoxStatus').textContent, /awgm-box routes all traffic with 1 outbound/);
   state.sing_box_running = false;
   await ctx.load();
   assert.equal(element('#singBoxStatus').dataset.state, 'error');
