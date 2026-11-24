@@ -1110,6 +1110,18 @@ def _link_endpoint(parsed):
     return parsed.hostname, port
 
 
+def _reality_mlkem_flag(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "1", "yes"):
+            return True
+        if text in ("false", "0", "no"):
+            return False
+    raise ValueError("REALITY X25519MLKEM768 flag must be true or false")
+
+
 def _link_tls(query, enabled_by_default):
     security = query.get("security", "tls" if enabled_by_default else "none").lower()
     if security in ("", "none"):
@@ -1132,6 +1144,10 @@ def _link_tls(query, enabled_by_default):
         tls["reality"] = {"enabled": True, "public_key": query["pbk"]}
         if query.get("sid"):
             tls["reality"]["short_id"] = query["sid"]
+        for key in ("support-x25519mlkem768", "support_x25519mlkem768", "supportX25519MLKEM768"):
+            if key in query:
+                tls["reality"]["support_x25519mlkem768"] = _reality_mlkem_flag(query[key])
+                break
         tls.setdefault("utls", {"enabled": True, "fingerprint": "chrome"})
     return tls
 
@@ -1451,6 +1467,8 @@ def clash_outbound(proxy):
         "alpn": ",".join(alpn) if isinstance(alpn, list) else alpn,
         "pbk": reality.get("public-key"),
         "sid": reality.get("short-id"),
+        **({"support-x25519mlkem768": reality["support-x25519mlkem768"]}
+           if "support-x25519mlkem768" in reality else {}),
     }, False)
     if tls:
         outbound["tls"] = tls

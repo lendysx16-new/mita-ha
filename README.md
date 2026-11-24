@@ -103,6 +103,12 @@ name (the link's own name is used if you leave it empty). awgm-box checks the
 outbound before it is saved. Outbounds cannot be renamed, and one that a
 policy, **Everything else** or an account still uses cannot be deleted.
 
+For REALITY, awgm-box 42 leaves X25519MLKEM768 enabled by default with
+compatible uTLS fingerprints. The importer preserves an explicit
+`support-x25519mlkem768` flag from Clash `reality-opts` or a share-link query.
+In native outbound JSON the field is `tls.reality.support_x25519mlkem768`.
+This controls the TLS key share.
+
 To choose a server from a provider subscription, open **Add outbound → Import
 from subscription URL**. If your provider requires custom request headers,
 paste them as one `Name: value` pair per line before clicking **Load servers**.

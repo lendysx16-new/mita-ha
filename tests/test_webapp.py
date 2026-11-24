@@ -155,6 +155,27 @@ proxy-groups:
                 with self.assertRaisesRegex(ValueError, "public addresses"):
                     app.public_subscription_address("provider.example", 443)
 
+    def test_reality_mlkem_setting_survives_link_and_clash_import(self):
+        uri = (
+            "vless://11111111-1111-4111-8111-111111111111@server.example:443"
+            "?security=reality&pbk=example"
+        )
+        default, _ = app.parse_outbound_config(uri)
+        self.assertNotIn("support_x25519mlkem768", default["tls"]["reality"])
+        for suffix, expected in (("true", True), ("false", False)):
+            link = uri + "&support-x25519mlkem768=" + suffix
+            outbound, _ = app.parse_outbound_config(link)
+            self.assertIs(outbound["tls"]["reality"]["support_x25519mlkem768"], expected)
+            clash = {
+                "name": "server", "type": "vless", "server": "server.example", "port": 443,
+                "uuid": "11111111-1111-4111-8111-111111111111",
+                "reality-opts": {"public-key": "example", "support-x25519mlkem768": expected},
+            }
+            servers = app.parse_subscription_servers(json.dumps({"proxies": [clash]}))["servers"]
+            self.assertIs(servers[0]["config"]["tls"]["reality"]["support_x25519mlkem768"], expected)
+        with self.assertRaisesRegex(ValueError, "must be true or false"):
+            app.parse_outbound_config(uri + "&support-x25519mlkem768=invalid")
+
     def test_subscription_headers_are_validated_and_dropped_on_cross_origin_redirect(self):
         headers = app.parse_subscription_headers(
             "User-Agent: My client\r\nX-Device-OS: iOS\r\nAuthorization: Bearer secret"
