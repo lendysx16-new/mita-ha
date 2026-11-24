@@ -147,6 +147,95 @@ proxy-groups:
         self.assertEqual([result["groups"][i] for i in selected["groups"]], ["select"])
         self.assertNotIn("tag", selected["config"])
 
+    def test_saved_subscription_can_switch_servers_with_daily_refresh_disabled(self):
+        self.routing()
+        source = "trojan://secret@a.example:443#first\ntrojan://secret@b.example:443#second"
+        first, second = app.parse_subscription_servers(source)["servers"]
+        name = "/api/outbounds/imported"
+        url = "https://provider.example/?token=private"
+        health = {"ok": True, "latency_ms": 21}
+        status, result = self.call("POST", "/api/outbounds", {
+            "name": "imported", "config": first["config"], "subscription": {
+                "url": url, "headers": "X-Test: private-header", "selector": first["selector"], "refresh": False,
+            },
+        })
+        self.assertEqual(status, 201)
+        self.assertFalse(result["outbound"]["subscription"]["refresh"])
+        previous = app.get_settings()["outbounds"][0]
+        self.assertFalse(app.subscription_refresh_due(previous["subscription"], app.datetime.max))
+        with mock.patch.object(app, "fetch_outbound_subscription", return_value=source) as fetch:
+            status, preview = self.call("POST", name + "/subscription", {})
+            self.assertEqual(status, 200)
+            self.assertEqual(preview["active_index"], 0)
+            self.assertNotIn("private", json.dumps(preview))
+            fetch.assert_called_once_with(url, {"x-test": "private-header"})
+        with mock.patch.object(app, "probe_unsaved_outbound", return_value=health) as probe:
+            status, result = self.call("POST", "/api/outbound-candidate/test", {"config": second["config"]})
+            self.assertEqual((status, result), (200, {"health": health}))
+            probe.assert_called_once_with(second["config"])
+            self.assertEqual(app.get_settings()["outbounds"][0], previous)
+        status, result = self.call("PUT", name, {
+            "config": second["config"], "subscription": {
+                "stored": True, "selector": second["selector"], "refresh": False,
+            },
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(result["outbound"]["outbound"], second["config"])
+        current = app.get_settings()["outbounds"][0]
+        self.assertEqual(current["subscription"]["url"], url)
+        self.assertEqual(current["subscription"]["selector"], second["selector"])
+        self.assertFalse(current["subscription"]["refresh"])
+        self.assertEqual((current["port"], current["password"]), (previous["port"], previous["password"]))
+
+    def test_subscription_parser_imports_happ_and_incy_xray_profiles(self):
+        vless = {
+            "protocol": "vless", "tag": "proxy",
+            "settings": {"vnext": [{"address": "edge.example", "port": 443, "users": [
+                {"id": "12345678-1234-4234-8234-123456789abc", "encryption": "none"},
+            ]}]},
+            "streamSettings": {
+                "network": "xhttp", "security": "reality",
+                "realitySettings": {"publicKey": "public-key", "shortId": "ab", "serverName": "tls.example"},
+                "xhttpSettings": {"path": "/x", "extra": {"noGRPCHeader": True}},
+            },
+        }
+        trojan = {
+            "protocol": "trojan",
+            "settings": {"servers": [{"address": "trojan.example", "port": 443, "password": "example"}]},
+            "streamSettings": {"security": "tls", "tlsSettings": {"serverName": "tls.example"}},
+        }
+        hysteria = {
+            "protocol": "hysteria",
+            "settings": {"address": "udp.example", "port": 8443, "version": 2},
+            "streamSettings": {
+                "network": "hysteria", "security": "tls", "tlsSettings": {"alpn": ["h3"]},
+                "hysteriaSettings": {"version": 2, "auth": "example"},
+                "finalmask": {"quicParams": {"udp": [
+                    {"type": "salamander", "settings": {"password": "example-obfs"}},
+                ]}},
+            },
+        }
+        profiles = [
+            {"remarks": "Edge", "outbounds": [vless, {"protocol": "freedom"}, {"protocol": "blackhole"}],
+             "dns": {"servers": ["dns.example"]}, "routing": {"rules": [{"outboundTag": "proxy"}]}},
+            {"remarks": "TCP", "outbounds": [trojan]},
+            {"remarks": "UDP", "outbounds": [hysteria]},
+            {"remarks": "Chain", "outbounds": [dict(vless, proxySettings={"tag": "another"})]},
+        ]
+        result = app.parse_subscription_servers(json.dumps(profiles))
+        edge, tcp, udp = result["servers"]
+        self.assertEqual([node["name"] for node in (edge, tcp, udp)], ["Edge", "TCP", "UDP"])
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["groups"], [])
+        self.assertEqual(edge["config"]["transport"], {"type": "xhttp", "path": "/x", "no_grpc_header": True})
+        self.assertEqual(edge["config"]["tls"]["reality"]["public_key"], "public-key")
+        self.assertNotIn("encryption", edge["config"])
+        self.assertNotIn("dns", edge["config"])
+        self.assertEqual(tcp["config"]["tls"]["server_name"], "tls.example")
+        self.assertEqual(udp["config"]["type"], "hysteria2")
+        self.assertEqual(udp["config"]["obfs"], {"type": "salamander", "password": "example-obfs"})
+        self.assertEqual(app.parse_subscription_servers(json.dumps(profiles[0]))["servers"], [edge])
+
     def test_subscription_download_keeps_targets_public(self):
         for target in ("http://provider.example/sub", "https://u:p@provider.example"):
             with self.assertRaises(ValueError):

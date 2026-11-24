@@ -523,8 +523,12 @@ test('subscription groups filter concrete servers and only the chosen config is 
   const makeServer = (name, group, host) => ({
     name, selector: name, groups: [group], config: {type: 'trojan', server: host, server_port: 443, password: 'test'},
   });
-  ctx.fetch = async (_url, request) => {
+  ctx.fetch = async (url, request) => {
     assert.equal(request.method, 'POST');
+    if (url.endsWith('/outbound-candidate/test')) {
+      assert.equal(JSON.parse(request.body).config.server, 'b.example');
+      return {ok: true, json: async () => ({health: {ok: true, latency_ms: 21}})};
+    }
     assert.equal(JSON.parse(request.body).url, 'https://provider.example/sub?token=secret');
     assert.equal(JSON.parse(request.body).headers, 'User-Agent: My client\nX-Device-OS: iOS');
     return {ok: true, json: async () => ({servers: [
@@ -550,6 +554,8 @@ test('subscription groups filter concrete servers and only the chosen config is 
   assert.equal(fields.name.value, 'server-2');
   assert.equal(JSON.parse(fields.config.value).server, 'b.example');
   assert.equal(element('#outboundSubscriptionRefresh').checked, true);
+  await element('#testOutboundSubscriptionServer').onclick();
+  assert.match(element('#outboundSubscriptionTestStatus').textContent, /works \(21 ms\)/);
   ctx.closeRoutingEditor('outbound');
   assert.equal(element('#outboundSubscriptionUrl').value, '');
   assert.equal(element('#outboundSubscriptionHeaders').value, '');

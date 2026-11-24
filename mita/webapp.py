@@ -1612,6 +1612,132 @@ def validate_subscription_outbound(outbound):
             pending.extend(value)
 
 
+def xray_stream(outbound, stream):
+    security = stream.get("security") or "none"
+    options = stream.get(f"{security}Settings") or {}
+    if any(value for key, value in options.items() if key.startswith("pinnedPeerCert") or key == "certificates"):
+        raise ValueError("unsupported Xray certificate options")
+    tls = _link_tls({
+        "security": security,
+        "sni": options.get("serverName"),
+        "allowInsecure": options.get("allowInsecure"),
+        "alpn": ",".join(options.get("alpn") or []),
+        "fp": options.get("fingerprint") if outbound["type"] != "hysteria2" else None,
+        "pbk": options.get("publicKey") or options.get("password"),
+        "sid": options.get("shortId"),
+    }, outbound["type"] == "hysteria2")
+    if tls:
+        outbound["tls"] = tls
+    network = stream.get("network") or "tcp"
+    if network == "hysteria" and outbound["type"] == "hysteria2":
+        if not tls:
+            raise ValueError("Hysteria2 requires TLS")
+        return
+    if network in ("raw", "tcp"):
+        options = stream.get("rawSettings") or stream.get("tcpSettings") or {}
+        if (options.get("header") or {}).get("type") not in (None, "", "none"):
+            raise ValueError("unsupported Xray TCP header")
+        return
+    if network in ("xhttp", "splithttp"):
+        options = stream.get("xhttpSettings") or stream.get("splithttpSettings") or {}
+        outbound["transport"] = xhttp_transport({
+            **(options.get("extra") or {}), **{key: val for key, val in options.items() if key != "extra"},
+        })
+        return
+    if network not in ("ws", "grpc", "httpupgrade"):
+        raise ValueError("unsupported Xray transport")
+    options = stream.get(f"{network}Settings") or {}
+    if network == "grpc" and (options.get("multiMode") or options.get("authority")):
+        raise ValueError("unsupported Xray gRPC multiMode or authority")
+    transport = _link_transport({
+        "type": network, "serviceName": options.get("serviceName"),
+        "path": options.get("path"), "host": options.get("host"),
+    })
+    if network == "ws" and options.get("headers"):
+        transport["headers"] = {**transport.get("headers", {}), **options["headers"]}
+    outbound["transport"] = transport
+
+
+def xray_outbounds(proxy):
+    protocol = proxy.get("protocol")
+    settings = proxy.get("settings") or {}
+    stream = proxy.get("streamSettings") or {}
+    if proxy.get("proxySettings") or (stream.get("sockopt") or {}).get("dialerProxy"):
+        raise ValueError("chained Xray outbounds are unsupported")
+    mask = stream.get("finalmask") or {}
+    udp_masks = (mask.get("udp") or []) + ((mask.get("quicParams") or {}).get("udp") or [])
+    if mask.get("tcp") or (udp_masks and protocol != "hysteria"):
+        raise ValueError("unsupported Xray packet mask")
+    if protocol == "hysteria":
+        hysteria = stream.get("hysteriaSettings") or {}
+        if (hysteria.get("version") or settings.get("version")) != 2:
+            raise ValueError("unsupported Xray Hysteria version")
+        outbound = {"type": "hysteria2", "password": hysteria.get("auth")}
+        if udp_masks:
+            if len(udp_masks) != 1 or udp_masks[0].get("type") != "salamander":
+                raise ValueError("unsupported Xray Hysteria2 packet mask")
+            password = (udp_masks[0].get("settings") or {}).get("password")
+            if not isinstance(password, str) or not password:
+                raise ValueError("Xray Salamander requires a password")
+            outbound["obfs"] = {"type": "salamander", "password": password}
+        endpoints = [(settings, outbound)]
+    elif protocol in ("vless", "vmess"):
+        endpoints = (
+            (server, {"type": protocol, "uuid": user.get("id"), **(
+                {key: user[key] for key in ("flow", "encryption") if user.get(key) and user[key] != "none"}
+                if protocol == "vless" else
+                {"security": user.get("security") or "auto", "alter_id": user.get("alterId", 0)}
+            )})
+            for server in settings.get("vnext", []) for user in server.get("users", [])
+        )
+    elif protocol in ("trojan", "shadowsocks"):
+        endpoints = (
+            (server, {"type": protocol, "password": server.get("password"),
+                      **({"method": server.get("method")} if protocol == "shadowsocks" else {})})
+            for server in settings.get("servers", [])
+        )
+    else:
+        raise ValueError("unsupported Xray outbound")
+    for server, outbound in endpoints:
+        outbound.update(server=server.get("address"), server_port=server.get("port"))
+        xray_stream(outbound, stream)
+        yield outbound
+
+
+def xray_subscription_entries(profiles):
+    entries = []
+    for profile in profiles:
+        if not isinstance(profile, dict) or not isinstance(profile.get("outbounds"), list):
+            entries.append(profile)
+            continue
+        name = profile.get("remarks") or profile.get("remark")
+        proxies = [
+            proxy for proxy in profile["outbounds"]
+            if not isinstance(proxy, dict) or proxy.get("protocol") not in ("freedom", "blackhole", "dns")
+        ]
+        for proxy in proxies:
+            try:
+                tag = proxy.get("tag")
+                label = name or tag
+                if name and tag and len(proxies) > 1:
+                    label = f"{name} · {tag}"
+                start = len(entries)
+                for outbound in xray_outbounds(proxy):
+                    entries.append({**outbound, "tag": label})
+                    if len(entries) > SUBSCRIPTION_MAX_SERVERS:
+                        break
+                if len(entries) == start:
+                    entries.append(None)
+                elif len(entries) - start > 1:
+                    for number, outbound in enumerate(entries[start:], 1):
+                        outbound["tag"] = f"{label or outbound['server']} · {number}"
+            except (ValueError, TypeError, AttributeError, LookupError):
+                entries.append(None)
+            if len(entries) > SUBSCRIPTION_MAX_SERVERS:
+                raise ValueError("subscription exceeds the limit of 512 servers or groups")
+    return entries
+
+
 def parse_subscription_servers(text):
     """Return concrete servers and membership of groups defined in the subscription."""
     text = text.strip()
@@ -1622,7 +1748,17 @@ def parse_subscription_servers(text):
     if value is None and re.search(r"(?m)^proxies\s*:", text):
         value = read_clash_subscription(text)
     clash = isinstance(value, dict) and "proxies" in value
-    if isinstance(value, dict):
+    profiles = value if isinstance(value, list) else [value]
+    xray = not clash and any(
+        isinstance(profile, dict) and isinstance(profile.get("outbounds"), list) and any(
+            isinstance(proxy, dict) and "protocol" in proxy for proxy in profile["outbounds"]
+        ) for profile in profiles
+    )
+    if xray:
+        if len(profiles) > SUBSCRIPTION_MAX_SERVERS:
+            raise ValueError("subscription exceeds the limit of 512 profiles")
+        entries, groups = xray_subscription_entries(profiles), []
+    elif isinstance(value, dict):
         entries = value.get("proxies") if clash else value.get("outbounds", [])
         groups = value.get("proxy-groups", []) if clash else [
             item for item in (entries if isinstance(entries, list) else []) if isinstance(item, dict)
@@ -1714,7 +1850,10 @@ def subscription_binding(value):
         raise ValueError("choose a server from the subscription first")
     headers = value.get("headers", "")
     parse_subscription_headers(headers)
-    return {"url": url, "headers": headers, "selector": selector,
+    refresh = value.get("refresh", True)
+    if type(refresh) is not bool:
+        raise ValueError("subscription refresh must be enabled or disabled")
+    return {"url": url, "headers": headers, "selector": selector, "refresh": refresh,
             "checked_at": utc_now(), "error": ""}
 
 
@@ -1737,6 +1876,8 @@ def selected_subscription_config(result, binding, current):
 
 
 def subscription_refresh_due(binding, now):
+    if not binding.get("refresh", True):
+        return False
     try:
         elapsed = now.timestamp() - datetime.fromisoformat(binding["checked_at"]).timestamp()
     except (ValueError, TypeError, KeyError, OverflowError):
@@ -2387,6 +2528,11 @@ def managed_egress(settings):
         {"domainNames": ["*"], "ipRanges": ["*"], "action": "PROXY", "proxyNames": [ROUTER_NAME]}]}
 
 
+def loopback_socks(tag, port, password):
+    return {"type": "socks", "tag": tag, "listen": "127.0.0.1", "listen_port": port,
+            "users": [{"username": "mita", "password": password}]}
+
+
 def sing_box_config(settings):
     entries = outbound_entries(settings)
     policies = routing_policies(settings)
@@ -2394,16 +2540,12 @@ def sing_box_config(settings):
     snapshots = settings.get("geo_snapshots", {})
     index = {entry["name"]: i for i, entry in enumerate(entries)}
 
-    def socks(tag, port, password):
-        return {"type": "socks", "tag": tag, "listen": "127.0.0.1", "listen_port": port,
-                "users": [{"username": "mita", "password": password}]}
-
-    inbounds = [socks("router", ROUTER_PORT, router_password(settings))]
+    inbounds = [loopback_socks("router", ROUTER_PORT, router_password(settings))]
     outbounds, endpoints, rules, rule_sets = [], [], [], {}
     for i, entry in enumerate(entries):
         validate_sing_box_outbound(entry["outbound"])
-        inbounds.append(socks(f"probe-{i}", entry["port"], entry["password"]))
-        inbounds.append(socks(f"via-{i}", entry["port"] + VIA_PORT_OFFSET, entry["password"]))
+        inbounds.append(loopback_socks(f"probe-{i}", entry["port"], entry["password"]))
+        inbounds.append(loopback_socks(f"via-{i}", entry["port"] + VIA_PORT_OFFSET, entry["password"]))
         outbound = dict(entry["outbound"], tag=f"out-{i}")
         if outbound["type"] in OUTBOUND_ENDPOINT_TYPES:
             if outbound["type"] == "awg":
@@ -2787,6 +2929,28 @@ def check_outbound(name):
     return result
 
 
+PREVIEW_PROBE_LOCK = threading.Lock()
+
+
+def probe_unsaved_outbound(outbound):
+    validate_subscription_outbound(outbound)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    entry = {"port": port, "password": secrets.token_urlsafe(24)}
+    candidate = dict(outbound, tag="candidate")
+    kind = "endpoints" if candidate["type"] in OUTBOUND_ENDPOINT_TYPES else "outbounds"
+    config = {"inbounds": [loopback_socks("probe", port, entry["password"])],
+              kind: [candidate], "route": {"final": "candidate"}}
+    runner = SingBoxBridge()
+    try:
+        runner.check(config)
+        runner.start(config)
+        return probe_outbound(entry)
+    finally:
+        runner.stop()
+
+
 def check_all_outbounds():
     with LOCK:
         names = [entry["name"] for entry in outbound_entries(get_settings())]
@@ -2811,6 +2975,7 @@ def public_outbound(entry):
     if entry.get("subscription"):
         binding = entry["subscription"]
         public["subscription"] = {key: binding.get(key) for key in ("checked_at", "error")}
+        public["subscription"]["refresh"] = binding.get("refresh", True)
     return public
 
 
@@ -3537,6 +3702,8 @@ ADMIN_ROUTES = [
     ("PUT", r"/api/settings", "update_settings"),
     ("POST", r"/api/outbounds", "add_outbound"),
     ("POST", r"/api/outbound-subscription", "outbound_subscription"),
+    ("POST", r"/api/outbound-candidate/test", "test_outbound_candidate"),
+    ("POST", OUTBOUND + r"/subscription", "outbound_subscription"),
     ("POST", r"/api/mita/restart", "restart_mita"),
     ("PUT", OUTBOUND, "update_outbound"),
     ("POST", OUTBOUND + r"/test", "test_outbound"),
@@ -3803,15 +3970,42 @@ class AdminHandler(CommonHandler):
         validate_outbound_assignments(get_users(), managed_egress(settings))
         apply_routing(settings, previous_settings)
 
-    def route_outbound_subscription(self):
+    def route_outbound_subscription(self, name=None):
         self.require_sing_box()
         body = self.read_json(max_bytes=32768)
+        binding = None
+        if name is not None:
+            with LOCK:
+                entry = next((e for e in outbound_entries(get_settings()) if e["name"] == name), None)
+            if entry is None or not entry.get("subscription"):
+                raise ApiError(HTTPStatus.NOT_FOUND, "saved subscription not found")
+            binding = entry["subscription"]
+            body = binding
         url = body.get("url")
         headers = parse_subscription_headers(body.get("headers", ""))
         result = parse_subscription_servers(
             fetch_outbound_subscription(url.strip() if isinstance(url, str) else url, headers)
         )
+        if binding:
+            try:
+                config = selected_subscription_config(result, binding, entry["outbound"])
+                result["active_index"] = next(
+                    i for i, server in enumerate(result["servers"])
+                    if server["selector"] == binding["selector"] and server["config"] == config
+                )
+            except ValueError:
+                result["active_index"] = None
         self.send_json(HTTPStatus.OK, result, headers={"Cache-Control": "no-store"})
+
+    def route_test_outbound_candidate(self):
+        self.require_sing_box()
+        _, outbound, _ = self.outbound_from_body()
+        if not PREVIEW_PROBE_LOCK.acquire(blocking=False):
+            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "another unsaved server is being tested")
+        try:
+            return HTTPStatus.OK, {"health": probe_unsaved_outbound(outbound)}
+        finally:
+            PREVIEW_PROBE_LOCK.release()
 
     def route_add_outbound(self):
         self.require_sing_box()
@@ -3852,8 +4046,21 @@ class AdminHandler(CommonHandler):
                 raise ApiError(HTTPStatus.NOT_FOUND, "outbound not found")
             same_config = entry["outbound"] == outbound
             entry = dict(entry, outbound=outbound)
-            if body.get("subscription") is not None:
-                entry["subscription"] = subscription_binding(body["subscription"])
+            selection = body.get("subscription")
+            if isinstance(selection, dict) and selection.get("stored") is True:
+                binding = entry.get("subscription")
+                if not binding:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "saved subscription not found")
+                options = {key: selection[key] for key in ("selector", "refresh") if key in selection}
+                updated = subscription_binding({**binding, **options})
+                if "selector" in options:
+                    entry["subscription"] = updated
+                elif same_config:
+                    entry["subscription"] = {**binding, "refresh": updated["refresh"]}
+                else:
+                    entry.pop("subscription")
+            elif selection is not None:
+                entry["subscription"] = subscription_binding(selection)
             elif "subscription" in body or not same_config:
                 entry.pop("subscription", None)
             settings["outbounds"] = [entry if e["name"] == name else e for e in previous]

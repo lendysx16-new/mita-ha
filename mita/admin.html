@@ -488,6 +488,10 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
                 <label id="outboundSubscriptionGroupField" hidden>Group<select id="outboundSubscriptionGroup"></select></label>
                 <label id="outboundSubscriptionServerField" hidden>Server<select id="outboundSubscriptionServer"></select></label>
                 <p id="outboundSubscriptionStatus" class="field-help span-2" role="status"></p>
+                <div id="outboundSubscriptionTestField" class="span-2" hidden>
+                  <button id="testOutboundSubscriptionServer" class="btn btn-secondary" type="button" disabled>Test selected server</button>
+                  <span id="outboundSubscriptionTestStatus" class="field-help" role="status"></span>
+                </div>
               </div>
             </details>
             <div class="form-grid">
@@ -647,6 +651,8 @@ const api = {
   updateUser: (username, body) => request(userPath(username), {method: 'PATCH', body}),
   removeDevice: (username, id) => request(userPath(username, 'devices', id), {method: 'DELETE'}),
   outboundSubscription: (url, headers) => request('api/outbound-subscription', {method: 'POST', body: {url, headers}}),
+  savedOutboundSubscription: name => request('api/outbounds/' + encodeURIComponent(name) + '/subscription', {method: 'POST', body: {}}),
+  testOutboundCandidate: config => request('api/outbound-candidate/test', {method: 'POST', body: {config}}),
   addOutbound: body => request('api/outbounds', {method: 'POST', body}),
   updateOutbound: (name, body) => request('api/outbounds/' + encodeURIComponent(name), {method: 'PUT', body}),
   deleteOutbound: name => request('api/outbounds/' + encodeURIComponent(name), {method: 'DELETE'}),
@@ -1481,6 +1487,14 @@ let subscriptionLoad = 0;
 let subscriptionSuggestedName = '';
 let loadedSubscription = null;
 let selectedSubscription = null;
+let savedSubscriptionName = null;
+let subscriptionTestRunning = false;
+
+function showSubscriptionTestChoice() {
+  const value = $('#outboundSubscriptionServer').value;
+  $('#testOutboundSubscriptionServer').disabled = subscriptionTestRunning || value === '';
+  $('#outboundSubscriptionTestStatus').textContent = '';
+}
 
 function clearOutboundSubscription() {
   subscriptionLoad++;
@@ -1488,6 +1502,7 @@ function clearOutboundSubscription() {
   subscriptionSuggestedName = '';
   loadedSubscription = null;
   selectedSubscription = null;
+  savedSubscriptionName = null;
   $('#outboundSubscriptionRefreshField').hidden = true;
   $('#outboundSubscriptionRefresh').checked = false;
   $('#outboundSubscription').open = false;
@@ -1498,9 +1513,11 @@ function clearOutboundSubscription() {
   $('#outboundSubscriptionGroup').value = '';
   $('#outboundSubscriptionServer').value = '';
   $('#outboundSubscriptionStatus').textContent = '';
+  $('#outboundSubscriptionTestField').hidden = true;
+  showSubscriptionTestChoice();
 }
 
-function renderSubscriptionServers() {
+function renderSubscriptionServers(activeIndex) {
   const group = $('#outboundSubscriptionGroup').value;
   const choices = subscriptionServers.map((server, index) => ({server, index}))
     .filter(({server}) => !group || server.groups.includes(Number(group)));
@@ -1508,12 +1525,14 @@ function renderSubscriptionServers() {
     html`<option value="">Choose a server</option>`,
     ...choices.map(({server, index}) => html`<option value="${index}">${server.name} · ${protocolLabel(server.config)} · ${outboundEndpoint(server.config)}</option>`),
   ]);
-  $('#outboundSubscriptionServer').value = '';
+  $('#outboundSubscriptionServer').value = choices.some(({index}) => index === activeIndex) ? String(activeIndex) : '';
+  showSubscriptionTestChoice();
 }
 
 $('#loadOutboundSubscription').onclick = async () => {
   const url = $('#outboundSubscriptionUrl').value.trim();
-  if (!url) { toast('Enter a subscription URL.', 'error'); return; }
+  const saved = !url && savedSubscriptionName;
+  if (!url && !saved) { toast('Enter a subscription URL.', 'error'); return; }
   const headers = $('#outboundSubscriptionHeaders').value;
   const load = ++subscriptionLoad;
   const status = $('#outboundSubscriptionStatus');
@@ -1521,13 +1540,14 @@ $('#loadOutboundSubscription').onclick = async () => {
   subscriptionServers = [];
   $('#outboundSubscriptionGroupField').hidden = true;
   $('#outboundSubscriptionServerField').hidden = true;
+  $('#outboundSubscriptionTestField').hidden = true;
   status.textContent = 'Loading servers…';
   button.disabled = true;
   try {
-    const result = await api.outboundSubscription(url, headers);
+    const result = await (saved ? api.savedOutboundSubscription(saved) : api.outboundSubscription(url, headers));
     if (load !== subscriptionLoad) return;
     subscriptionServers = result.servers;
-    loadedSubscription = {url, headers};
+    loadedSubscription = saved ? {stored: true} : {url, headers};
     const groups = [...new Set(subscriptionServers.flatMap(server => server.groups))];
     setHTML($('#outboundSubscriptionGroup'), [
       html`<option value="">All servers</option>`,
@@ -1536,9 +1556,11 @@ $('#loadOutboundSubscription').onclick = async () => {
     $('#outboundSubscriptionGroup').value = '';
     $('#outboundSubscriptionGroupField').hidden = !groups.length;
     $('#outboundSubscriptionServerField').hidden = false;
-    renderSubscriptionServers();
+    $('#outboundSubscriptionTestField').hidden = false;
+    renderSubscriptionServers(result.active_index);
     status.textContent = plural(subscriptionServers.length, 'server', 'servers') + ' loaded'
-      + (result.skipped ? ' · ' + result.skipped + ' unsupported entries skipped' : '');
+      + (result.skipped ? ' · ' + result.skipped + ' unsupported entries skipped' : '')
+      + (saved && result.active_index == null ? ' · Active server unavailable in this list' : '');
   } catch (error) {
     if (load === subscriptionLoad) status.textContent = error.message;
   } finally {
@@ -1548,14 +1570,15 @@ $('#loadOutboundSubscription').onclick = async () => {
 
 $('#outboundSubscriptionGroup').onchange = renderSubscriptionServers;
 $('#outboundSubscriptionServer').onchange = () => {
+  showSubscriptionTestChoice();
   const value = $('#outboundSubscriptionServer').value;
   const server = value === '' ? null : subscriptionServers[Number(value)];
   if (!server) return;
   const fields = $('#outboundEditor').elements;
   fields.config.value = JSON.stringify(server.config, null, 2);
-  selectedSubscription = {source: {...loadedSubscription, selector: server.selector}, config: fields.config.value};
+  selectedSubscription = {...loadedSubscription, selector: server.selector};
+  if ($('#outboundSubscriptionRefreshField').hidden) $('#outboundSubscriptionRefresh').checked = true;
   $('#outboundSubscriptionRefreshField').hidden = false;
-  $('#outboundSubscriptionRefresh').checked = true;
   if (!fields.name.readOnly && (!fields.name.value.trim() || fields.name.value === subscriptionSuggestedName)) {
     subscriptionSuggestedName = server.name.replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
     if (!subscriptionSuggestedName) {
@@ -1565,6 +1588,26 @@ $('#outboundSubscriptionServer').onchange = () => {
       subscriptionSuggestedName = 'server-' + index;
     }
     fields.name.value = subscriptionSuggestedName;
+  }
+};
+
+$('#testOutboundSubscriptionServer').onclick = async () => {
+  const value = $('#outboundSubscriptionServer').value;
+  const server = value === '' ? null : subscriptionServers[Number(value)];
+  if (!server || subscriptionTestRunning) return;
+  const status = $('#outboundSubscriptionTestStatus');
+  const current = () => subscriptionServers[Number(value)] === server && $('#outboundSubscriptionServer').value === value;
+  subscriptionTestRunning = true;
+  $('#testOutboundSubscriptionServer').disabled = true;
+  status.textContent = 'Testing…';
+  try {
+    const {health} = await api.testOutboundCandidate(server.config);
+    if (current()) status.textContent = healthMessage(server.name, health);
+  } catch (error) {
+    if (current()) status.textContent = error.message;
+  } finally {
+    subscriptionTestRunning = false;
+    $('#testOutboundSubscriptionServer').disabled = $('#outboundSubscriptionServer').value === '';
   }
 };
 
@@ -1586,8 +1629,11 @@ function openOutboundEditor(name) {
   f.name.readOnly = Boolean(saved);
   f.config.value = saved ? JSON.stringify(saved.outbound, null, 2) : '';
   if (saved?.subscription) {
+    savedSubscriptionName = saved.name;
+    $('#outboundSubscription').open = true;
+    $('#outboundSubscriptionStatus').textContent = 'Load servers from the saved subscription, or enter a new URL.';
     $('#outboundSubscriptionRefreshField').hidden = false;
-    $('#outboundSubscriptionRefresh').checked = true;
+    $('#outboundSubscriptionRefresh').checked = saved.subscription.refresh !== false;
   }
   form.hidden = false;
   (saved ? f.config : f.name).focus();
@@ -1662,10 +1708,8 @@ $('#outboundEditor').addEventListener('submit', async e => {
   const ok = await mutate(button, async () => {
     const body = {config: f.config.value};
     if (!$('#outboundSubscriptionRefreshField').hidden) {
-      if (!$('#outboundSubscriptionRefresh').checked) body.subscription = null;
-      else if (selectedSubscription && selectedSubscription.config === f.config.value) {
-        body.subscription = selectedSubscription.source;
-      }
+      const source = selectedSubscription || (savedSubscriptionName ? {stored: true} : null);
+      if (source) body.subscription = {...source, refresh: $('#outboundSubscriptionRefresh').checked};
     }
     result = await (editing
       ? api.updateOutbound(editing, body)
