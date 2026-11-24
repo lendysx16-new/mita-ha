@@ -147,6 +147,8 @@ class BackupTests(unittest.TestCase):
             [(30,)],
         )
         connection.close.assert_called_once()
+        driver.connect.assert_called_once_with("postgresql://db", **app.PG_CONNECT_OPTIONS)
+        self.assertEqual(app.PG_CONNECT_OPTIONS["tcp_user_timeout"], 60000)
 
     def test_worker_runs_on_start_and_after_24_hours(self):
         saved = []
@@ -181,6 +183,50 @@ class BackupTests(unittest.TestCase):
                 app.backup_db_worker()
         self.assertEqual(app.get_backup_status()["last_error"], "RuntimeError")
         self.assertNotIn("secret", app.get_backup_status()["last_error"])
+
+
+    def test_dropped_connection_reports_the_real_error_not_interface_error(self):
+        class DriverError(Exception):
+            pass
+
+        class OperationalError(DriverError):
+            pass
+
+        class InterfaceError(DriverError):
+            pass
+
+        connection = mock.MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.execute.side_effect = [None, OperationalError(
+            "server closed the connection unexpectedly\n\tThis probably means the server terminated abnormally")]
+        connection.rollback.side_effect = InterfaceError("connection already closed")
+        driver = SimpleNamespace(connect=mock.Mock(return_value=connection), Binary=lambda b: b,
+                                 Error=DriverError)
+        dsn = "postgresql://mita:s3cret%21@db.example:5432/mita"
+        with mock.patch.object(app, "psycopg2", driver):
+            with self.assertRaises(OperationalError):
+                app.save_postgres_backup(dsn, "startup")
+            connection.commit.assert_not_called()
+            connection.close.assert_called_once()
+            cursor.execute.side_effect = OperationalError(
+                "server closed the connection unexpectedly\n\tThis probably means the server terminated abnormally")
+
+            with (
+                mock.patch.object(app, "get_settings", return_value={"postgres_dsn": dsn}),
+                mock.patch.object(app.time, "monotonic", side_effect=[0, 0]),
+                mock.patch.object(app.time, "sleep", side_effect=StopIteration),
+            ):
+                with self.assertRaises(StopIteration):
+                    app.backup_db_worker()
+        error = app.get_backup_status()["last_error"]
+        self.assertEqual(error, "OperationalError: server closed the connection unexpectedly")
+
+        leaky = DriverError(f'connection to "{dsn}" failed: password=s3cret! rejected')
+        with mock.patch.object(app, "psycopg2", driver):
+            text = app.db_error_text(leaky, dsn)
+            self.assertNotIn("s3cret", text)
+            self.assertNotIn("db.example:5432/mita", text)
+            self.assertNotIn("p w", app.db_error_text(DriverError("bad password 'p w'"), "host=db password='p w' user=x"))
 
 
 if __name__ == "__main__":

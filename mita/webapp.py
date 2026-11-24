@@ -282,7 +282,7 @@ def log_db_worker():
 
         try:
             if conn is None or conn.closed:
-                conn = psycopg2.connect(dsn, connect_timeout=8)
+                conn = pg_connect(dsn)
                 conn.autocommit = False
                 ensure_log_table(conn)
                 set_log_db_status(connected=True, last_error="")
@@ -329,7 +329,7 @@ def log_db_worker():
                 rows_written=int(status.get("rows_written", 0)) + len(batch),
             )
         except Exception as exc:
-            set_log_db_status(connected=False, last_error=str(exc))
+            set_log_db_status(connected=False, last_error=db_error_text(exc, dsn))
             if conn is not None:
                 try:
                     conn.rollback()
@@ -402,13 +402,49 @@ def build_backup_archive():
     return payload, [name for name, _ in files], hashlib.sha256(payload).hexdigest()
 
 
+# libpq timeouts: a stalled transfer (lost packets, an MTU black hole on the path)
+# fails within about a minute with a real error instead of hanging for many minutes.
+PG_CONNECT_OPTIONS = {
+    "connect_timeout": 8,
+    "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3,
+    "tcp_user_timeout": 60000,  # ms of unacknowledged data before the connection is dropped
+}
+
+
+def pg_connect(dsn):
+    return psycopg2.connect(dsn, **PG_CONNECT_OPTIONS)
+
+
+def db_error_text(exc, dsn):
+    """A driver error for the admin panel: type and first line, never the DSN or password."""
+    driver_error = getattr(psycopg2, "Error", None)
+    if not (isinstance(driver_error, type) and isinstance(exc, driver_error)):
+        return type(exc).__name__  # anything else may carry secrets in its text
+    text = (str(exc).strip().splitlines() or [""])[0][:300]
+    secrets_in_dsn = [dsn]
+    try:
+        if urllib.parse.urlsplit(dsn).password:
+            secrets_in_dsn.append(urllib.parse.unquote(urllib.parse.urlsplit(dsn).password))
+    except ValueError:
+        pass
+    match = re.search(r"password\s*=\s*('(?:[^'\\]|\\.)*'|\S+)", dsn)
+    if match:
+        secrets_in_dsn.append(match.group(1).strip("'"))
+    for secret in filter(None, secrets_in_dsn):
+        text = text.replace(secret, "***")
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
 def save_postgres_backup(dsn, reason="scheduled"):
     """Persist an atomic compressed snapshot and enforce bounded retention."""
     if psycopg2 is None:
         raise RuntimeError("psycopg2 is not installed")
     payload, names, digest = build_backup_archive()
-    with contextlib.closing(psycopg2.connect(dsn, connect_timeout=8)) as connection:
-        with connection:
+    with contextlib.closing(pg_connect(dsn)) as connection:
+        # Explicit commit/rollback instead of `with connection:`: when the server drops
+        # the connection mid-transaction, the context manager's rollback raises
+        # InterfaceError ("connection already closed") and hides the real error.
+        try:
             with connection.cursor() as cur:
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS mita_backups (
@@ -438,6 +474,13 @@ def save_postgres_backup(dsn, reason="scheduled"):
                 )
                 cur.execute("SELECT COUNT(*) FROM mita_backups")
                 count = int(cur.fetchone()[0])
+            connection.commit()
+        except Exception:
+            try:
+                connection.rollback()
+            except Exception:
+                pass  # the connection is already gone; keep the original error
+            raise
     return {"reason": reason, "file_names": names, "sha256": digest, "count": count}
 
 
@@ -544,7 +587,7 @@ def install_backup_archive(payload, dsn):
 def restore_postgres_backup(dsn, backup_id):
     if psycopg2 is None:
         raise RuntimeError("psycopg2 is not installed")
-    with contextlib.closing(psycopg2.connect(dsn, connect_timeout=8)) as connection:
+    with contextlib.closing(pg_connect(dsn)) as connection:
         with connection.cursor() as cur:
             cur.execute(
                 """
@@ -602,7 +645,7 @@ def backup_db_worker():
             reason = "scheduled"
         except Exception as exc:
             # Do not print exception details or the DSN: backup contains secrets.
-            set_backup_status(connected=False, last_error=type(exc).__name__)
+            set_backup_status(connected=False, last_error=db_error_text(exc, dsn))
             next_backup_at = time.monotonic() + BACKUP_RETRY_SECONDS
         time.sleep(1)
 
