@@ -1250,17 +1250,39 @@ class NoGeoRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
+# Categories by name ("geosite:youtube", "geoip:telegram") come from MetaCubeX's
+# meta-rules-dat, whose "sing" branch has one sing-box source rule set per category.
+GEO_CATEGORY_URL = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/{kind}/{name}.json"
+GEO_CATEGORY_RE = re.compile(r"(geosite|geoip):([a-z0-9][a-z0-9_.!@-]{0,99})")
+GEO_LISTS_PER_POLICY = 8
+
+
+def geo_label(url):
+    """Show a category URL as geosite:name / geoip:name, anything else as the URL."""
+    for kind in ("geosite", "geoip"):
+        prefix, suffix = GEO_CATEGORY_URL.format(kind=kind, name="\0").split("\0")
+        if url.startswith(prefix) and url.endswith(suffix):
+            return f"{kind}:{url[len(prefix):-len(suffix)]}"
+    return url
+
+
 def normalize_geo_urls(urls):
-    if not isinstance(urls, list) or len(urls) > 4:
-        raise ValueError("provide up to four GitHub GeoSite / GeoIP URLs")
+    if not isinstance(urls, list) or len(urls) > GEO_LISTS_PER_POLICY:
+        raise ValueError(f"provide up to {GEO_LISTS_PER_POLICY} GeoSite / GeoIP categories or GitHub links")
     normalized = []
     for url in urls:
         if not isinstance(url, str) or len(url) > 2048:
             raise ValueError("invalid GitHub Geo URL")
+        if not url.strip().lower().startswith(("http://", "https://")):
+            match = GEO_CATEGORY_RE.fullmatch(url.strip().lower())
+            if not match or match.group(2) in (".", ".."):
+                raise ValueError(f"{url.strip()!r} is not a category: use geosite:<name>, geoip:<name> or a GitHub link")
+            normalized.append(GEO_CATEGORY_URL.format(kind=match.group(1), name=match.group(2)))
+            continue
         parsed = urllib.parse.urlsplit(url.strip())
         parts = parsed.path.split("/")[1:]
         if (parsed.scheme != "https" or parsed.query or parsed.fragment
-                or not all(re.fullmatch(r"[A-Za-z0-9_.-]+", part) and part not in (".", "..")
+                or not all(re.fullmatch(r"[A-Za-z0-9_.!@-]+", part) and part not in (".", "..")
                            for part in parts)):
             raise ValueError("use an HTTPS GitHub link to a source JSON file")
         if parsed.netloc == "github.com" and len(parts) >= 5 and parts[2] == "blob":
@@ -1334,15 +1356,21 @@ def download_geo_sources(urls):
         try:
             with opener.open(url, timeout=8) as response:
                 payload = response.read(GEO_MAX_BYTES + 1)
+        except urllib.error.HTTPError as exc:
+            hint = " (no such category?)" if exc.code == 404 else ""
+            raise ValueError(f"could not download {geo_label(url)}: HTTP {exc.code}{hint}") from exc
         except (OSError, ValueError, HTTPException) as exc:
-            raise ValueError("could not download GitHub Geo rule set") from exc
+            raise ValueError(f"could not download {geo_label(url)}") from exc
         if len(payload) > GEO_MAX_BYTES:
             raise ValueError("GitHub Geo rule set exceeds 4 MiB")
         try:
             source = json.loads(payload)
         except (ValueError, RecursionError) as exc:
-            raise ValueError("GitHub Geo rule set is not valid JSON") from exc
-        source_domains, source_ranges, source_skipped = parse_geo_source(source)
+            raise ValueError(f"{geo_label(url)} is not valid JSON") from exc
+        try:
+            source_domains, source_ranges, source_skipped = parse_geo_source(source)
+        except ValueError as exc:
+            raise ValueError(f"{geo_label(url)}: {exc}") from exc
         domains.extend(source_domains)
         ip_ranges.extend(source_ranges)
         skipped.update(source_skipped)
@@ -1403,7 +1431,7 @@ def refresh_geo_sources():
         try:
             fresh[url] = download_geo_snapshot(url)
         except ValueError:
-            print(f"[web] GitHub Geo update failed for {url}; keeping the previous list", flush=True)
+            print(f"[web] Geo update failed for {geo_label(url)}; keeping the previous list", flush=True)
     with LOCK:
         settings = get_settings()
         used = set(policy_geo_urls(settings))

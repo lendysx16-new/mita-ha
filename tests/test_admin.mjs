@@ -337,11 +337,12 @@ test('outbounds and routing policies render and policies are built from the edit
     {name: 'nl', port: 1081, outbound: {type: 'hysteria2', server: 'hy.example', server_port: 8443, password: 'SECRET'}},
     {name: 'de', port: 1082, outbound: {type: 'vless', server: 'v.example', server_port: 443, uuid: 'u', tls: {enabled: true, reality: {enabled: true}}}},
   ];
-  state.settings.geo_snapshots = {'https://raw.githubusercontent.com/o/r/main/g.json': {domains: 120, ip_ranges: 3}};
+  state.settings.geo_snapshots = {'https://raw.githubusercontent.com/o/r/main/g.json': {domains: 120, ip_ranges: 3},
+    'https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/youtube.json': {domains: 10, ip_ranges: 0}};
   state.settings.egress = {
     proxies: [{name: 'spare', host: 'proxy.example', port: 1080}],
     rules: [{name: 'Streaming <b>', domainNames: ['video.example', 'cdn.example'], ipRanges: ['198.51.100.0/24'], action: 'PROXY', proxyNames: ['nl'],
-             geoUrls: ['https://raw.githubusercontent.com/o/r/main/g.json']},
+             geoUrls: ['https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/youtube.json', 'https://raw.githubusercontent.com/o/r/main/g.json']},
       {domainNames: ['ads.example'], ipRanges: [], action: 'REJECT', proxyNames: []}],
   };
   state.users[0].proxy_outbound = 'nl';
@@ -359,7 +360,7 @@ test('outbounds and routing policies render and policies are built from the edit
   assert.match(outbounds, /spare[\s\S]*SOCKS5[\s\S]*JSON/);
   const lists = element('#listRows').innerHTML;
   assert.match(lists, /Streaming &lt;b&gt;/);
-  assert.match(lists, /2 domains · 1 network · 1 GitHub list \(123 entries\)/);
+  assert.match(lists, /2 domains · 1 network · geosite:youtube, https:\/\/raw\.githubusercontent\.com\/o\/r\/main\/g\.json \(133 entries\)/);
   assert.match(lists, />Block</);
   assert.match(lists, /Unnamed policy/);
   assert.match(lists, /data-step="-1" disabled/);
@@ -372,23 +373,23 @@ test('outbounds and routing policies render and policies are built from the edit
   fields.name.value = ' Work ';
   fields.target.value = 'proxy:de';
   fields.domains.value = 'corp.example\n\n corp.example \nmail.example';
-  fields.geoUrls.value = 'https://github.com/o/r/blob/main/x.json';
+  fields.geoUrls.value = 'geosite:telegram\ngeoip:telegram';
   const egress = ctx.listFromEditor();
   assert.deepEqual(JSON.parse(JSON.stringify(egress.rules[2])), {
     name: 'Work', domainNames: ['corp.example', 'mail.example'], ipRanges: [],
-    action: 'PROXY', proxyNames: ['de'], geoUrls: ['https://github.com/o/r/blob/main/x.json'],
+    action: 'PROXY', proxyNames: ['de'], geoUrls: ['geosite:telegram', 'geoip:telegram'],
   });
   fields.target.value = 'DIRECT';
   assert.equal(ctx.listFromEditor().rules[2].action, 'DIRECT');
   fields.domains.value = '';
   assert.equal(ctx.listFromEditor().rules[2].domainNames.length, 0, 'a GitHub-only policy is allowed');
   fields.geoUrls.value = '';
-  assert.throws(() => ctx.listFromEditor(), /domain, an IP network or a GitHub list/);
+  assert.throws(() => ctx.listFromEditor(), /domain, an IP network or a GeoSite \/ GeoIP category/);
 
   ctx.openListEditor(0);
   assert.equal(fields.target.value, 'proxy:nl');
   assert.equal(fields.domains.value, 'video.example\ncdn.example');
-  assert.equal(fields.geoUrls.value, 'https://raw.githubusercontent.com/o/r/main/g.json');
+  assert.equal(fields.geoUrls.value, 'geosite:youtube\nhttps://raw.githubusercontent.com/o/r/main/g.json');
   // A policy with several outbounds (set in JSON) keeps them when edited in the form.
   state.settings.egress.rules[0].proxyNames = ['nl', 'spare'];
   await ctx.load();

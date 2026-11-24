@@ -496,6 +496,24 @@ class AdminAPITests(unittest.TestCase):
         self.assertEqual(start.call_count, 3)
         self.assertEqual(stop.wait.call_args_list, [mock.call(1), mock.call(2), mock.call(4), mock.call(1)])
 
+    def test_geo_categories_by_name(self):
+        base = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/"
+        self.assertEqual(app.normalize_geo_urls(["geosite:YouTube", " geoip:telegram ", "geosite:geolocation-!cn",
+                                                 base + "geosite/youtube.json"]),
+                         [base + "geosite/youtube.json", base + "geoip/telegram.json", base + "geosite/geolocation-!cn.json"])
+        self.assertEqual(app.geo_label(base + "geoip/telegram.json"), "geoip:telegram")
+        self.assertEqual(app.geo_label("https://raw.githubusercontent.com/o/r/main/x.json"),
+                         "https://raw.githubusercontent.com/o/r/main/x.json")
+        for bad in ("geosite:", "geosite:../x", "geosite:a/b", "geofoo:x", "youtube"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "geosite:<name>"):
+                app.normalize_geo_urls([bad])
+        with self.assertRaisesRegex(ValueError, "up to 8"):
+            app.normalize_geo_urls([f"geosite:c{i}" for i in range(9)])
+        missing = app.urllib.error.HTTPError(base + "geosite/nope.json", 404, "Not Found", {}, None)
+        with mock.patch.object(app.urllib.request.OpenerDirector, "open", side_effect=missing):
+            with self.assertRaisesRegex(ValueError, r"could not download geosite:nope: HTTP 404 \(no such category\?\)"):
+                app.download_geo_sources(["geosite:nope"])
+
     def test_github_geo_urls_and_source_validation(self):
         self.assertEqual(app.normalize_geo_urls([
             "https://github.com/owner/repo/blob/main/geosite.json",

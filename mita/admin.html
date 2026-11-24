@@ -507,7 +507,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
               <label>Outbound<select name="target" required></select><span class="field-help">Pick a saved outbound. Add or change outbounds in the <a href="#/outbounds">Outbounds</a> tab.</span></label>
               <label class="span-2">Domains (one per line)<textarea name="domains" rows="6" spellcheck="false" autocapitalize="off" placeholder="example.com&#10;example.org"></textarea><span class="field-help">A domain also matches its subdomains.</span></label>
               <label class="span-2">IP networks (one CIDR per line)<textarea name="ipRanges" rows="3" spellcheck="false" autocapitalize="off" placeholder="198.51.100.0/24"></textarea></label>
-              <label class="span-2">GitHub Geo lists (optional, one URL per line)<textarea name="geoUrls" rows="2" spellcheck="false" autocapitalize="off" placeholder="https://github.com/MetaCubeX/meta-rules-dat/blob/sing/geo/geosite/google.json"></textarea><span class="field-help">sing-box source rule sets on GitHub, up to 4. Downloaded on save and refreshed daily; their domain suffixes and CIDRs are added to this policy.</span></label>
+              <label class="span-2">GeoSite / GeoIP categories (optional, one per line)<textarea name="geoUrls" rows="3" spellcheck="false" autocapitalize="off" placeholder="geosite:youtube&#10;geosite:telegram&#10;geoip:telegram"></textarea><span class="field-help">Write <code>geosite:&lt;name&gt;</code> for domains or <code>geoip:&lt;name&gt;</code> for IP networks, using the category names from <a href="https://github.com/MetaCubeX/meta-rules-dat/tree/sing/geo" target="_blank" rel="noopener noreferrer">MetaCubeX/meta-rules-dat</a> (e.g. youtube, google, telegram, netflix, openai, category-ads-all). A GitHub link to any sing-box source .json works too. Up to 8; downloaded on save and refreshed daily.</span></label>
               <label class="span-2">Import GeoSite / GeoIP file<input name="geoFiles" type="file" accept=".json,application/json" multiple><span class="field-help" data-import-status role="status"></span><span class="field-help">sing-box source rule sets. Domain suffixes and CIDRs are added to the fields above; other selectors are skipped.</span></label>
             </div>
             <div class="editor-actions"><button class="btn btn-secondary" type="button" data-cancel-editor>Cancel</button><button class="btn" type="submit" data-save-list>Save policy</button></div>
@@ -1283,6 +1283,12 @@ function currentEgress() {
   return {proxies: egress.proxies || [], rules: egress.rules || []};
 }
 const savedOutbounds = () => state.settings.outbounds || [];
+// Mirrors the backend: MetaCubeX category URLs are shown as geosite:name / geoip:name.
+const GEO_CATEGORY_PREFIX = 'https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/';
+function geoLabel(url) {
+  const match = url.startsWith(GEO_CATEGORY_PREFIX) && /^(geosite|geoip)\/(.+)\.json$/.exec(url.slice(GEO_CATEGORY_PREFIX.length));
+  return match ? match[1] + ':' + match[2] : url;
+}
 const uniqueLines = text => [...new Set(String(text || '').split(/\r?\n/).map(v => v.trim()).filter(Boolean))];
 const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
 
@@ -1395,7 +1401,7 @@ function renderRouting() {
     const preview = [...domains, ...ranges].slice(0, 4).join(', ') + (domains.length + ranges.length > 4 ? ', …' : '');
     const counts = [domains.length ? plural(domains.length, 'domain', 'domains') : '',
       ranges.length ? plural(ranges.length, 'network', 'networks') : '',
-      urls.length ? plural(urls.length, 'GitHub list', 'GitHub lists') + ' (' + remote + ' entries)' : ''].filter(Boolean).join(' · ');
+      urls.length ? urls.map(geoLabel).join(', ') + ' (' + remote + ' entries)' : ''].filter(Boolean).join(' · ');
     return html`<tr>
       <td data-label="#">${index + 1}</td>
       <td data-label="Policy"><strong>${rule.name || 'Unnamed policy'}</strong></td>
@@ -1449,7 +1455,7 @@ function openListEditor(index) {
   f.name.value = rule ? rule.name || '' : '';
   f.domains.value = rule ? (rule.domainNames || []).join('\n') : '';
   f.ipRanges.value = rule ? (rule.ipRanges || []).join('\n') : '';
-  f.geoUrls.value = rule ? (rule.geoUrls || []).join('\n') : '';
+  f.geoUrls.value = rule ? (rule.geoUrls || []).map(geoLabel).join('\n') : '';
   form.querySelector('[data-import-status]').textContent = '';
   form.hidden = false;
   f.name.focus();
@@ -1467,7 +1473,7 @@ function listFromEditor() {
   const domains = uniqueLines(f.domains.value);
   const ipRanges = uniqueLines(f.ipRanges.value);
   const geoUrls = uniqueLines(f.geoUrls ? f.geoUrls.value : '');
-  if (!domains.length && !ipRanges.length && !geoUrls.length) throw new Error('Add a domain, an IP network or a GitHub list.');
+  if (!domains.length && !ipRanges.length && !geoUrls.length) throw new Error('Add a domain, an IP network or a GeoSite / GeoIP category.');
   const target = f.target.value;
   const previous = routingEdit.list >= 0 ? egress.rules[routingEdit.list] : null;
   const keep = target === KEEP_PROXIES && previous;

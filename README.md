@@ -108,12 +108,18 @@ the Linux image with `docker compose up -d --build mita`; it bundles sing-box.
    press **Test**. A failed check does not block saving. Set
    `MITA_OUTBOUND_PROBE_URL` in `.env` to probe a different http(s) URL.
 2. **Routing**: create policies. Each policy is a list of domains, CIDRs
-   and/or up to four GitHub GeoSite / GeoIP source lists, bound to one saved
-   outbound, or sent directly, or blocked. Policies are checked top to bottom
+   and/or up to eight GeoSite / GeoIP categories, bound to one saved
+   outbound, or sent directly, or blocked. Write categories as
+   `geosite:<name>` (domains) or `geoip:<name>` (IP networks), for example
+   `geosite:youtube`, `geosite:telegram` + `geoip:telegram`,
+   `geosite:category-ads-all`. Names come from
+   [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat/tree/sing/geo)
+   (`sing` branch); a GitHub link to any other sing-box source `.json` works
+   too. A wrong name fails on save with "HTTP 404 (no such category?)". Policies are checked top to bottom
    (reorder them with the arrows) and the first match wins; unmatched traffic
-   connects directly. GitHub lists are downloaded on save and refreshed daily.
+   connects directly. Categories are downloaded on save and refreshed daily.
    A policy holds up to 4,096 domains and 4,096 networks of its own (16,384
-   with GitHub entries), and a GeoSite / GeoIP file can also be imported into
+   with category entries), and a GeoSite / GeoIP file can also be imported into
    it. Changes apply after `docker compose restart mita`. **Advanced: edit as
    JSON** shows the policies in Mita's egress format.
 
