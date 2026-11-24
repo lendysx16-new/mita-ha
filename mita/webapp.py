@@ -6,12 +6,14 @@ import contextlib
 import copy
 import html
 import hashlib
+import fcntl
 import io
 import json
 import os
 import re
 import secrets
 import signal
+import shutil
 import socket
 import subprocess
 import tarfile
@@ -445,63 +447,104 @@ def save_postgres_backup(dsn, reason="scheduled"):
     return {"reason": reason, "file_names": names, "sha256": digest, "count": count}
 
 
+RESTORE_MARKER = ".restore-in-progress"
+RESTORE_STAGE = ".restore-staging"
+RESTORE_FILES = {"users.json", "settings.json", "mita-server.json", "options.json", "mita-state"}
+
+
+@contextlib.contextmanager
+def data_directory_lock():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(DATA_DIR, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield descriptor
+    except BlockingIOError as exc:
+        raise StateError("another process is preparing the data directory") from exc
+    finally:
+        os.close(descriptor)
+
+
+def cleanup_interrupted_restore():
+    paths = list(DATA_DIR.iterdir())
+    if any(path.name not in RESTORE_FILES | {RESTORE_MARKER, RESTORE_STAGE} for path in paths):
+        raise ValueError("interrupted restore contains unrelated files; use a new data volume")
+    for path in paths:
+        if path.name == RESTORE_MARKER:
+            continue
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
 def restore_backup_archive(payload, checksum, dsn=None):
-    """Restore into an unused data directory while the server is stopped."""
     if hashlib.sha256(payload).hexdigest() != checksum:
         raise ValueError("backup checksum mismatch")
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if any(DATA_DIR.iterdir()):
-        raise ValueError("restore requires an empty data directory")
+    with data_directory_lock() as descriptor:
+        marker = DATA_DIR / RESTORE_MARKER
+        if marker.exists():
+            cleanup_interrupted_restore()
+        elif any(DATA_DIR.iterdir()):
+            raise ValueError("restore requires an empty data directory")
+        else:
+            marker.touch(mode=0o600, exist_ok=False)
+            os.fsync(descriptor)
+        try:
+            install_backup_archive(payload, dsn)
+            (DATA_DIR / RESTORE_STAGE).rmdir()
+            os.fsync(descriptor)
+        except Exception:
+            cleanup_interrupted_restore()
+            marker.unlink()
+            raise
+        marker.unlink()
+        os.fsync(descriptor)
 
+
+def install_backup_archive(payload, dsn):
+    """Restore into an unused data directory while the server is stopped."""
     json_types = {
         "users.json": list,
         "settings.json": dict,
         "mita-server.json": dict,
         "options.json": dict,
     }
-    with tempfile.TemporaryDirectory(prefix=".restore-", dir=DATA_DIR) as staging:
-        root = Path(staging)
-        seen = set()
-        total = 0
-        with tarfile.open(fileobj=io.BytesIO(payload), mode="r|gz") as archive:
-            for member in archive:
-                name = member.name
-                parts = name.split("/")
-                if (name in seen or not member.isfile()
-                        or any(part in ("", ".", "..") for part in parts)
-                        or (name not in json_types
-                            and not (parts[0] == "mita-state" and len(parts) > 1))):
-                    raise ValueError("backup contains an unsupported or duplicate path")
-                seen.add(name)
-                total += member.size
-                if total > BACKUP_MAX_UNCOMPRESSED_BYTES:
-                    raise ValueError("backup exceeds maximum uncompressed size")
-                data = archive.extractfile(member).read()
-                if name in json_types:
-                    value = json.loads(data)
-                    if not isinstance(value, json_types[name]):
-                        raise ValueError("backup contains invalid JSON state")
-                    if name == "settings.json" and dsn is not None:
-                        value["postgres_dsn"] = dsn
-                        data = json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
-                path = root / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with path.open("xb") as file:
-                    file.write(data)
-                path.chmod(0o600)
-        if not {"users.json", "settings.json"} <= seen:
-            raise ValueError("backup is missing required state")
+    root = DATA_DIR / RESTORE_STAGE
+    root.mkdir(mode=0o700)
+    seen = set()
+    total = 0
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r|gz") as archive:
+        for member in archive:
+            name = member.name
+            parts = name.split("/")
+            if (name in seen or not member.isfile()
+                    or any(part in ("", ".", "..") for part in parts)
+                    or (name not in json_types
+                        and not (parts[0] == "mita-state" and len(parts) > 1))):
+                raise ValueError("backup contains an unsupported or duplicate path")
+            seen.add(name)
+            total += member.size
+            if total > BACKUP_MAX_UNCOMPRESSED_BYTES:
+                raise ValueError("backup exceeds maximum uncompressed size")
+            data = archive.extractfile(member).read()
+            if name in json_types:
+                value = json.loads(data)
+                if not isinstance(value, json_types[name]):
+                    raise ValueError("backup contains invalid JSON state")
+                if name == "settings.json" and dsn is not None:
+                    value["postgres_dsn"] = dsn
+                    data = json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("xb") as file:
+                file.write(data)
+            path.chmod(0o600)
+    if not {"users.json", "settings.json"} <= seen:
+        raise ValueError("backup is missing required state")
 
-        installed = []
-        try:
-            for path in root.iterdir():
-                destination = DATA_DIR / path.name
-                path.rename(destination)
-                installed.append(destination)
-        except OSError:
-            for path in installed:
-                path.rename(root / path.name)
-            raise
+    for path in root.iterdir():
+        path.rename(DATA_DIR / path.name)
 
 
 def restore_postgres_backup(dsn, backup_id):
@@ -646,11 +689,24 @@ def is_standalone():
 
 
 def initialize():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with data_directory_lock():
+        if (DATA_DIR / RESTORE_MARKER).exists():
+            raise StateError("restore was interrupted; rerun the restore command before starting Mita")
+        initialize_state()
+
+
+def initialize_state():
     options = load_options()
     if is_standalone():
         options.setdefault("public_mieru_host", os.environ.get("MITA_PUBLIC_HOST", "localhost"))
-        options.setdefault("public_mieru_port", int(os.environ.get("MITA_PUBLIC_PORT", "2022")))
+        if not SETTINGS_PATH.exists() and "public_mieru_port" not in options:
+            try:
+                public_port = int(os.environ.get("MITA_PUBLIC_PORT", "2022"))
+            except ValueError as exc:
+                raise StateError("MITA_PUBLIC_PORT must be an integer between 1 and 65535") from exc
+            if not 1 <= public_port <= 65535:
+                raise StateError("MITA_PUBLIC_PORT must be an integer between 1 and 65535")
+            options["public_mieru_port"] = public_port
         options.setdefault("subscription_base_url", os.environ.get(
             "MITA_SUBSCRIPTION_BASE_URL", "http://localhost:8099"))
         options.setdefault("postgres_dsn", os.environ.get("MITA_POSTGRES_DSN", ""))
@@ -843,6 +899,8 @@ def normalize_egress(value, *, destination_limit=256):
         if type(port) is not int or not 1 <= port <= 65535:
             raise ValueError("proxy port must be an integer between 1 and 65535")
         host = proxy.get("host")
+        if not isinstance(host, str):
+            raise ValueError("proxy host must be a string")
         try:
             host = str(ipaddress.ip_address(host))
         except ValueError:
@@ -970,29 +1028,43 @@ def parse_geo_source(source):
             or source["version"] not in (1, 2, 3, 4)
             or not isinstance(source.get("rules"), list) or not source["rules"]):
         raise ValueError("expected a sing-box source rule set with version and rules")
-    domains, ip_ranges = [], []
+    domains, ip_ranges, skipped = [], [], set()
+    domain_selectors = {"domain", "domain_suffix", "domain_regex", "domain_keyword"}
     for rule in source["rules"]:
-        if not isinstance(rule, dict) or rule.get("type", "default") != "default":
-            raise ValueError("Geo rules must use only domain_suffix or ip_cidr")
+        if not isinstance(rule, dict):
+            raise ValueError("Geo rule must be an object")
         keys = set(rule) - {"type"}
-        if keys not in ({"domain_suffix"}, {"ip_cidr"}):
-            raise ValueError("Geo rules must use only domain_suffix or ip_cidr")
-        key = next(iter(keys))
-        values = rule[key]
-        if isinstance(values, str):
-            values = [values]
-        if not isinstance(values, list) or not values or any(not isinstance(item, str) for item in values):
-            raise ValueError("Geo rule entries must be nonempty strings")
-        target = domains if key == "domain_suffix" else ip_ranges
-        target.extend(values)
-        if len(target) > 16384:
-            raise ValueError("Geo rule set exceeds 16384 entries per selector")
-    return domains, ip_ranges
+        if rule.get("type", "default") != "default" or not (
+            keys == {"ip_cidr"} or keys and keys <= domain_selectors
+        ):
+            skipped.add("compound rules")
+            continue
+        skipped.update(keys & {"domain", "domain_regex", "domain_keyword"})
+        for key, target in (("domain_suffix", domains), ("ip_cidr", ip_ranges)):
+            if key not in rule:
+                continue
+            values = rule[key]
+            if isinstance(values, str):
+                values = [values]
+            if not isinstance(values, list) or not values or any(
+                not isinstance(item, str) or not item.strip() for item in values
+            ):
+                raise ValueError("Geo rule entries must be nonempty strings")
+            for value in values:
+                if key == "domain_suffix" and value.strip().startswith("."):
+                    skipped.add("subdomain-only suffixes")
+                else:
+                    target.append(value.strip())
+            if len(target) > 16384:
+                raise ValueError("Geo rule set exceeds 16384 entries per selector")
+    if not domains and not ip_ranges:
+        raise ValueError("Geo rule set has no compatible domain suffixes or CIDRs")
+    return domains, ip_ranges, sorted(skipped)
 
 
 def download_geo_sources(urls):
     opener = urllib.request.build_opener(NoGeoRedirects())
-    domains, ip_ranges = [], []
+    domains, ip_ranges, skipped = [], [], set()
     for url in normalize_geo_urls(urls):
         try:
             with opener.open(url, timeout=8) as response:
@@ -1005,10 +1077,15 @@ def download_geo_sources(urls):
             source = json.loads(payload)
         except (ValueError, RecursionError) as exc:
             raise ValueError("GitHub Geo rule set is not valid JSON") from exc
-        source_domains, source_ranges = parse_geo_source(source)
+        source_domains, source_ranges, source_skipped = parse_geo_source(source)
         domains.extend(source_domains)
         ip_ranges.extend(source_ranges)
-    return {"domains": list(dict.fromkeys(domains)), "ip_ranges": list(dict.fromkeys(ip_ranges))}
+        skipped.update(source_skipped)
+    return {
+        "domains": list(dict.fromkeys(domains)),
+        "ip_ranges": list(dict.fromkeys(ip_ranges)),
+        "skipped": sorted(skipped),
+    }
 
 
 def refresh_geo_sources():
@@ -1083,14 +1160,18 @@ class SingBoxBridge:
     def running(self):
         return self.process is not None and self.process.poll() is None
 
-    def stop(self):
-        if self.running():
-            self.process.terminate()
+    @staticmethod
+    def stop_process(process):
+        if process is not None and process.poll() is None:
+            process.terminate()
             try:
-                self.process.wait(timeout=3)
+                process.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
+                process.kill()
+                process.wait()
+
+    def stop(self):
+        self.stop_process(self.process)
         self.process = None
 
     def start(self, settings):
@@ -1105,18 +1186,23 @@ class SingBoxBridge:
             config = Path(directory) / "config.json"
             write_json(config, sing_box_config(settings))
             args = [str(SING_BOX_BINARY), "run", "-c", str(config)]
-            self.process = subprocess.Popen(
+            process = subprocess.Popen(
                 args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-            for _ in range(30):
-                if not self.running():
-                    break
-                try:
-                    with socket.create_connection(("127.0.0.1", SING_BOX_PORT), timeout=0.1):
-                        return
-                except OSError:
-                    time.sleep(0.1)
-        self.stop()
+            try:
+                for _ in range(30):
+                    if process.poll() is not None:
+                        break
+                    try:
+                        with socket.create_connection(("127.0.0.1", SING_BOX_PORT), timeout=0.1):
+                            if process.poll() is None:
+                                self.process = process
+                                return
+                    except OSError:
+                        time.sleep(0.1)
+            finally:
+                if self.process is not process:
+                    self.stop_process(process)
         raise ValueError("sing-box could not start its local SOCKS5 listener")
 
     def replace(self, updated, previous, persist):
@@ -1137,14 +1223,34 @@ class SingBoxBridge:
             if updated is not None:
                 self.start(updated)
             persist()
-        except (ValueError, OSError):
+        except (ValueError, OSError) as original:
             self.stop()
             if previous is not None:
-                self.start(previous)
+                try:
+                    self.start(previous)
+                except (ValueError, OSError) as rollback:
+                    raise ValueError(f"{original}; previous sing-box also failed to restart: {rollback}") from original
             raise
 
 
 SING_BOX = SingBoxBridge()
+
+
+def supervise_sing_box(stop_event):
+    delay = 1
+    while not stop_event.wait(delay):
+        with LOCK:
+            if stop_event.is_set():
+                return
+            try:
+                bridge = get_settings().get("sing_box")
+                if bridge and not SING_BOX.running():
+                    SING_BOX.start(bridge)
+                    print("[web] built-in sing-box restarted", flush=True)
+                delay = 1
+            except (ValueError, OSError, StateError):
+                delay = min(delay * 2, 60)
+                print(f"[web] built-in sing-box unavailable; retrying in {delay}s", flush=True)
 
 
 def admin_settings(settings):
@@ -1153,10 +1259,12 @@ def admin_settings(settings):
         settings.pop("egress", None)
         settings.pop("sing_box", None)
     elif settings.get("sing_box"):
+        bridge = settings["sing_box"]
         settings["sing_box"] = {
             key: settings["sing_box"][key] for key in ("domains", "outbound", "ip_ranges", "geo_urls", "geo_updated_at")
             if key in settings["sing_box"]
         }
+        settings["sing_box"]["geo_skipped"] = bridge.get("geo_snapshot", {}).get("skipped", [])
     return settings
 
 
@@ -1167,7 +1275,7 @@ def build_mita_config(users, settings):
     for user in users:
         access = {
             "allowPrivateIP": bool(user.get("allow_private_ip", False)),
-            "allowLoopbackIP": bool(user.get("allow_loopback_ip", False)),
+            "allowLoopbackIP": not is_standalone() and bool(user.get("allow_loopback_ip", False)),
         }
         if user.get("legacy_enabled", True):
             mita_users.append({
@@ -1767,6 +1875,22 @@ ADMIN_ROUTES = [
 ADMIN_ROUTES = [(method, re.compile(pattern), name) for method, pattern, name in ADMIN_ROUTES]
 
 
+def standalone_admin_password():
+    password = os.environ.get("MITA_ADMIN_PASSWORD", "")
+    return password if len(password) >= 24 else ""
+
+
+def matches_admin_password(header, password):
+    scheme, _, encoded = header.partition(" ")
+    if scheme.lower() != "basic":
+        return False
+    try:
+        credentials = base64.b64decode(encoded, validate=True)
+    except ValueError:
+        return False
+    return secrets.compare_digest(credentials, f"admin:{password}".encode("utf-8"))
+
+
 class AdminHandler(CommonHandler):
     def do_GET(self):
         self.dispatch("GET")
@@ -1787,6 +1911,17 @@ class AdminHandler(CommonHandler):
         if not is_allowed_admin_client(self.client_address[0]):
             self.send_json(HTTPStatus.FORBIDDEN, {"error": "admin UI is only available through Home Assistant Ingress"})
             return
+        if is_standalone():
+            password = standalone_admin_password()
+            if not password:
+                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Linux admin password is not configured"})
+                return
+            if not matches_admin_password(self.headers.get("Authorization", ""), password):
+                self.send_json(
+                    HTTPStatus.UNAUTHORIZED, {"error": "admin credentials required"},
+                    headers={"WWW-Authenticate": 'Basic realm="Mita Linux", charset="UTF-8"'},
+                )
+                return
         path = urllib.parse.urlparse(self.path).path
         matches = [(m, r.fullmatch(path), name) for m, r, name in ADMIN_ROUTES]
         matches = [(m, match, name) for m, match, name in matches if match]
@@ -2149,13 +2284,7 @@ def serve():
     admin = Server((admin_host, ADMIN_PORT), AdminHandler)
     sub = Server(("0.0.0.0", SUB_PORT), SubscriptionHandler)
 
-    if sing_box_available():
-        bridge = get_settings().get("sing_box")
-        if bridge is not None:
-            try:
-                SING_BOX.start(bridge)
-            except (ValueError, OSError):
-                print("[web] built-in sing-box failed to start; check the Outbound settings", flush=True)
+    stop_bridge = threading.Event()
 
     def shutdown_handler(signum, frame):
         threading.Thread(target=admin.shutdown, daemon=True).start()
@@ -2168,12 +2297,14 @@ def serve():
     threading.Thread(target=log_db_worker, name="postgres-log-forwarder", daemon=True).start()
     threading.Thread(target=backup_db_worker, name="postgres-backup-worker", daemon=True).start()
     if sing_box_available():
+        threading.Thread(target=supervise_sing_box, args=(stop_bridge,), name="sing-box-supervisor", daemon=True).start()
         threading.Thread(target=geo_refresh_worker, name="github-geo-refresh", daemon=True).start()
     print(f"[web] admin UI listening on {admin_host}:{ADMIN_PORT}", flush=True)
     print("[web] subscription server listening on 8099", flush=True)
     try:
         admin.serve_forever()
     finally:
+        stop_bridge.set()
         with LOCK:
             SING_BOX.stop()
         admin.server_close()
@@ -2198,6 +2329,11 @@ if __name__ == "__main__":
             parser.exit(1, "Restore failed while reading PostgreSQL. Check the DSN and table access.\n")
         print(f"Restored PostgreSQL backup {identifier}")
         raise SystemExit(0)
-    initialize()
+    try:
+        if is_standalone() and not standalone_admin_password():
+            raise StateError("set MITA_ADMIN_PASSWORD to a password of at least 24 characters")
+        initialize()
+    except (StateError, ValueError, OSError) as exc:
+        parser.exit(1, f"Startup failed: {exc}\n")
     if not args.init:
         serve()

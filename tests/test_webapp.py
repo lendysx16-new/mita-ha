@@ -1,4 +1,5 @@
 """Regression tests for the Mita Home Assistant API and subscription state."""
+import base64
 import contextlib
 import http.client
 import importlib.util
@@ -22,6 +23,9 @@ SPEC.loader.exec_module(app)
 
 class AdminAPITests(unittest.TestCase):
     def setUp(self):
+        password_patch = mock.patch.dict(app.os.environ, {"MITA_ADMIN_PASSWORD": "test-admin-password-long-enough"})
+        password_patch.start()
+        self.addCleanup(password_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.original_paths = (app.DATA_DIR, app.USERS_PATH, app.SETTINGS_PATH, app.MITA_CONFIG_PATH)
@@ -66,14 +70,35 @@ class AdminAPITests(unittest.TestCase):
     def call(self, method, path, body=None, raw=False, headers=None):
         if body is not None and not raw:
             body = json.dumps(body)
+        if headers is None:
+            credentials = base64.b64encode(b"admin:test-admin-password-long-enough").decode()
+            headers = {"Content-Type": "application/json", "Authorization": f"Basic {credentials}"}
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=10)
         try:
-            connection.request(method, path, body=body, headers=headers or {"Content-Type": "application/json"})
+            connection.request(method, path, body=body, headers=headers)
             response = connection.getresponse()
             payload = response.read()
             return response.status, json.loads(payload) if payload else {}
         finally:
             connection.close()
+
+    @mock.patch.dict(app.os.environ, {"MITA_STANDALONE": "1"})
+    def test_standalone_loopback_requires_admin_password(self):
+        status, result = self.call("GET", "/api/state", headers={})
+        self.assertEqual(status, 401)
+        self.assertNotIn("settings", result)
+        status, _ = self.call("PUT", "/api/settings", {"log_level": "DEBUG"}, headers={})
+        self.assertEqual(status, 401)
+        self.assertEqual(app.get_settings()["log_level"], "INFO")
+        status, _ = self.call("GET", "/api/state", headers={"Authorization": "Basic !!!"})
+        self.assertEqual(status, 401)
+        self.assertEqual(self.call("GET", "/api/state")[0], 200)
+        with mock.patch.dict(app.os.environ, {"MITA_ADMIN_PASSWORD": ""}):
+            self.assertEqual(self.call("GET", "/api/state")[0], 503)
+
+        users = app.get_users()
+        users[0]["allow_loopback_ip"] = True
+        self.assertFalse(app.build_mita_config(users, app.get_settings())["users"][0]["allowLoopbackIP"])
 
     def test_add_user_and_generate_password(self):
         status, data = self.call("POST", "/api/users", {"username": "second"})
@@ -268,10 +293,23 @@ class AdminAPITests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 app.normalize_geo_urls([url])
         self.assertEqual(app.parse_geo_source({"version": 3, "rules": [
-            {"domain_suffix": ["example.com"]}, {"ip_cidr": "198.51.100.0/24"},
-        ]}), (["example.com"], ["198.51.100.0/24"]))
+            {"domain_suffix": ["example.com"], "domain": ["exact.example"], "domain_regex": [".*"]},
+            {"ip_cidr": "198.51.100.0/24"},
+        ]}), (["example.com"], ["198.51.100.0/24"], ["domain", "domain_regex"]))
         with self.assertRaises(ValueError):
             app.parse_geo_source({"version": 3, "rules": [{"domain_regex": [".*"]}]})
+
+    def test_sing_box_supervisor_backs_off_and_resumes_quick_checks(self):
+        app.write_json(app.SETTINGS_PATH, {"sing_box": {"outbound": {"type": "socks"}}})
+        stop = mock.Mock()
+        stop.wait.side_effect = [False, False, False, True]
+        stop.is_set.return_value = False
+        with mock.patch.object(app.SING_BOX, "running", return_value=False), mock.patch.object(
+            app.SING_BOX, "start", side_effect=[ValueError("port busy"), ValueError("port busy"), None],
+        ) as start:
+            app.supervise_sing_box(stop)
+        self.assertEqual(start.call_count, 3)
+        self.assertEqual(stop.wait.call_args_list, [mock.call(1), mock.call(2), mock.call(4), mock.call(1)])
 
     def test_settings_without_log_change_does_not_reload(self):
         status, _ = self.call("PUT", "/api/settings", {"public_mieru_port": 443})

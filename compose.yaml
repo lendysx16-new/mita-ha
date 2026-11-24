@@ -12,6 +12,7 @@ services:
     restart: unless-stopped
     environment:
       MITA_STANDALONE: "1"
+      MITA_ADMIN_PASSWORD: ${MITA_ADMIN_PASSWORD:-}
       MITA_PUBLIC_HOST: ${MITA_PUBLIC_HOST:-localhost}
       MITA_PUBLIC_PORT: ${MITA_PUBLIC_PORT:-2022}
       MITA_SUBSCRIPTION_BASE_URL: ${MITA_SUBSCRIPTION_BASE_URL:-http://localhost:8099}

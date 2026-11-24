@@ -462,7 +462,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
               <label class="span-2">Provider outbound (JSON)<textarea id="singBoxConfig" rows="8" required spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
               <label class="span-2">Domains (one per line)<textarea id="singBoxDomains" rows="3" spellcheck="false" placeholder="example.com" autocapitalize="off"></textarea></label>
               <label class="span-2">IP networks (one CIDR per line)<textarea id="singBoxIPRanges" rows="3" spellcheck="false" placeholder="198.51.100.0/24" autocapitalize="off"></textarea></label>
-              <label class="span-2">Import GeoSite / GeoIP<input id="singBoxGeoFiles" type="file" accept=".json,application/json" multiple><span class="field-help">sing-box source rule sets with domain_suffix or ip_cidr. Imported entries are added to the fields above.</span></label>
+              <label class="span-2">Import GeoSite / GeoIP<input id="singBoxGeoFiles" type="file" accept=".json,application/json" multiple><span id="singBoxImportStatus" class="field-help" role="status"></span><span class="field-help">sing-box source rule sets with domain_suffix or ip_cidr. Imported entries are added to the fields above. Unsupported selectors are listed in the import result.</span></label>
               <label class="span-2">GitHub Geo lists (one URL per line)<textarea id="singBoxGeoUrls" rows="3" spellcheck="false" placeholder="https://raw.githubusercontent.com/owner/repo/main/geosite.json" autocapitalize="off"></textarea><span class="field-help">Checked daily. Restart Mita to apply an updated list.</span><span id="singBoxGeoStatus" class="field-help"></span></label>
             </div>
           </div>
@@ -975,8 +975,11 @@ function fillSettings(s) {
   $('#singBoxDomains').value = bridge ? bridge.domains.join('\n') : '';
   $('#singBoxIPRanges').value = bridge ? (bridge.ip_ranges || []).join('\n') : '';
   $('#singBoxGeoUrls').value = bridge ? (bridge.geo_urls || []).join('\n') : '';
-  $('#singBoxGeoStatus').textContent = bridge && bridge.geo_updated_at
+  const geoStatus = bridge && bridge.geo_updated_at
     ? 'Last saved GitHub list: ' + displayTime(bridge.geo_updated_at) : '';
+  const skipped = bridge && bridge.geo_skipped || [];
+  $('#singBoxGeoStatus').textContent = [geoStatus, skipped.length ? 'Skipped: ' + skipped.join(', ') : '']
+    .filter(Boolean).join('. ');
   $('#disableSingBox').hidden = !bridge;
   $('#enableSingBox').textContent = bridge ? 'Update sing-box' : 'Set up sing-box';
   const outboundEnabled = state.outbound_enabled === true;
@@ -1118,26 +1121,35 @@ function readGeoRuleSet(source) {
   }
   const domains = [];
   const ipRanges = [];
+  const skipped = new Set();
+  const domainSelectors = ['domain', 'domain_suffix', 'domain_regex', 'domain_keyword'];
   for (const rule of source.rules) {
-    const keys = Object.keys(rule || {}).filter(key => key !== 'type');
-    if (!rule || (rule.type !== undefined && rule.type !== 'default') || keys.length !== 1 ||
-        !['domain_suffix', 'ip_cidr'].includes(keys[0])) {
-      throw new Error('Each rule must contain only domain_suffix or ip_cidr. Exact domains, regex and compound rules cannot be imported.');
+    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) throw new Error('Geo rule must be an object.');
+    const keys = Object.keys(rule).filter(key => key !== 'type');
+    const ipRule = keys.length === 1 && keys[0] === 'ip_cidr';
+    if ((rule.type !== undefined && rule.type !== 'default') ||
+        (!ipRule && (!keys.length || !keys.every(key => domainSelectors.includes(key))))) {
+      skipped.add('compound rules');
+      continue;
     }
-    const values = Array.isArray(rule[keys[0]]) ? rule[keys[0]] : [rule[keys[0]]];
-    if (!values.length || values.some(value => typeof value !== 'string' || !value.trim())) {
-      throw new Error('Geo rule entries must be nonempty strings.');
-    }
-    if (keys[0] === 'domain_suffix') {
-      if (values.some(value => value.startsWith('.'))) {
-        throw new Error('Subdomain-only suffixes cannot be imported without changing what they match.');
+    for (const key of keys) {
+      if (!['domain_suffix', 'ip_cidr'].includes(key)) {
+        skipped.add(key);
+        continue;
       }
-      for (const value of values) domains.push(value);
-    } else {
-      for (const value of values) ipRanges.push(value);
+      const values = Array.isArray(rule[key]) ? rule[key] : [rule[key]];
+      if (!values.length || values.some(value => typeof value !== 'string' || !value.trim())) {
+        throw new Error('Geo rule entries must be nonempty strings.');
+      }
+      for (const value of values.map(value => value.trim())) {
+        if (key === 'ip_cidr') ipRanges.push(value);
+        else if (value.startsWith('.')) skipped.add('subdomain-only suffixes');
+        else domains.push(value);
+      }
     }
   }
-  return {domains, ipRanges};
+  if (!domains.length && !ipRanges.length) throw new Error('Geo rule set has no compatible domain suffixes or CIDRs.');
+  return {domains, ipRanges, skipped: [...skipped].sort()};
 }
 
 const destinationLines = field => $(field).value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
@@ -1155,6 +1167,8 @@ $('#singBoxGeoFiles').addEventListener('change', async e => {
     for (const [field, key] of [['#singBoxDomains', 'domains'], ['#singBoxIPRanges', 'ipRanges']]) {
       $(field).value = [...new Set([...destinationLines(field), ...lists.flatMap(list => list[key])])].join('\n');
     }
+    const skipped = [...new Set(lists.flatMap(list => list.skipped))].sort();
+    $('#singBoxImportStatus').textContent = skipped.length ? 'Skipped: ' + skipped.join(', ') : '';
   } catch (error) {
     toast(error.message, 'error');
   } finally {

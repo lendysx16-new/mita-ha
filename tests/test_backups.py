@@ -54,6 +54,26 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(settings["postgres_dsn"], "postgresql://new-host/mita")
         self.assertEqual(settings["contact_email"], "support@example.com")
 
+    def test_interrupted_restore_blocks_start_and_can_be_retried(self):
+        payload, _, checksum = app.build_backup_archive()
+        destination = self.root / "restored"
+
+        def interrupt(*_):
+            (destination / "users.json").write_text("[]")
+            (destination / app.RESTORE_STAGE).mkdir()
+            raise KeyboardInterrupt
+
+        with mock.patch.object(app, "DATA_DIR", destination):
+            with mock.patch.object(app, "install_backup_archive", side_effect=interrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    app.restore_backup_archive(payload, checksum)
+            with self.assertRaisesRegex(app.StateError, "restore was interrupted"):
+                app.initialize()
+            app.restore_backup_archive(payload, checksum)
+        self.assertFalse((destination / app.RESTORE_MARKER).exists())
+        self.assertEqual((destination / "users.json").read_bytes(), (self.root / "users.json").read_bytes())
+        self.assertTrue((destination / "settings.json").exists())
+
     def test_restore_rejects_corruption_and_unsafe_archive_without_writing(self):
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w:gz") as archive:

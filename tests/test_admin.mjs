@@ -249,13 +249,15 @@ test('outbound editor is available only in standalone Linux mode', async () => {
 test('Geo source import preserves suffix and CIDR selectors and rejects unsupported matches', () => {
   const {ctx} = setup();
   const source = {version: 3, rules: [
-    {domain_suffix: ['example.com']}, {ip_cidr: ['198.51.100.0/24']},
+    {domain_suffix: ['example.com'], domain: ['exact.example'], domain_regex: ['.*']},
+    {ip_cidr: ['198.51.100.0/24']},
   ]};
   const parsed = ctx.readGeoRuleSet(source);
   assert.deepEqual([...parsed.domains], ['example.com']);
   assert.deepEqual([...parsed.ipRanges], ['198.51.100.0/24']);
-  assert.throws(() => ctx.readGeoRuleSet({version: 3, rules: [{domain: ['example.com']}]}), /Exact domains/);
+  assert.deepEqual([...parsed.skipped], ['domain', 'domain_regex']);
+  assert.throws(() => ctx.readGeoRuleSet({version: 3, rules: [{domain: ['example.com']}]}), /no compatible/);
   assert.throws(() => ctx.readGeoRuleSet({version: 3, rules: [
     {domain_suffix: ['example.com'], ip_cidr: ['198.51.100.0/24']},
-  ]}), /compound rules/);
+  ]}), /no compatible/);
 });
