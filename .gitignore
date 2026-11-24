@@ -16,3 +16,6 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+
+# Standalone Linux settings (may contain a PostgreSQL password)
+.env

@@ -14,6 +14,7 @@ import secrets
 import signal
 import subprocess
 import tarfile
+import tempfile
 import threading
 import time
 import urllib.error
@@ -442,6 +443,86 @@ def save_postgres_backup(dsn, reason="scheduled"):
     return {"reason": reason, "file_names": names, "sha256": digest, "count": count}
 
 
+def restore_backup_archive(payload, checksum, dsn=None):
+    """Restore into an unused data directory while the server is stopped."""
+    if hashlib.sha256(payload).hexdigest() != checksum:
+        raise ValueError("backup checksum mismatch")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if any(DATA_DIR.iterdir()):
+        raise ValueError("restore requires an empty data directory")
+
+    json_types = {
+        "users.json": list,
+        "settings.json": dict,
+        "mita-server.json": dict,
+        "options.json": dict,
+    }
+    with tempfile.TemporaryDirectory(prefix=".restore-", dir=DATA_DIR) as staging:
+        root = Path(staging)
+        seen = set()
+        total = 0
+        with tarfile.open(fileobj=io.BytesIO(payload), mode="r|gz") as archive:
+            for member in archive:
+                name = member.name
+                parts = name.split("/")
+                if (name in seen or not member.isfile()
+                        or any(part in ("", ".", "..") for part in parts)
+                        or (name not in json_types
+                            and not (parts[0] == "mita-state" and len(parts) > 1))):
+                    raise ValueError("backup contains an unsupported or duplicate path")
+                seen.add(name)
+                total += member.size
+                if total > BACKUP_MAX_UNCOMPRESSED_BYTES:
+                    raise ValueError("backup exceeds maximum uncompressed size")
+                data = archive.extractfile(member).read()
+                if name in json_types:
+                    value = json.loads(data)
+                    if not isinstance(value, json_types[name]):
+                        raise ValueError("backup contains invalid JSON state")
+                    if name == "settings.json" and dsn is not None:
+                        value["postgres_dsn"] = dsn
+                        data = json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("xb") as file:
+                    file.write(data)
+                path.chmod(0o600)
+        if not {"users.json", "settings.json"} <= seen:
+            raise ValueError("backup is missing required state")
+
+        installed = []
+        try:
+            for path in root.iterdir():
+                destination = DATA_DIR / path.name
+                path.rename(destination)
+                installed.append(destination)
+        except OSError:
+            for path in installed:
+                path.rename(root / path.name)
+            raise
+
+
+def restore_postgres_backup(dsn, backup_id):
+    if psycopg2 is None:
+        raise RuntimeError("psycopg2 is not installed")
+    with contextlib.closing(psycopg2.connect(dsn, connect_timeout=8)) as connection:
+        with connection.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, checksum_sha256, payload FROM mita_backups
+                WHERE (%s::bigint IS NULL OR id = %s)
+                ORDER BY created_at DESC, id DESC LIMIT 1
+                """,
+                (backup_id, backup_id),
+            )
+            record = cur.fetchone()
+    if record is None:
+        raise ValueError("no matching PostgreSQL backup")
+    identifier, checksum, payload = record
+    restore_backup_archive(bytes(payload), checksum, dsn)
+    return identifier
+
+
 def backup_db_worker():
     """Back up on every server start, then every 24h; retry failed jobs."""
     if psycopg2 is None:
@@ -561,6 +642,12 @@ def normalize_contact_email(value):
 def initialize():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     options = load_options()
+    if os.environ.get("MITA_STANDALONE") == "1":
+        options.setdefault("public_mieru_host", os.environ.get("MITA_PUBLIC_HOST", "localhost"))
+        options.setdefault("public_mieru_port", int(os.environ.get("MITA_PUBLIC_PORT", "2022")))
+        options.setdefault("subscription_base_url", os.environ.get(
+            "MITA_SUBSCRIPTION_BASE_URL", "http://localhost:8099"))
+        options.setdefault("postgres_dsn", os.environ.get("MITA_POSTGRES_DSN", ""))
 
     if not USERS_PATH.exists():
         default_private = bool(options.get("allow_private_ip", False))
@@ -1640,7 +1727,8 @@ class Server(ThreadingHTTPServer):
 
 
 def serve():
-    admin = Server(("0.0.0.0", ADMIN_PORT), AdminHandler)
+    admin_host = "127.0.0.1" if os.environ.get("MITA_STANDALONE") == "1" else "0.0.0.0"
+    admin = Server((admin_host, ADMIN_PORT), AdminHandler)
     sub = Server(("0.0.0.0", SUB_PORT), SubscriptionHandler)
 
     def shutdown_handler(signum, frame):
@@ -1653,7 +1741,7 @@ def serve():
     threading.Thread(target=sub.serve_forever, name="subscription-server", daemon=True).start()
     threading.Thread(target=log_db_worker, name="postgres-log-forwarder", daemon=True).start()
     threading.Thread(target=backup_db_worker, name="postgres-backup-worker", daemon=True).start()
-    print("[web] admin UI listening on 8098 (Ingress only)", flush=True)
+    print(f"[web] admin UI listening on {admin_host}:{ADMIN_PORT}", flush=True)
     print("[web] subscription server listening on 8099", flush=True)
     admin.serve_forever()
     admin.server_close()
@@ -1663,7 +1751,21 @@ def serve():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--init", action="store_true")
+    parser.add_argument("--restore-postgres", metavar="BACKUP", help="latest or a numeric backup ID")
     args = parser.parse_args()
+    if args.restore_postgres:
+        dsn = os.environ.get("MITA_POSTGRES_DSN", "").strip()
+        if not dsn:
+            parser.error("set MITA_POSTGRES_DSN to the database containing the backup")
+        try:
+            backup_id = None if args.restore_postgres == "latest" else int(args.restore_postgres)
+            identifier = restore_postgres_backup(dsn, backup_id)
+        except (ValueError, OSError, RuntimeError, tarfile.TarError) as exc:
+            parser.exit(1, f"Restore failed: {exc}\n")
+        except Exception:
+            parser.exit(1, "Restore failed while reading PostgreSQL. Check the DSN and table access.\n")
+        print(f"Restored PostgreSQL backup {identifier}")
+        raise SystemExit(0)
     initialize()
     if not args.init:
         serve()

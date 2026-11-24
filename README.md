@@ -22,3 +22,56 @@ Features:
 6. Reverse proxy only `/sub/*` from HTTPS to the subscription server on port 8099.
 
 See the app documentation for the Caddy example.
+
+## Run on Linux
+
+Docker Engine with the Compose plugin builds the same Mita server and web UI
+for Linux amd64 or arm64. The Linux service uses host networking. Mita listens on
+TCP 2022, subscriptions on 8099, and the admin UI only on 127.0.0.1:8098.
+Access the admin UI from another machine through an SSH tunnel:
+
+```sh
+ssh -L 8098:127.0.0.1:8098 user@linux-server
+```
+
+Open http://127.0.0.1:8098 through that tunnel. Put an HTTPS reverse proxy in
+front of the subscription endpoint and publish only `/sub/*`. Set
+`MITA_PUBLIC_HOST`, `MITA_PUBLIC_PORT` and `MITA_SUBSCRIPTION_BASE_URL` in
+Compose's local `.env` for fresh installs, or edit Public connection settings
+in the admin UI. Set `MITA_POSTGRES_DSN` to enable PostgreSQL backups on a fresh install.
+The connection string contains credentials. Keep `.env` private.
+
+For a fresh install:
+
+```sh
+docker compose up -d --build
+```
+
+### Move from Home Assistant using the same PostgreSQL database
+
+1. On Home Assistant, confirm a successful PostgreSQL backup in the admin UI.
+   Starting the add-on writes a fresh snapshot. Stop the old instance once the
+   snapshot is complete and before starting the replacement.
+2. On Linux, set `MITA_POSTGRES_DSN` in `.env` to a connection string for the same
+   database and schema. If Linux cannot resolve the HA database hostname, use an
+   address reachable from Linux.
+3. Restore before the first start. For an existing Linux instance, stop it and
+   set `MITA_DATA_VOLUME` to a new volume name in `.env` to retain the old data.
+   The restore command refuses a nonempty volume.
+
+```sh
+docker compose build
+docker compose run --rm --entrypoint python3 mita /app/webapp.py --restore-postgres latest
+docker compose up -d
+```
+
+Replace `latest` with the numeric `id` from `mita_backups` to select a specific
+snapshot. Restore brings over users, passwords, subscription tokens, registered
+devices, settings and saved Mita metrics. The supplied DSN is saved so the new
+instance continues backing up to the same database. Snapshot archives exclude
+local logs and sockets. Database log history stays in PostgreSQL.
+
+To keep existing subscription URLs working, point their original hostname and
+proxy routes at the Linux server. The database stores snapshots, so use it for
+migration or recovery with one active instance. Running HA and Linux against the
+same tables does not synchronize changes and mixes their snapshot histories.
