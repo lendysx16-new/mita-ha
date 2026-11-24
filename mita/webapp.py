@@ -31,8 +31,13 @@ try:
     import psycopg2
 except ImportError:
     psycopg2 = None
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
 from http import HTTPStatus
-from http.client import HTTPException
+from http.client import HTTPException, HTTPSConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -1054,10 +1059,15 @@ SING_BOX_BINARY = Path("/usr/local/bin/awgm-box")
 SING_BOX_FIRST_PORT = 1081
 SING_BOX_MAX_OUTBOUNDS = 32
 LEGACY_SING_BOX_NAME = "managed-sing-box"
-OUTBOUND_TYPES = {"vless", "vmess", "trojan", "shadowsocks", "hysteria2", "hysteria", "tuic", "socks", "http"}
+OUTBOUND_ENDPOINT_TYPES = {"awg", "masque-client"}
+OUTBOUND_TYPES = {
+    "vless", "vmess", "trojan", "shadowsocks", "hysteria2", "hysteria", "tuic",
+    "socks", "http", "mieru", "trusttunnel", *OUTBOUND_ENDPOINT_TYPES,
+}
 OUTBOUND_REQUIRED = {
     "vless": ("uuid",), "vmess": ("uuid",), "trojan": ("password",), "hysteria2": ("password",),
     "shadowsocks": ("method", "password"), "tuic": ("uuid",),
+    "mieru": ("username", "password", "transport"), "awg": ("private_key",),
 }
 OUTBOUND_MAX_BYTES = 64 * 1024
 
@@ -1071,18 +1081,29 @@ def validate_sing_box_outbound(outbound):
         raise ValueError("provide a share link or one sing-box outbound JSON object")
     protocol = outbound["type"]
     if protocol not in OUTBOUND_TYPES:
-        raise ValueError("supported protocols: VLESS, VMess, Trojan, Shadowsocks, Hysteria2, Hysteria, TUIC, SOCKS and HTTP")
+        raise ValueError("unsupported awgm-box outbound type")
     if "detour" in outbound:
         raise ValueError("chaining outbounds with detour is not supported")
-    server = outbound.get("server")
-    if not isinstance(server, str) or not server.strip() or any(c.isspace() for c in server):
-        raise ValueError("the outbound needs a server hostname or IP")
-    port = outbound.get("server_port")
-    if type(port) is not int or not 1 <= port <= 65535:
-        raise ValueError("the outbound needs server_port between 1 and 65535")
+    if protocol == "awg":
+        if outbound.get("useIntegratedTun", False) is not False:
+            raise ValueError("AmneziaWG must use the userspace network stack (useIntegratedTun: false)")
+        if not outbound.get("address") or not isinstance(outbound.get("peers"), list) or not outbound["peers"]:
+            raise ValueError("AmneziaWG requires local addresses and peers")
+    else:
+        server = outbound.get("server")
+        if not isinstance(server, str) or not server.strip() or any(c.isspace() for c in server):
+            raise ValueError("the outbound needs a server hostname or IP")
+        port = outbound.get("server_port")
+        if not (protocol == "mieru" and port in (None, 0) and outbound.get("server_ports")):
+            if type(port) is not int or not 1 <= port <= 65535:
+                raise ValueError("the outbound needs server_port between 1 and 65535")
+    if protocol == "masque-client" and outbound.get("system", False) is not False:
+        raise ValueError("MASQUE must use its userspace network stack")
     for key in OUTBOUND_REQUIRED.get(protocol, ()):
         if not isinstance(outbound.get(key), str) or not outbound[key].strip():
             raise ValueError(f"{protocol} outbound requires {key}")
+    if protocol == "mieru" and outbound.get("transport") not in ("TCP", "UDP"):
+        raise ValueError("Mieru transport must be TCP or UDP")
     if len(json.dumps(outbound)) > OUTBOUND_MAX_BYTES:
         raise ValueError("the outbound configuration is too large")
 
@@ -1103,6 +1124,18 @@ def _link_endpoint(parsed):
     if not parsed.hostname or not port:
         raise ValueError("the link needs a server and a port")
     return parsed.hostname, port
+
+
+def _reality_mlkem_flag(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "1", "yes"):
+            return True
+        if text in ("false", "0", "no"):
+            return False
+    raise ValueError("REALITY X25519MLKEM768 flag must be true or false")
 
 
 def _link_tls(query, enabled_by_default):
@@ -1127,8 +1160,53 @@ def _link_tls(query, enabled_by_default):
         tls["reality"] = {"enabled": True, "public_key": query["pbk"]}
         if query.get("sid"):
             tls["reality"]["short_id"] = query["sid"]
+        for key in ("support-x25519mlkem768", "support_x25519mlkem768", "supportX25519MLKEM768"):
+            if key in query:
+                tls["reality"]["support_x25519mlkem768"] = _reality_mlkem_flag(query[key])
+                break
         tls.setdefault("utls", {"enabled": True, "fingerprint": "chrome"})
     return tls
+
+
+XHTTP_FIELDS = {
+    "host": "host", "path": "path", "mode": "mode", "headers": "headers",
+    "noGRPCHeader": "no_grpc_header", "noSSEHeader": "no_sse_header",
+    "xPaddingBytes": "x_padding_bytes", "xPaddingObfsMode": "x_padding_obfs_mode",
+    "xPaddingKey": "x_padding_key", "xPaddingHeader": "x_padding_header",
+    "xPaddingPlacement": "x_padding_placement", "xPaddingMethod": "x_padding_method",
+    "uplinkHTTPMethod": "uplink_http_method", "sessionPlacement": "session_placement",
+    "sessionKey": "session_key", "seqPlacement": "seq_placement", "seqKey": "seq_key",
+    "uplinkDataPlacement": "uplink_data_placement", "uplinkDataKey": "uplink_data_key",
+    "uplinkChunkSize": "uplink_chunk_size", "scMaxEachPostBytes": "sc_max_each_post_bytes",
+    "scMinPostsIntervalMs": "sc_min_posts_interval_ms", "scMaxBufferedPosts": "sc_max_buffered_posts",
+    "scStreamUpServerSecs": "sc_stream_up_server_secs", "sessionIDTable": "session_id_table",
+    "sessionIDLength": "session_id_length", "session-table": "session_id_table",
+    "session-length": "session_id_length",
+}
+XHTTP_XMUX_FIELDS = {
+    "maxConcurrency": "max_concurrency", "maxConnections": "max_connections",
+    "cMaxReuseTimes": "c_max_reuse_times", "hMaxRequestTimes": "h_max_request_times",
+    "hMaxReusableSecs": "h_max_reusable_secs", "hKeepAlivePeriod": "h_keep_alive_period",
+}
+
+
+def xhttp_options(options, fields, label):
+    keys = {alias: target for source, target in fields.items()
+            for alias in (source, target, target.replace("_", "-"))}
+    if not isinstance(options, dict) or any(key not in keys for key in options):
+        raise ValueError(f"unsupported {label} options; use native awgm-box JSON")
+    return {keys[key]: value for key, value in options.items()}
+
+
+def xhttp_transport(options):
+    if not isinstance(options, dict):
+        raise ValueError("XHTTP options must be an object")
+    options = options.copy()
+    xmux = options.pop("xmux", options.pop("reuse-settings", None))
+    transport = {"type": "xhttp", **xhttp_options(options, XHTTP_FIELDS, "XHTTP")}
+    if xmux is not None:
+        transport["xmux"] = xhttp_options(xmux, XHTTP_XMUX_FIELDS, "XHTTP reuse")
+    return transport
 
 
 def _link_transport(query):
@@ -1136,6 +1214,16 @@ def _link_transport(query):
     host, path = query.get("host", ""), query.get("path", "")
     if kind in ("tcp", "raw", ""):
         return None
+    if kind in ("xhttp", "splithttp"):
+        extra = {}
+        if query.get("extra"):
+            try:
+                extra = json.loads(query["extra"])
+            except ValueError as exc:
+                raise ValueError("XHTTP extra must be a JSON object") from exc
+            if not isinstance(extra, dict):
+                raise ValueError("XHTTP extra must be a JSON object")
+        return xhttp_transport({**extra, **{key: query[key] for key in ("host", "path", "mode") if query.get(key)}})
     if kind == "ws":
         transport = {"type": "ws"}
         if path:
@@ -1233,6 +1321,8 @@ def parse_share_link(link):
         outbound = {"type": "vless", "server": server, "server_port": port, "uuid": user}
         if query.get("flow"):
             outbound["flow"] = query["flow"]
+        if query.get("encryption") not in (None, "", "none"):
+            outbound["encryption"] = query["encryption"]
     elif scheme == "trojan":
         outbound = {"type": "trojan", "server": server, "server_port": port, "password": user}
     elif scheme == "tuic":
@@ -1281,8 +1371,447 @@ def parse_outbound_config(value):
     if not isinstance(value, dict):
         raise ValueError("provide a share link or one sing-box outbound JSON object")
     outbound = {key: item for key, item in value.items() if key != "tag"}
+    if outbound.get("type") in ("awg", "amneziawg"):
+        outbound["type"] = "awg"
+        outbound.setdefault("useIntegratedTun", False)
     validate_sing_box_outbound(outbound)
     return outbound, suggested
+
+
+SUBSCRIPTION_MAX_BYTES = 2 * 1024 * 1024
+SUBSCRIPTION_MAX_SERVERS = 512
+SUBSCRIPTION_MAX_GROUP_LINKS = 8192
+
+
+def public_subscription_address(host, port):
+    addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    if not addresses:
+        raise ValueError("subscription host has no public address")
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        ip = getattr(ip, "ipv4_mapped", None) or ip
+        if (not ip.is_global or ip.is_multicast or
+                (ip.version == 6 and (ip not in ipaddress.ip_network("2000::/3") or ip.sixtofour or ip.teredo))):
+            raise ValueError("subscription URL must resolve only to public addresses")
+    return addresses[0][4][0]
+
+
+class SubscriptionHTTPSConnection(HTTPSConnection):
+    def connect(self):
+        # Pin the checked address while retaining TLS validation for the URL's host.
+        address = public_subscription_address(self.host, self.port)
+        sock = socket.create_connection((address, self.port), self.timeout)
+        try:
+            self.sock = ssl.create_default_context().wrap_socket(sock, server_hostname=self.host)
+        except Exception:
+            sock.close()
+            raise
+
+
+SUBSCRIPTION_HEADER_LIMIT = 4096
+SUBSCRIPTION_RESERVED_HEADERS = {
+    "host", "connection", "proxy-connection", "keep-alive", "proxy-authenticate",
+    "proxy-authorization", "transfer-encoding", "te", "trailer", "upgrade",
+    "content-length", "accept-encoding", "expect",
+}
+
+
+def parse_subscription_headers(text):
+    if not isinstance(text, str) or len(text) > SUBSCRIPTION_HEADER_LIMIT:
+        raise ValueError("subscription headers must be text up to 4096 characters")
+    headers = {}
+    for number, line in enumerate(text.replace("\r\n", "\n").split("\n"), 1):
+        if not line.strip(" \t"):
+            continue
+        name, separator, value = line.partition(":")
+        if not separator or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
+            raise ValueError(f"invalid subscription header name on line {number}")
+        name = name.lower()
+        if name in SUBSCRIPTION_RESERVED_HEADERS:
+            raise ValueError(f"subscription header on line {number} is managed by Mita")
+        if name in headers:
+            raise ValueError(f"duplicate subscription header on line {number}")
+        value = value.strip(" \t")
+        if any(ord(char) < 32 or 127 <= ord(char) < 160 or ord(char) > 255 for char in value):
+            raise ValueError(f"invalid subscription header value on line {number}")
+        headers[name] = value
+    if len(headers) > 32:
+        raise ValueError("provide at most 32 subscription headers")
+    return headers
+
+
+def subscription_url_parts(url):
+    if not isinstance(url, str) or len(url) > 4096:
+        raise ValueError("enter an HTTPS subscription URL")
+    if any(ord(char) <= 32 or ord(char) == 127 for char in url):
+        raise ValueError("enter an HTTPS subscription URL without spaces")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port if parsed.port is not None else 443
+        host = parsed.hostname
+    except ValueError as exc:
+        raise ValueError("invalid subscription URL") from exc
+    if (parsed.scheme != "https" or not host or parsed.username is not None
+            or parsed.fragment or "%" in host or not 1 <= port <= 65535):
+        raise ValueError("enter an HTTPS subscription URL without embedded credentials or fragment")
+    return parsed, host, port
+
+
+def fetch_outbound_subscription(url, headers=None):
+    request_headers = {"accept-encoding": "identity", "user-agent": "Mita-Outbound"}
+    custom_headers = headers or {}
+    previous_origin = None
+    deadline = time.monotonic() + 15
+    for _ in range(4):
+        parsed, host, port = subscription_url_parts(url)
+        origin = (host, port)
+        if previous_origin is not None and origin != previous_origin:
+            custom_headers = {}
+        previous_origin = origin
+        target = parsed.path or "/"
+        if parsed.query:
+            target += "?" + parsed.query
+        timeout = deadline - time.monotonic()
+        if timeout <= 0:
+            raise ValueError("subscription request timed out")
+        connection = SubscriptionHTTPSConnection(host, port, timeout=min(5, timeout))
+        try:
+            connection.request("GET", target, headers={**request_headers, **custom_headers})
+            response = connection.getresponse()
+            if response.status in (301, 302, 303, 307, 308):
+                location = response.getheader("Location")
+                if not location or len(location) > 4096:
+                    raise ValueError("invalid subscription redirect")
+                url = urllib.parse.urljoin(url, location)
+                continue
+            if response.status != 200:
+                raise ValueError(f"subscription endpoint returned HTTP {response.status}")
+            payload = bytearray()
+            while len(payload) <= SUBSCRIPTION_MAX_BYTES:
+                if time.monotonic() >= deadline:
+                    raise ValueError("subscription request timed out")
+                block = response.read1(min(65536, SUBSCRIPTION_MAX_BYTES + 1 - len(payload)))
+                if not block:
+                    return payload.decode("utf-8-sig")
+                payload.extend(block)
+        except (OSError, HTTPException, UnicodeError) as exc:
+            raise ValueError("could not read the HTTPS subscription") from exc
+        finally:
+            connection.close()
+        raise ValueError("subscription response exceeds 2 MiB")
+    raise ValueError("too many subscription redirects")
+
+
+def clash_outbound(proxy):
+    protocol = {"ss": "shadowsocks", "socks5": "socks"}.get(proxy.get("type"), proxy.get("type"))
+    if protocol not in {"vless", "vmess", "trojan", "shadowsocks", "hysteria2", "tuic", "socks", "http", "mieru"}:
+        raise ValueError("unsupported Clash proxy")
+    if any(proxy.get(field) for field in ("plugin", "dialer-proxy", "smux", "shadow-tls", "ech-opts")):
+        raise ValueError("unsupported Clash proxy options")
+    port = proxy.get("port")
+    if isinstance(port, str) and port.isascii() and port.isdecimal() and len(port) <= 5:
+        port = int(port)
+    outbound = {"type": protocol, "server": proxy.get("server"), "server_port": port}
+    for key in ("uuid", "password", "username", "flow"):
+        if key in proxy:
+            outbound[key] = proxy[key]
+    if protocol == "mieru":
+        for key in ("transport", "multiplexing"):
+            if key in proxy:
+                outbound[key] = proxy[key]
+        if proxy.get("port-range"):
+            ranges = proxy["port-range"]
+            outbound["server_ports"] = ranges if isinstance(ranges, list) else [ranges]
+        if proxy.get("traffic-pattern"):
+            outbound["traffic_pattern"] = proxy["traffic-pattern"]
+        if port is None:
+            outbound.pop("server_port")
+        return outbound
+    if protocol == "vmess":
+        outbound.update(security=proxy.get("cipher") or "auto", alter_id=proxy.get("alterId", 0))
+    elif protocol == "shadowsocks":
+        outbound["method"] = proxy.get("cipher")
+    elif protocol == "socks":
+        outbound["version"] = "5"
+    elif protocol == "tuic":
+        for key in ("congestion-controller", "udp-relay-mode"):
+            if key in proxy:
+                outbound[key.replace("-", "_").replace("controller", "control")] = proxy[key]
+    if proxy.get("encryption") not in (None, "", "none"):
+        if protocol != "vless" or not isinstance(proxy["encryption"], str):
+            raise ValueError("unsupported Clash encryption setting")
+        outbound["encryption"] = proxy["encryption"]
+    if proxy.get("obfs"):
+        if protocol != "hysteria2" or proxy["obfs"] != "salamander":
+            raise ValueError("unsupported Clash obfuscation")
+        outbound["obfs"] = {"type": "salamander", "password": proxy.get("obfs-password", "")}
+
+    reality = proxy.get("reality-opts") or {}
+    alpn = proxy.get("alpn") or []
+    tls = _link_tls({
+        "security": "reality" if reality else "tls" if (
+            proxy.get("tls") or protocol in {"trojan", "hysteria2", "tuic"}
+        ) else "none",
+        "sni": proxy.get("servername") or proxy.get("sni"),
+        "allowInsecure": proxy.get("skip-cert-verify"),
+        "fp": proxy.get("client-fingerprint"),
+        "alpn": ",".join(alpn) if isinstance(alpn, list) else alpn,
+        "pbk": reality.get("public-key"),
+        "sid": reality.get("short-id"),
+        **({"support-x25519mlkem768": reality["support-x25519mlkem768"]}
+           if "support-x25519mlkem768" in reality else {}),
+    }, False)
+    if tls:
+        outbound["tls"] = tls
+    network = proxy.get("network") or "tcp"
+    if network in ("xhttp", "splithttp"):
+        outbound["transport"] = xhttp_transport(proxy.get("xhttp-opts") or {})
+        return outbound
+    if network not in ("tcp", "ws", "grpc", "httpupgrade"):
+        raise ValueError("unsupported Clash transport")
+    ws = proxy.get("ws-opts") or {}
+    grpc = proxy.get("grpc-opts") or {}
+    upgrade = proxy.get("http-upgrade-opts") or {}
+    transport = _link_transport({
+        "type": network,
+        "path": ws.get("path") if network == "ws" else upgrade.get("path"),
+        "serviceName": grpc.get("grpc-service-name", ""),
+        "host": upgrade.get("host"),
+    })
+    if transport:
+        if network == "ws":
+            for src, dst in (("headers", "headers"), ("max-early-data", "max_early_data"),
+                             ("early-data-header-name", "early_data_header_name")):
+                if src in ws:
+                    transport[dst] = ws[src]
+        outbound["transport"] = transport
+    return outbound
+
+
+def read_clash_subscription(text):
+    if yaml is None:
+        raise ValueError("Clash subscription import requires PyYAML")
+    try:
+        if any(isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken)) for token in yaml.scan(text)):
+            raise ValueError("Clash subscription cannot use YAML aliases")
+        return yaml.safe_load(text)
+    except (yaml.YAMLError, RecursionError) as exc:
+        raise ValueError("Clash subscription YAML is invalid") from exc
+
+
+def validate_subscription_outbound(outbound):
+    pending = [outbound]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            for name, item in value.items():
+                if isinstance(name, str) and name.endswith(("_path", "_directory", "_file")) and item:
+                    raise ValueError("subscription outbounds cannot reference local files")
+                pending.append(item)
+        elif isinstance(value, list):
+            pending.extend(value)
+
+
+def parse_subscription_servers(text):
+    """Return concrete servers and membership of groups defined in the subscription."""
+    text = text.strip()
+    try:
+        value = json.loads(text)
+    except (ValueError, RecursionError):
+        value = None
+    if value is None and re.search(r"(?m)^proxies\s*:", text):
+        value = read_clash_subscription(text)
+    clash = isinstance(value, dict) and "proxies" in value
+    if isinstance(value, dict):
+        entries = value.get("proxies") if clash else value.get("outbounds", [])
+        groups = value.get("proxy-groups", []) if clash else [
+            item for item in (entries if isinstance(entries, list) else []) if isinstance(item, dict)
+            and item.get("type") in ("selector", "urltest", "fallback")
+        ]
+        if not clash and isinstance(entries, list) and isinstance(value.get("endpoints"), list):
+            entries = entries + value["endpoints"]
+    elif isinstance(value, list):
+        entries, groups = value, []
+    else:
+        if "://" not in text:
+            try:
+                text = _b64decode(text)
+            except ValueError as exc:
+                raise ValueError("unsupported subscription format") from exc
+        entries, groups = text.splitlines(), []
+    if not isinstance(entries, list) or not isinstance(groups, list):
+        raise ValueError("subscription must contain a server list")
+    if len(entries) > SUBSCRIPTION_MAX_SERVERS or len(groups) > SUBSCRIPTION_MAX_SERVERS:
+        raise ValueError("subscription exceeds the limit of 512 servers or groups")
+
+    members = {}
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        label = group.get("name" if clash else "tag")
+        children = group.get("proxies" if clash else "outbounds")
+        if isinstance(label, str) and label and isinstance(children, list):
+            members[label] = {child for child in children[:SUBSCRIPTION_MAX_SERVERS] if isinstance(child, str)}
+
+    if sum(map(len, members.values())) > SUBSCRIPTION_MAX_GROUP_LINKS:
+        raise ValueError("subscription contains too many group links")
+
+    def expand_group(name):
+        expanded, pending = set(), [name]
+        while pending:
+            child = pending.pop()
+            if child not in expanded:
+                expanded.add(child)
+                pending.extend(members.get(child, ()))
+        return expanded
+
+    group_names = list(members)
+    group_servers = [expand_group(name) for name in group_names]
+    servers, skipped = [], 0
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("type") in ("selector", "urltest", "fallback", "direct", "block", "dns"):
+            continue
+        if isinstance(entry, str) and (not entry.strip() or entry.lstrip().startswith("#")):
+            continue
+        try:
+            if clash:
+                if not isinstance(entry, dict):
+                    raise ValueError()
+                name = entry.get("name")
+                outbound = clash_outbound(entry)
+                validate_sing_box_outbound(outbound)
+            else:
+                outbound, name = parse_outbound_config(entry)
+                if isinstance(entry, dict):
+                    name = entry.get("tag")
+            validate_subscription_outbound(outbound)
+        except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
+            skipped += 1
+            continue
+        name = name if isinstance(name, str) and name.strip() else outbound.get("server") or outbound["type"]
+        servers.append({
+            "name": name[:160],
+            "selector": hashlib.sha256(json.dumps([name, outbound["type"]]).encode()).hexdigest(),
+            "groups": [index for index, children in enumerate(group_servers) if name in children],
+            "config": outbound,
+        })
+    if not servers:
+        raise ValueError("subscription contains no supported concrete servers")
+    return {"servers": servers, "groups": [name[:160] for name in group_names], "skipped": skipped}
+
+
+SUBSCRIPTION_REFRESH_INTERVAL = 24 * 60 * 60
+SUBSCRIPTION_RETRY_INTERVAL = 60 * 60
+
+
+def subscription_binding(value):
+    if not isinstance(value, dict):
+        raise ValueError("invalid subscription selection")
+    url = value.get("url")
+    subscription_url_parts(url)
+    selector = value.get("selector")
+    if not isinstance(selector, str) or not re.fullmatch(r"[a-f0-9]{64}", selector):
+        raise ValueError("choose a server from the subscription first")
+    headers = value.get("headers", "")
+    parse_subscription_headers(headers)
+    return {"url": url, "headers": headers, "selector": selector,
+            "checked_at": utc_now(), "error": ""}
+
+
+def selected_subscription_config(result, binding, current):
+    candidates = [server["config"] for server in result["servers"] if server["selector"] == binding["selector"]]
+    if not candidates:
+        raise ValueError("Selected server was not found in the subscription")
+    if len(candidates) == 1:
+        return candidates[0]
+    if current in candidates:
+        return current
+    endpoint = (current.get("server"), current.get("server_port"), current.get("peers"))
+    matching = [
+        config for config in candidates
+        if (config.get("server"), config.get("server_port"), config.get("peers")) == endpoint
+    ]
+    if len(matching) == 1:
+        return matching[0]
+    raise ValueError("Several subscription servers have the same name and protocol")
+
+
+def subscription_refresh_due(binding, now):
+    try:
+        elapsed = now.timestamp() - datetime.fromisoformat(binding["checked_at"]).timestamp()
+    except (ValueError, TypeError, KeyError, OverflowError):
+        return True
+    delay = SUBSCRIPTION_RETRY_INTERVAL if binding.get("error") else SUBSCRIPTION_REFRESH_INTERVAL
+    return elapsed >= delay
+
+
+def refresh_outbound_subscriptions(stop_event=None):
+    now = datetime.now(timezone.utc)
+    with LOCK:
+        pending = [entry for entry in outbound_entries(get_settings())
+                   if entry.get("subscription") and subscription_refresh_due(entry["subscription"], now)]
+    previews = {}
+    results = {}
+    for entry in pending:
+        if stop_event is not None and stop_event.is_set():
+            return
+        binding = entry["subscription"]
+        source = (binding["url"], binding["headers"])
+        if source not in previews:
+            try:
+                previews[source] = parse_subscription_servers(
+                    fetch_outbound_subscription(source[0], parse_subscription_headers(source[1]))
+                )
+            except (ValueError, OSError, HTTPException):
+                previews[source] = None
+        result = previews[source]
+        if result is None:
+            results[entry["name"]] = (entry, None, "Could not load the subscription")
+            continue
+        try:
+            results[entry["name"]] = (entry, selected_subscription_config(result, binding, entry["outbound"]), "")
+        except ValueError as exc:
+            results[entry["name"]] = (entry, None, str(exc))
+
+    if not results or (stop_event is not None and stop_event.is_set()):
+        return
+    with LOCK:
+        if stop_event is not None and stop_event.is_set():
+            return
+        previous = get_settings()
+        updated = copy.deepcopy(previous)
+        changed = False
+        checked_at = utc_now()
+        for candidate in outbound_entries(updated):
+            result = results.get(candidate["name"])
+            if result is None or result[0] != candidate:
+                continue  # The administrator changed or removed this outbound during the fetch.
+            _, config, error = result
+            candidate["subscription"].update(error=error, checked_at=checked_at)
+            if config is not None and config != candidate["outbound"]:
+                candidate["outbound"] = config
+                changed = True
+        if changed:
+            try:
+                apply_routing(updated, previous)
+                return
+            except (ValueError, OSError, StateError):
+                for candidate, old in zip(outbound_entries(updated), outbound_entries(previous)):
+                    if candidate["outbound"] != old["outbound"]:
+                        candidate["outbound"] = old["outbound"]
+                        candidate["subscription"]["error"] = "Could not apply the updated server configuration"
+        if updated != previous:
+            write_json(SETTINGS_PATH, updated)
+
+
+def subscription_refresh_worker(stop_event):
+    delay = 30
+    while not stop_event.wait(delay):
+        try:
+            refresh_outbound_subscriptions(stop_event)
+        except (KeyError, TypeError, ValueError, OSError, StateError):
+            print("[web] outbound subscription refresh could not finish", flush=True)
+        delay = 5 * 60
 
 
 def outbound_entries(settings):
@@ -1870,12 +2399,18 @@ def sing_box_config(settings):
                 "users": [{"username": "mita", "password": password}]}
 
     inbounds = [socks("router", ROUTER_PORT, router_password(settings))]
-    outbounds, rules, rule_sets = [], [], {}
+    outbounds, endpoints, rules, rule_sets = [], [], [], {}
     for i, entry in enumerate(entries):
         validate_sing_box_outbound(entry["outbound"])
         inbounds.append(socks(f"probe-{i}", entry["port"], entry["password"]))
         inbounds.append(socks(f"via-{i}", entry["port"] + VIA_PORT_OFFSET, entry["password"]))
-        outbounds.append(dict(entry["outbound"], tag=f"out-{i}"))
+        outbound = dict(entry["outbound"], tag=f"out-{i}")
+        if outbound["type"] in OUTBOUND_ENDPOINT_TYPES:
+            if outbound["type"] == "awg":
+                outbound.setdefault("useIntegratedTun", False)
+            endpoints.append(outbound)
+        else:
+            outbounds.append(outbound)
         rules.append({"inbound": [f"probe-{i}"], "outbound": f"out-{i}"})
     outbounds.append({"type": "direct", "tag": "direct"})
     via_db = settings.get("postgres_outbound") or ""
@@ -1918,6 +2453,8 @@ def sing_box_config(settings):
         rules.append({"inbound": [inbound], **target(final_action, final, via)})
     config = {"log": {"level": "warn"}, "inbounds": inbounds, "outbounds": outbounds,
               "route": {"rules": rules, "final": "direct"}}
+    if endpoints:
+        config["endpoints"] = endpoints
     if rule_sets:
         config["route"]["rule_set"] = list(rule_sets.values())
     return config
@@ -2270,7 +2807,11 @@ def outbound_health_worker(stop_event):
 
 
 def public_outbound(entry):
-    return {"name": entry["name"], "outbound": entry["outbound"], "port": entry["port"]}
+    public = {"name": entry["name"], "outbound": entry["outbound"], "port": entry["port"]}
+    if entry.get("subscription"):
+        binding = entry["subscription"]
+        public["subscription"] = {key: binding.get(key) for key in ("checked_at", "error")}
+    return public
 
 
 def admin_settings(settings):
@@ -2995,6 +3536,7 @@ ADMIN_ROUTES = [
     ("PUT", USER + r"/device-settings", "update_user"),  # kept for older UI builds
     ("PUT", r"/api/settings", "update_settings"),
     ("POST", r"/api/outbounds", "add_outbound"),
+    ("POST", r"/api/outbound-subscription", "outbound_subscription"),
     ("POST", r"/api/mita/restart", "restart_mita"),
     ("PUT", OUTBOUND, "update_outbound"),
     ("POST", OUTBOUND + r"/test", "test_outbound"),
@@ -3253,13 +3795,23 @@ class AdminHandler(CommonHandler):
             raise ApiError(HTTPStatus.NOT_FOUND, "outbounds are only available in the Linux image")
 
     def outbound_from_body(self):
-        body = self.read_json(max_bytes=OUTBOUND_MAX_BYTES * 2)
+        body = self.read_json(max_bytes=OUTBOUND_MAX_BYTES * 3)
         outbound, suggested = parse_outbound_config(body.get("config"))
         return body, outbound, suggested
 
     def apply_outbounds(self, settings, previous_settings):
         validate_outbound_assignments(get_users(), managed_egress(settings))
         apply_routing(settings, previous_settings)
+
+    def route_outbound_subscription(self):
+        self.require_sing_box()
+        body = self.read_json(max_bytes=32768)
+        url = body.get("url")
+        headers = parse_subscription_headers(body.get("headers", ""))
+        result = parse_subscription_servers(
+            fetch_outbound_subscription(url.strip() if isinstance(url, str) else url, headers)
+        )
+        self.send_json(HTTPStatus.OK, result, headers={"Cache-Control": "no-store"})
 
     def route_add_outbound(self):
         self.require_sing_box()
@@ -3278,6 +3830,8 @@ class AdminHandler(CommonHandler):
                 raise ValueError(f"an outbound named {name!r} already exists")
             entry = {"name": name, "outbound": outbound, "port": allocate_outbound_port(previous),
                      "password": secrets.token_urlsafe(24)}
+            if body.get("subscription") is not None:
+                entry["subscription"] = subscription_binding(body["subscription"])
             settings["outbounds"] = previous + [entry]
             self.apply_outbounds(settings, previous_settings)
             pending = restart_pending(settings)
@@ -3288,7 +3842,7 @@ class AdminHandler(CommonHandler):
 
     def route_update_outbound(self, name):
         self.require_sing_box()
-        _, outbound, _ = self.outbound_from_body()
+        body, outbound, _ = self.outbound_from_body()
         with LOCK:
             settings = get_settings()
             previous_settings = copy.deepcopy(settings)
@@ -3296,7 +3850,12 @@ class AdminHandler(CommonHandler):
             entry = next((e for e in previous if e["name"] == name), None)
             if entry is None:
                 raise ApiError(HTTPStatus.NOT_FOUND, "outbound not found")
+            same_config = entry["outbound"] == outbound
             entry = dict(entry, outbound=outbound)
+            if body.get("subscription") is not None:
+                entry["subscription"] = subscription_binding(body["subscription"])
+            elif "subscription" in body or not same_config:
+                entry.pop("subscription", None)
             settings["outbounds"] = [entry if e["name"] == name else e for e in previous]
             self.apply_outbounds(settings, previous_settings)
         # Same local port and credentials: only sing-box restarts, Mita keeps running.
@@ -3553,6 +4112,7 @@ def serve():
         threading.Thread(target=supervise_sing_box, args=(stop_bridge,), name="awgm-box-supervisor", daemon=True).start()
         threading.Thread(target=geo_refresh_worker, args=(stop_bridge,), name="github-geo-refresh", daemon=True).start()
         threading.Thread(target=outbound_health_worker, args=(stop_bridge,), name="outbound-health", daemon=True).start()
+        threading.Thread(target=subscription_refresh_worker, args=(stop_bridge,), name="outbound-subscriptions", daemon=True).start()
     print(f"[web] admin UI listening on {admin_host}:{ADMIN_PORT}", flush=True)
     print("[web] subscription server listening on 8099", flush=True)
     try:

@@ -517,3 +517,40 @@ test('PostgreSQL "Connect via" lists Direct and the saved outbounds', async () =
   assert.equal(element('#postgresOutbound').value, '');
   assert.ok(html.includes("postgres_outbound: $('#postgresOutbound').value"));
 });
+
+test('subscription groups filter concrete servers and only the chosen config is loaded', async () => {
+  const {ctx, element} = setup();
+  const makeServer = (name, group, host) => ({
+    name, selector: name, groups: [group], config: {type: 'trojan', server: host, server_port: 443, password: 'test'},
+  });
+  ctx.fetch = async (_url, request) => {
+    assert.equal(request.method, 'POST');
+    assert.equal(JSON.parse(request.body).url, 'https://provider.example/sub?token=secret');
+    assert.equal(JSON.parse(request.body).headers, 'User-Agent: My client\nX-Device-OS: iOS');
+    return {ok: true, json: async () => ({servers: [
+      makeServer('A <script>', 0, 'a.example'),
+      makeServer('🇳🇱 Нидерланды', 1, 'b.example'),
+    ], groups: ['Europe', 'Asia'], skipped: 1})};
+  };
+  element('#outboundEditor').elements = {name: {value: '', focus() {}}, config: {value: '', focus() {}}};
+  ctx.openOutboundEditor('');
+  element('#outboundSubscriptionUrl').value = 'https://provider.example/sub?token=secret';
+  element('#outboundSubscriptionHeaders').value = 'User-Agent: My client\nX-Device-OS: iOS';
+  await element('#loadOutboundSubscription').onclick();
+  const options = element('#outboundSubscriptionServer');
+  assert.match(options.innerHTML, /A &lt;script&gt;/);
+  assert.match(element('#outboundSubscriptionGroup').innerHTML, /Europe/);
+  assert.match(element('#outboundSubscriptionStatus').textContent, /1 unsupported/);
+  element('#outboundSubscriptionGroup').value = '1';
+  element('#outboundSubscriptionGroup').onchange();
+  assert.doesNotMatch(options.innerHTML, /a\.example/);
+  options.value = '1';
+  options.onchange();
+  const fields = element('#outboundEditor').elements;
+  assert.equal(fields.name.value, 'server-2');
+  assert.equal(JSON.parse(fields.config.value).server, 'b.example');
+  assert.equal(element('#outboundSubscriptionRefresh').checked, true);
+  ctx.closeRoutingEditor('outbound');
+  assert.equal(element('#outboundSubscriptionUrl').value, '');
+  assert.equal(element('#outboundSubscriptionHeaders').value, '');
+});

@@ -1,6 +1,6 @@
 services:
   mita:
-    build: &linux-build ./mita
+    build: ./mita
     init: true
     network_mode: host
     restart: unless-stopped
@@ -15,9 +15,10 @@ services:
       - mita-data:/data
 
   awgm-box:
-    build: *linux-build
+    build:
+      context: ./mita
+      target: awgm-box-runtime
     profiles: ["awgm-box"]
-    entrypoint: ["/usr/local/bin/awgm-box"]
     network_mode: host
     restart: unless-stopped
     command: ["run", "-c", "/etc/awgm-box/config.json"]

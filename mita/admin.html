@@ -479,10 +479,22 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
             <button id="addOutbound" class="btn" type="button">+ Add outbound</button>
           </div>
           <form id="outboundEditor" class="routing-editor" hidden autocomplete="off">
+            <details id="outboundSubscription">
+              <summary>Import from subscription URL</summary>
+              <div class="form-grid">
+                <label class="span-2">HTTPS subscription URL<input id="outboundSubscriptionUrl" type="password" maxlength="4096" autocomplete="off" spellcheck="false"></label>
+                <label class="span-2">Request headers (optional)<textarea id="outboundSubscriptionHeaders" rows="5" maxlength="4096" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="User-Agent: Your client&#10;X-Device-OS: iOS"></textarea><span class="field-help">One header per line as Name: value. Also used for daily refresh if enabled.</span></label>
+                <div class="span-2"><button id="loadOutboundSubscription" class="btn btn-secondary" type="button">Load servers</button></div>
+                <label id="outboundSubscriptionGroupField" hidden>Group<select id="outboundSubscriptionGroup"></select></label>
+                <label id="outboundSubscriptionServerField" hidden>Server<select id="outboundSubscriptionServer"></select></label>
+                <p id="outboundSubscriptionStatus" class="field-help span-2" role="status"></p>
+              </div>
+            </details>
             <div class="form-grid">
               <label>Name<input name="name" maxlength="64" pattern="[A-Za-z0-9_.\-]+" title="Letters, digits, _ . or -" placeholder="e.g. nl-hysteria" spellcheck="false"><span class="field-help" data-name-help>Used to pick this outbound in Routing or for an account. Leave empty to use the link's name. It cannot be renamed later.</span></label>
               <label class="span-2">Share link or sing-box JSON<textarea name="config" rows="6" required spellcheck="false" autocapitalize="off" placeholder="hysteria2://password@server:443?sni=server#NL&#10;vless://uuid@server:443?security=reality&amp;pbk=…#DE&#10;or one awgm-box outbound object"></textarea><span class="field-help">Supported links: hysteria2:// (hy2://), vless://, vmess://, trojan://, ss://, tuic://, socks5://, http://. The link is converted to an awgm-box outbound and checked by awgm-box before saving.</span></label>
             </div>
+            <label id="outboundSubscriptionRefreshField" class="check" hidden><input id="outboundSubscriptionRefresh" type="checkbox"> Refresh the selected server from its subscription daily</label>
             <div class="editor-actions"><button class="btn btn-secondary" type="button" data-cancel-editor>Cancel</button><button class="btn" type="submit" data-save-outbound>Save outbound</button></div>
           </form>
           <div class="table-scroll"><table class="routing-table">
@@ -634,6 +646,7 @@ const api = {
   deleteUser: username => request(userPath(username), {method: 'DELETE'}),
   updateUser: (username, body) => request(userPath(username), {method: 'PATCH', body}),
   removeDevice: (username, id) => request(userPath(username, 'devices', id), {method: 'DELETE'}),
+  outboundSubscription: (url, headers) => request('api/outbound-subscription', {method: 'POST', body: {url, headers}}),
   addOutbound: body => request('api/outbounds', {method: 'POST', body}),
   updateOutbound: (name, body) => request('api/outbounds/' + encodeURIComponent(name), {method: 'PUT', body}),
   deleteOutbound: name => request('api/outbounds/' + encodeURIComponent(name), {method: 'DELETE'}),
@@ -1294,7 +1307,8 @@ function readGeoRuleSet(source) {
 // outbound by name; they are saved as a whole through /api/settings.
 const routingEdit = {outbound: null, list: null};  // outbound name / policy index; '' or -1 for new
 const PROTOCOL_LABELS = {vless: 'VLESS', vmess: 'VMess', trojan: 'Trojan', shadowsocks: 'Shadowsocks',
-  hysteria2: 'Hysteria2', hysteria: 'Hysteria', tuic: 'TUIC', socks: 'SOCKS', http: 'HTTP'};
+  hysteria2: 'Hysteria2', hysteria: 'Hysteria', tuic: 'TUIC', socks: 'SOCKS', http: 'HTTP',
+  mieru: 'Mieru', awg: 'AmneziaWG', 'masque-client': 'MASQUE', trusttunnel: 'TrustTunnel'};
 
 function currentEgress() {
   const egress = JSON.parse(JSON.stringify(state.settings.egress || {}));
@@ -1316,6 +1330,12 @@ function outboundNames() {
 function protocolLabel(outbound) {
   const label = PROTOCOL_LABELS[outbound.type] || outbound.type;
   return outbound.tls && outbound.tls.reality && outbound.tls.reality.enabled ? label + ' REALITY' : label;
+}
+function outboundEndpoint(outbound) {
+  const peer = outbound.type === 'awg' ? outbound.peers?.[0] : null;
+  const host = peer ? peer.address : outbound.server;
+  const port = peer ? peer.port : outbound.server_port || outbound.server_ports?.join(', ');
+  return host ? host + (port ? ':' + port : '') : '—';
 }
 function ruleTargetValue(rule) {
   return rule.action === 'PROXY' ? 'proxy:' + (rule.proxyNames || [])[0] : rule.action;
@@ -1410,13 +1430,17 @@ function renderRouting() {
   const egress = currentEgress();
   const snapshots = state.settings.geo_snapshots || {};
 
-  const outboundRows = savedOutbounds().map(({name, outbound}) => {
+  const outboundRows = savedOutbounds().map(({name, outbound, subscription}) => {
     const usage = outboundUsage(name, egress);
     return html`<tr>
       <td data-label="Name"><span class="target-badge">${name}</span></td>
       <td data-label="Protocol">${protocolLabel(outbound)}</td>
-      <td data-label="Server"><code>${outbound.server}:${outbound.server_port}</code></td>
-      <td data-label="Status">${healthCell(name)}</td>
+      <td data-label="Server"><code>${outboundEndpoint(outbound)}</code></td>
+      <td data-label="Status">${healthCell(name)}
+        ${subscription ? html`<div class="field-help">Subscription auto-refresh
+          ${subscription.error ? ' · ' + subscription.error : subscription.checked_at ? ' · ' + displayTime(subscription.checked_at) : ''}
+        </div>` : ''}
+      </td>
       <td data-label="Used by">${usageText(usage)}</td>
       <td class="row-actions">
         <button type="button" class="btn btn-secondary btn-sm" data-routing="test-outbound" data-name="${name}"${attr('disabled', !state.sing_box_available)}>Test</button>
@@ -1452,14 +1476,108 @@ function renderRouting() {
     : html`<tr><td colspan="5" class="table-empty">No policies yet. All traffic connects directly.</td></tr>`);
 }
 
+let subscriptionServers = [];
+let subscriptionLoad = 0;
+let subscriptionSuggestedName = '';
+let loadedSubscription = null;
+let selectedSubscription = null;
+
+function clearOutboundSubscription() {
+  subscriptionLoad++;
+  subscriptionServers = [];
+  subscriptionSuggestedName = '';
+  loadedSubscription = null;
+  selectedSubscription = null;
+  $('#outboundSubscriptionRefreshField').hidden = true;
+  $('#outboundSubscriptionRefresh').checked = false;
+  $('#outboundSubscription').open = false;
+  $('#outboundSubscriptionUrl').value = '';
+  $('#outboundSubscriptionHeaders').value = '';
+  $('#outboundSubscriptionGroupField').hidden = true;
+  $('#outboundSubscriptionServerField').hidden = true;
+  $('#outboundSubscriptionGroup').value = '';
+  $('#outboundSubscriptionServer').value = '';
+  $('#outboundSubscriptionStatus').textContent = '';
+}
+
+function renderSubscriptionServers() {
+  const group = $('#outboundSubscriptionGroup').value;
+  const choices = subscriptionServers.map((server, index) => ({server, index}))
+    .filter(({server}) => !group || server.groups.includes(Number(group)));
+  setHTML($('#outboundSubscriptionServer'), [
+    html`<option value="">Choose a server</option>`,
+    ...choices.map(({server, index}) => html`<option value="${index}">${server.name} · ${protocolLabel(server.config)} · ${outboundEndpoint(server.config)}</option>`),
+  ]);
+  $('#outboundSubscriptionServer').value = '';
+}
+
+$('#loadOutboundSubscription').onclick = async () => {
+  const url = $('#outboundSubscriptionUrl').value.trim();
+  if (!url) { toast('Enter a subscription URL.', 'error'); return; }
+  const headers = $('#outboundSubscriptionHeaders').value;
+  const load = ++subscriptionLoad;
+  const status = $('#outboundSubscriptionStatus');
+  const button = $('#loadOutboundSubscription');
+  subscriptionServers = [];
+  $('#outboundSubscriptionGroupField').hidden = true;
+  $('#outboundSubscriptionServerField').hidden = true;
+  status.textContent = 'Loading servers…';
+  button.disabled = true;
+  try {
+    const result = await api.outboundSubscription(url, headers);
+    if (load !== subscriptionLoad) return;
+    subscriptionServers = result.servers;
+    loadedSubscription = {url, headers};
+    const groups = [...new Set(subscriptionServers.flatMap(server => server.groups))];
+    setHTML($('#outboundSubscriptionGroup'), [
+      html`<option value="">All servers</option>`,
+      ...groups.map(index => html`<option value="${index}">${result.groups[index]}</option>`),
+    ]);
+    $('#outboundSubscriptionGroup').value = '';
+    $('#outboundSubscriptionGroupField').hidden = !groups.length;
+    $('#outboundSubscriptionServerField').hidden = false;
+    renderSubscriptionServers();
+    status.textContent = plural(subscriptionServers.length, 'server', 'servers') + ' loaded'
+      + (result.skipped ? ' · ' + result.skipped + ' unsupported entries skipped' : '');
+  } catch (error) {
+    if (load === subscriptionLoad) status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+};
+
+$('#outboundSubscriptionGroup').onchange = renderSubscriptionServers;
+$('#outboundSubscriptionServer').onchange = () => {
+  const value = $('#outboundSubscriptionServer').value;
+  const server = value === '' ? null : subscriptionServers[Number(value)];
+  if (!server) return;
+  const fields = $('#outboundEditor').elements;
+  fields.config.value = JSON.stringify(server.config, null, 2);
+  selectedSubscription = {source: {...loadedSubscription, selector: server.selector}, config: fields.config.value};
+  $('#outboundSubscriptionRefreshField').hidden = false;
+  $('#outboundSubscriptionRefresh').checked = true;
+  if (!fields.name.readOnly && (!fields.name.value.trim() || fields.name.value === subscriptionSuggestedName)) {
+    subscriptionSuggestedName = server.name.replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+    if (!subscriptionSuggestedName) {
+      const used = new Set(outboundNames());
+      let index = Number(value) + 1;
+      while (used.has('server-' + index)) index++;
+      subscriptionSuggestedName = 'server-' + index;
+    }
+    fields.name.value = subscriptionSuggestedName;
+  }
+};
+
 function closeRoutingEditor(kind) {
   routingEdit[kind] = null;
   const form = $(kind === 'outbound' ? '#outboundEditor' : '#listEditor');
   form.hidden = true;
   if (typeof form.reset === 'function') form.reset();
+  if (kind === 'outbound') clearOutboundSubscription();
 }
 function openOutboundEditor(name) {
   closeRoutingEditor('list');
+  clearOutboundSubscription();
   const form = $('#outboundEditor');
   const saved = name ? savedOutbounds().find(o => o.name === name) : null;
   routingEdit.outbound = saved ? saved.name : '';
@@ -1467,6 +1585,10 @@ function openOutboundEditor(name) {
   f.name.value = saved ? saved.name : '';
   f.name.readOnly = Boolean(saved);
   f.config.value = saved ? JSON.stringify(saved.outbound, null, 2) : '';
+  if (saved?.subscription) {
+    $('#outboundSubscriptionRefreshField').hidden = false;
+    $('#outboundSubscriptionRefresh').checked = true;
+  }
   form.hidden = false;
   (saved ? f.config : f.name).focus();
 }
@@ -1538,9 +1660,16 @@ $('#outboundEditor').addEventListener('submit', async e => {
   const button = e.submitter || $('#outboundEditor').querySelector('[data-save-outbound]');
   let result;
   const ok = await mutate(button, async () => {
+    const body = {config: f.config.value};
+    if (!$('#outboundSubscriptionRefreshField').hidden) {
+      if (!$('#outboundSubscriptionRefresh').checked) body.subscription = null;
+      else if (selectedSubscription && selectedSubscription.config === f.config.value) {
+        body.subscription = selectedSubscription.source;
+      }
+    }
     result = await (editing
-      ? api.updateOutbound(editing, {config: f.config.value})
-      : api.addOutbound({name: f.name.value.trim(), config: f.config.value}));
+      ? api.updateOutbound(editing, body)
+      : api.addOutbound({name: f.name.value.trim(), ...body}));
   });
   if (!ok) return;
   closeRoutingEditor('outbound');

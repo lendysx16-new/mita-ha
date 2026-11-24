@@ -105,6 +105,201 @@ class AdminAPITests(unittest.TestCase):
         users[0]["allow_loopback_ip"] = True
         self.assertFalse(app.build_mita_config(users, app.get_settings())["users"][0]["allowLoopbackIP"])
 
+    @unittest.skipUnless(app.yaml, "PyYAML is required for Clash YAML import tests")
+    def test_subscription_preview_requires_auth_and_imports_grouped_clash_servers(self):
+        document = """
+proxies:
+  - {name: EU-A, type: trojan, server: a.example, port: 443, password: secret}
+  - {name: EU-B, type: ss, server: b.example, port: 8443, cipher: aes-128-gcm, password: secret}
+  - {name: Unavailable, type: wireguard, server: c.example, port: 443}
+proxy-groups:
+  - {name: Europe, type: select, proxies: [EU-A, EU-B]}
+  - {name: Main, type: select, proxies: [Europe, DIRECT]}
+"""
+        url = "https://provider.example/sub?token=private"
+        original = app.get_settings()
+        with mock.patch.object(app, "sing_box_available", return_value=True), mock.patch.object(
+            app, "fetch_outbound_subscription", return_value=document,
+        ) as fetch:
+            self.assertEqual(self.call("POST", "/api/outbound-subscription", {"url": url}, auth=False)[0], 401)
+            fetch.assert_not_called()
+            status, preview = self.call("POST", "/api/outbound-subscription", {"url": url})
+        self.assertEqual(status, 200)
+        fetch.assert_called_once_with(url, {})
+        self.assertEqual(preview["skipped"], 1)
+        self.assertEqual([node["name"] for node in preview["servers"]], ["EU-A", "EU-B"])
+        self.assertEqual([preview["groups"][i] for i in preview["servers"][1]["groups"]], ["Europe", "Main"])
+        self.assertEqual(preview["servers"][1]["config"]["type"], "shadowsocks")
+        self.assertNotIn(url, json.dumps(preview))
+        self.assertEqual(app.get_settings(), original)
+
+    def test_subscription_parser_reads_base64_share_links_and_sing_box_selectors(self):
+        uri = "trojan://secret@host.example:443#server-a"
+        encoded = base64.b64encode(uri.encode()).decode()
+        node = app.parse_subscription_servers(encoded)["servers"][0]
+        self.assertEqual(node["name"], "server-a")
+        profile = {"outbounds": [
+            {"tag": "select", "type": "selector", "outbounds": ["server-a"]},
+            dict(node["config"], tag="server-a"),
+        ]}
+        result = app.parse_subscription_servers(json.dumps(profile))
+        selected = result["servers"][0]
+        self.assertEqual([result["groups"][i] for i in selected["groups"]], ["select"])
+        self.assertNotIn("tag", selected["config"])
+
+    def test_subscription_download_keeps_targets_public(self):
+        for target in ("http://provider.example/sub", "https://u:p@provider.example"):
+            with self.assertRaises(ValueError):
+                app.fetch_outbound_subscription(target)
+        for ip in ("127.0.0.1", "192.168.1.1", "::1", "::ffff:127.0.0.1", "64:ff9b::7f00:1"):
+            with mock.patch.object(app.socket, "getaddrinfo", return_value=[(0, 0, 0, "", (ip, 443))]):
+                with self.assertRaisesRegex(ValueError, "public addresses"):
+                    app.public_subscription_address("provider.example", 443)
+
+    def test_reality_mlkem_setting_survives_link_and_clash_import(self):
+        uri = (
+            "vless://11111111-1111-4111-8111-111111111111@server.example:443"
+            "?security=reality&pbk=example"
+        )
+        default, _ = app.parse_outbound_config(uri)
+        self.assertNotIn("support_x25519mlkem768", default["tls"]["reality"])
+        for suffix, expected in (("true", True), ("false", False)):
+            link = uri + "&support-x25519mlkem768=" + suffix
+            outbound, _ = app.parse_outbound_config(link)
+            self.assertIs(outbound["tls"]["reality"]["support_x25519mlkem768"], expected)
+            clash = {
+                "name": "server", "type": "vless", "server": "server.example", "port": 443,
+                "uuid": "11111111-1111-4111-8111-111111111111",
+                "reality-opts": {"public-key": "example", "support-x25519mlkem768": expected},
+            }
+            servers = app.parse_subscription_servers(json.dumps({"proxies": [clash]}))["servers"]
+            self.assertIs(servers[0]["config"]["tls"]["reality"]["support_x25519mlkem768"], expected)
+        with self.assertRaisesRegex(ValueError, "must be true or false"):
+            app.parse_outbound_config(uri + "&support-x25519mlkem768=invalid")
+
+    def test_subscription_headers_are_validated_and_dropped_on_cross_origin_redirect(self):
+        headers = app.parse_subscription_headers(
+            "User-Agent: My client\r\nX-Device-OS: iOS\r\nAuthorization: Bearer secret"
+        )
+        self.assertEqual(headers["user-agent"], "My client")
+        self.assertEqual(headers["x-device-os"], "iOS")
+        for text in ("Host: other.example", "Transfer-Encoding: chunked", "Content-Length: 99",
+                     "X-Bad: control\x00", "User-Agent: A\nuser-agent: B", "missing separator"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                app.parse_subscription_headers(text)
+
+        first, second, third = (mock.Mock() for _ in range(3))
+        first.getresponse.return_value.status = 302
+        first.getresponse.return_value.getheader.return_value = "/next"
+        second.getresponse.return_value.status = 307
+        second.getresponse.return_value.getheader.return_value = "https://cdn.example/sub"
+        third.getresponse.return_value.status = 200
+        third.getresponse.return_value.read1.side_effect = [b"subscription", b""]
+        with mock.patch.object(app, "SubscriptionHTTPSConnection", side_effect=[first, second, third]):
+            self.assertEqual(app.fetch_outbound_subscription("https://provider.example/start", headers), "subscription")
+        self.assertEqual(first.request.call_args.kwargs["headers"]["user-agent"], "My client")
+        self.assertEqual(second.request.call_args.kwargs["headers"]["authorization"], "Bearer secret")
+        self.assertEqual(third.request.call_args.kwargs["headers"], {
+            "user-agent": "Mita-Outbound", "accept-encoding": "identity",
+        })
+
+    def test_outbound_subscription_refresh_keeps_selected_server_and_local_assignment(self):
+        restart = self.routing()
+        original_link = "trojan://secret@old.example:443#selected"
+        original = app.parse_subscription_servers(original_link)["servers"][0]
+        binding = {
+            "url": "https://provider.example/sub?token=private",
+            "headers": "X-Test: private-header",
+            "selector": original["selector"],
+        }
+        status, result = self.call("POST", "/api/outbounds", {
+            "name": "tracked", "config": original["config"], "subscription": binding,
+        })
+        self.assertEqual(status, 201)
+        self.assertIn("subscription", result["outbound"])
+        self.assertNotIn("private", json.dumps(result))
+
+        def make_due():
+            settings = app.get_settings()
+            settings["outbounds"][0]["subscription"]["checked_at"] = "2000-01-01T00:00:00Z"
+            app.write_json(app.SETTINGS_PATH, settings)
+
+        make_due()
+        previous = app.get_settings()["outbounds"][0]
+        restart.reset_mock()
+        latest = "trojan://updated@new.example:443#selected\ntrojan://other@other.example:443#different"
+        with mock.patch.object(app, "fetch_outbound_subscription", return_value=latest) as fetch:
+            app.refresh_outbound_subscriptions()
+            app.refresh_outbound_subscriptions()
+            fetch.assert_called_once_with(binding["url"], {"x-test": "private-header"})
+        restart.assert_called_once()
+        saved = app.get_settings()["outbounds"][0]
+        self.assertEqual(saved["outbound"]["server"], "new.example")
+        self.assertEqual(saved["port"], previous["port"])
+        self.assertEqual(saved["password"], previous["password"])
+
+        make_due()
+        restart.reset_mock()
+        with mock.patch.object(app, "fetch_outbound_subscription", return_value="trojan://other@other.example:443#different"):
+            app.refresh_outbound_subscriptions()
+        restart.assert_not_called()
+        current = app.get_settings()["outbounds"][0]
+        self.assertEqual(current["outbound"], saved["outbound"])
+        self.assertIn("not found", current["subscription"]["error"])
+
+        make_due()
+        with mock.patch.object(app, "fetch_outbound_subscription", return_value=original_link), mock.patch.object(
+            app, "apply_routing", side_effect=ValueError("rejected"),
+        ):
+            app.refresh_outbound_subscriptions()
+        current = app.get_settings()["outbounds"][0]
+        self.assertEqual(current["outbound"], saved["outbound"])
+        self.assertIn("Could not apply", current["subscription"]["error"])
+
+        status, _ = self.call("PUT", "/api/outbounds/tracked", {"config": current["outbound"], "subscription": None})
+        self.assertEqual(status, 200)
+        self.assertNotIn("subscription", app.get_settings()["outbounds"][0])
+
+    def test_xhttp_share_link_and_clash_subscription_preserve_transport(self):
+        uri = (
+            "vless://11111111-1111-4111-8111-111111111111@example.com:443"
+            "?security=reality&pbk=example&type=xhttp&host=front.example&path=%2Fsub&mode=packet-up"
+            "&extra=%7B%22xPaddingBytes%22%3A%22100-500%22%7D"
+        )
+        outbound, _ = app.parse_outbound_config(uri)
+        self.assertEqual(outbound["transport"], {
+            "type": "xhttp", "host": "front.example", "path": "/sub",
+            "mode": "packet-up", "x_padding_bytes": "100-500",
+        })
+        result = app.parse_subscription_servers(json.dumps({"proxies": [{
+            "name": "xhttp", "type": "vless", "server": "example.com", "port": 443,
+            "uuid": "11111111-1111-4111-8111-111111111111", "network": "xhttp",
+            "xhttp-opts": {"path": "/sub", "mode": "stream-up", "no-grpc-header": True},
+        }]}))
+        self.assertEqual(result["servers"][0]["config"]["transport"], {
+            "type": "xhttp", "path": "/sub", "mode": "stream-up", "no_grpc_header": True,
+        })
+
+    def test_awgm_box_outbound_types_generate_correct_config_sections(self):
+        options = [
+            {"type": "mieru", "server": "example.com", "server_ports": ["2022-2024"],
+             "username": "user", "password": "test", "transport": "TCP"},
+            {"type": "trusttunnel", "server": "example.com", "server_port": 443},
+            {"type": "amneziawg", "address": ["10.0.0.2/32"], "private_key": "key",
+             "peers": [{"address": "192.0.2.1", "port": 51820, "public_key": "key"}]},
+            {"type": "masque-client", "server": "example.com", "server_port": 443},
+        ]
+        prepared = [app.parse_outbound_config(entry)[0] for entry in options]
+        config = app.sing_box_config({
+            "router_password": "bridge-secret",
+            "outbounds": [{"name": f"route-{i}", "password": "test", "port": 2081 + i, "outbound": entry}
+                          for i, entry in enumerate(prepared)],
+        })
+        self.assertEqual([entry["type"] for entry in config["outbounds"]], ["mieru", "trusttunnel", "direct"])
+        self.assertEqual([entry["type"] for entry in config["endpoints"]], ["awg", "masque-client"])
+        self.assertFalse(config["endpoints"][0]["useIntegratedTun"])
+        self.assertEqual(config["endpoints"][0]["tag"], "out-2")
+
     def test_add_user_and_generate_password(self):
         status, data = self.call("POST", "/api/users", {"username": "second"})
         self.assertEqual(status, 201)

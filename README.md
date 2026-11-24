@@ -103,6 +103,38 @@ name (the link's own name is used if you leave it empty). awgm-box checks the
 outbound before it is saved. Outbounds cannot be renamed, and one that a
 policy, **Everything else** or an account still uses cannot be deleted.
 
+VLESS XHTTP links and Clash `xhttp-opts` are supported. The importer maps the
+path, host, mode and common XHTTP options to awgm-box. For advanced layouts
+such as a separate download transport, use native awgm-box JSON.
+Native JSON also supports Mieru, TrustTunnel, AmneziaWG (`type: awg`), and
+MASQUE (`type: masque-client`). AmneziaWG and MASQUE use the userspace network
+stack. Mieru can also be imported from Clash subscriptions.
+
+For REALITY, awgm-box 42 leaves X25519MLKEM768 enabled by default with
+compatible uTLS fingerprints. The importer preserves an explicit
+`support-x25519mlkem768` flag from Clash `reality-opts` or a share-link query.
+In native outbound JSON the field is `tls.reality.support_x25519mlkem768`.
+This controls the TLS key share.
+
+To choose a server from a provider subscription, open **Add outbound → Import
+from subscription URL**. If your provider requires custom request headers,
+paste them as one `Name: value` pair per line before clicking **Load servers**.
+Mita drops custom headers if redirected to another host or port. Filter by a named group
+when the subscription includes groups, choose a server, then save it as an
+outbound. The importer supports public HTTPS subscriptions with plain or
+base64-encoded share links, sing-box JSON outbounds, and compatible Clash
+proxy entries. Groups are filters; the saved outbound points to the server
+you chose.
+
+Leave **Refresh the selected server from its subscription daily** enabled to
+keep tracking that server by the provider's name and protocol. If it is
+missing, ambiguous, or the new configuration cannot be applied, Mita keeps
+the previous config and retries in about an hour. A successful change
+restarts awgm-box so active connections through it may reconnect.
+When tracking is enabled the subscription URL and request headers are kept in
+settings and backups. Protect backups because these values may contain
+credentials. You can disable tracking or select another server in the editor.
+
 The **Status** column shows whether each outbound actually works: Mita fetches
 `https://www.gstatic.com/generate_204` through the outbound and shows the
 latency or the error. It checks on save, every five minutes, and when you press
