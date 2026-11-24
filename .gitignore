@@ -22,3 +22,4 @@ Thumbs.db
 
 # Standalone sing-box configuration (may contain proxy credentials)
 /sing-box/config.json
+/awgm-box/config.json

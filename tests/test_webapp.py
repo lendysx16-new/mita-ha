@@ -510,7 +510,7 @@ class AdminAPITests(unittest.TestCase):
             with mock.patch.object(app.SING_BOX, "running", return_value=False):
                 with self.assertRaises(app.PgRouteError) as caught:
                     app.pg_connect(dsn)
-                self.assertIn("sing-box is not running", app.db_error_text(caught.exception, dsn))
+                self.assertIn("awgm-box is not running", app.db_error_text(caught.exception, dsn))
             with mock.patch.object(app.SING_BOX, "running", return_value=True):
                 app.pg_connect(dsn)
             driver.connect.assert_called_once_with(dsn, hostaddr="127.0.0.1", port=app.PG_FORWARD_PORT,
@@ -1187,7 +1187,7 @@ class OutboundProbeTests(unittest.TestCase):
         port = closed.getsockname()[1]
         closed.close()
         result = app.probe_outbound({"name": "nl", "port": port, "password": "x"})
-        self.assertEqual(result["error"], "sing-box is not listening for this outbound")
+        self.assertEqual(result["error"], "awgm-box is not listening for this outbound")
 
     def test_probe_url_must_be_http(self):
         with mock.patch.dict(app.os.environ, {"MITA_OUTBOUND_PROBE_URL": "ftp://probe.test/"}):

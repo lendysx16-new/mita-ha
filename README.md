@@ -2,7 +2,7 @@
 
 A Docker Compose deployment of **mita**, the server of the
 [mieru](https://github.com/enfein/mieru) proxy protocol, with a local admin
-panel, per-user subscription links and sing-box based routing through your
+panel, per-user subscription links and awgm-box based routing through your
 provider servers.
 
 - Mita 3.40.0 (built from source with a per-account outbound patch) for Linux amd64 / arm64
@@ -10,7 +10,7 @@ provider servers.
 - add, change and delete users without restarting Mita
 - per-user subscription page and Mihomo YAML for Clash Mi, Karing, FlClashX and other clients
 - outbounds from share links (Hysteria2, VLESS REALITY, Trojan, …) with health checks
-- routing policies with GeoSite / GeoIP categories, applied by sing-box
+- routing policies with GeoSite / GeoIP categories, applied by awgm-box
 - automatic PostgreSQL backups and restore
 
 ## Install
@@ -86,8 +86,10 @@ page) all read.
 
 ## Route traffic through outbounds
 
-The bundled sing-box decides where traffic goes. Mita
-sends every connection to sing-box's loopback router port; sing-box applies
+The Linux image bundles [awgm-box release 42](https://github.com/hoaxisr/awgm-box/releases/tag/42)
+for amd64 and arm64. It uses the existing outbound settings and backups.
+The bundled awgm-box decides where traffic goes. Mita
+sends every connection to awgm-box's loopback router port; awgm-box applies
 your routing policies and sends each connection to one of your outbounds,
 directly, or blocks it. Routing stays off (Mita connects directly)
 until you add an outbound or a policy.
@@ -97,7 +99,7 @@ until you add an outbound or a policy.
 Add your provider servers. Paste a share link (`hysteria2://` / `hy2://`,
 `vless://` including REALITY, `vmess://`, `trojan://`, `ss://`, `tuic://`,
 `socks5://`, `http://`) or one sing-box outbound JSON object, and give it a
-name (the link's own name is used if you leave it empty). sing-box checks the
+name (the link's own name is used if you leave it empty). awgm-box checks the
 outbound before it is saved. Outbounds cannot be renamed, and one that a
 policy, **Everything else** or an account still uses cannot be deleted.
 
@@ -105,7 +107,7 @@ The **Status** column shows whether each outbound actually works: Mita fetches
 `https://www.gstatic.com/generate_204` through the outbound and shows the
 latency or the error. It checks on save, every five minutes, and when you press
 **Test**; a failed check does not block saving. Set `MITA_OUTBOUND_PROBE_URL`
-in `.env` to probe a different http(s) URL. If sing-box exits, it is restarted
+in `.env` to probe a different http(s) URL. If awgm-box exits, it is restarted
 with increasing delays up to one minute; while it is down, routed traffic fails.
 
 ### Routing tab
@@ -114,8 +116,8 @@ Each **policy** sends its domains, CIDRs and GeoSite / GeoIP categories to one
 saved outbound, directly, or blocks them. Policies are checked top to bottom
 (reorder them with the arrows); the first match wins. **Everything else**
 decides what happens to traffic no policy matched (direct by default). Saving
-a policy restarts only sing-box, so it applies within a second without touching
-Mita; active connections through sing-box are reset.
+a policy restarts only awgm-box, so it applies within a second without touching
+Mita; active connections through awgm-box are reset.
 
 - Domains match the domain and its subdomains. A policy holds up to 4,096
   domains and 4,096 networks of its own.
@@ -125,10 +127,10 @@ Mita; active connections through sing-box are reset.
   from [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat/tree/sing/geo)
   (`sing` branch); a GitHub link to any sing-box source `.json` works too. A
   wrong name fails on save with "HTTP 404 (no such category?)".
-- Categories are stored as local sing-box rule sets without losing anything:
+- Categories are stored as local awgm-box rule sets without losing anything:
   exact domains, suffixes, keywords and regular expressions all apply, and
   there is no entry limit. They are downloaded on save and refreshed daily;
-  sing-box picks up refreshed files without a restart.
+  awgm-box picks up refreshed files without a restart.
 - **Geo sources** can point `geosite:` and/or `geoip:` at a v2ray `.dat` file
   on GitHub (release downloads work) or jsDelivr instead, for example Runet
   Freedom's
@@ -138,7 +140,7 @@ Mita; active connections through sing-box are reset.
 - **Import GeoSite / GeoIP file** copies the suffixes and CIDRs of a local
   sing-box source file into the policy's own fields once.
 - Clients that connect by IP are sniffed (TLS SNI / HTTP Host) so domain rules
-  still apply. **Generated sing-box route** shows the rules sing-box runs.
+  still apply. **Generated awgm-box route** shows the rules awgm-box runs.
 
 ### Restart Mita and per-account outbounds
 
@@ -147,7 +149,7 @@ outbounds are added or removed, so that they can be chosen for an account, or
 when routing is turned on for the first time. The **Restart Mita** button at
 the top of both tabs then turns prominent; it runs `mita stop` and `mita start`
 inside the container, so connections drop for a few seconds while the admin
-panel and sing-box keep running.
+panel and awgm-box keep running.
 
 In a user's settings, **Outbound for PROXY** makes every policy that sends
 traffic to an outbound use the chosen outbound instead for that account and its
@@ -160,8 +162,12 @@ automatically on start: the single built-in sing-box becomes the outbound
 `managed-sing-box`, SOCKS5 proxies from the old JSON editor become `socks`
 outbounds, and a catch-all `*` policy becomes **Everything else**.
 
-An external sing-box (the `sing-box` Compose profile with
-`sing-box/config.example.json`) still works: keep its SOCKS5 inbound on
+If you previously enabled the external `sing-box` Compose profile, stop that
+service before enabling the new `awgm-box` profile. Move its local
+`sing-box/config.json` to `awgm-box/config.json`.
+
+An external awgm-box (the `awgm-box` Compose profile with
+`awgm-box/config.example.json`) still works: keep its SOCKS5 inbound on
 `127.0.0.1:1080` with a password and add it in the Outbounds tab as
 `socks5://user:password@127.0.0.1:1080`.
 
@@ -176,7 +182,7 @@ Treat the database as confidential.
 
 **Connect via** under Settings sends backups and log forwarding through one of
 your outbounds instead of directly, for example when the direct path to the
-database drops large packets (small queries work, backups hang). sing-box then
+database drops large packets (small queries work, backups hang). awgm-box then
 forwards `127.0.0.1:1179` to the database host and port from the connection
 string through that outbound; TLS to the database still verifies its real host
 name. This needs a single TCP host in the connection string, and an outbound in
@@ -205,5 +211,5 @@ python3 -m unittest discover -s tests -v
 node --test tests/*.mjs
 ```
 
-The tests use temporary files and mock Mita and sing-box. CI also builds the
+The tests use temporary files and mock Mita and awgm-box. CI also builds the
 image, which compiles the patched Mita core and runs its test.

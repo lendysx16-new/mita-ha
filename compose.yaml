@@ -1,6 +1,6 @@
 services:
   mita:
-    build: ./mita
+    build: &linux-build ./mita
     init: true
     network_mode: host
     restart: unless-stopped
@@ -14,16 +14,17 @@ services:
     volumes:
       - mita-data:/data
 
-  sing-box:
-    image: ghcr.io/sagernet/sing-box:v1.14.4
-    profiles: ["sing-box"]
+  awgm-box:
+    build: *linux-build
+    profiles: ["awgm-box"]
+    entrypoint: ["/usr/local/bin/awgm-box"]
     network_mode: host
     restart: unless-stopped
-    command: ["run", "-c", "/etc/sing-box/config.json"]
+    command: ["run", "-c", "/etc/awgm-box/config.json"]
     volumes:
       - type: bind
-        source: ./sing-box/config.json
-        target: /etc/sing-box/config.json
+        source: ./awgm-box/config.json
+        target: /etc/awgm-box/config.json
         read_only: true
         bind:
           create_host_path: false
