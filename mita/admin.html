@@ -63,7 +63,7 @@
 * { box-sizing: border-box; }
 html { min-width: 320px; }
 body { margin: 0; min-height: 100vh; background: var(--background); color: var(--foreground); font-size: 14px; line-height: 1.5; }
-button, input, select { font: inherit; color: inherit; }
+button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
 a { color: inherit; }
@@ -124,8 +124,8 @@ code { font: 11px/1.5 var(--mono); overflow-wrap: anywhere; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .form-grid > .span-2 { grid-column: 1 / -1; }
 label:not(.check) { display: flex; flex-direction: column; gap: 7px; font-size: 12px; font-weight: 580; }
-label input, label select { font-weight: 400; }
-input:not([type="checkbox"]), select { width: 100%; min-width: 0; min-height: 40px; border: 1px solid var(--input); border-radius: var(--radius-sm); background: var(--card); padding: 9px 11px; box-shadow: 0 1px 2px rgba(0,0,0,.025); }
+label input, label select, label textarea { font-weight: 400; }
+input:not([type="checkbox"]), select, #outboundConfig, #singBoxConfig, #singBoxDomains, #singBoxIPRanges, #singBoxGeoUrls { width: 100%; min-width: 0; min-height: 40px; border: 1px solid var(--input); border-radius: var(--radius-sm); background: var(--card); padding: 9px 11px; box-shadow: 0 1px 2px rgba(0,0,0,.025); }
 input::placeholder { color: var(--muted-foreground); opacity: .75; }
 input:not([type="checkbox"]):hover, select:hover { border-color: var(--ring); }
 input:not([type="checkbox"]):focus, select:focus { border-color: var(--ring); outline: 2px solid color-mix(in srgb, var(--ring) 18%, transparent); outline-offset: 0; }
@@ -306,6 +306,14 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
+#outboundConfig, #singBoxConfig, #singBoxDomains, #singBoxIPRanges, #singBoxGeoUrls {
+  box-sizing: border-box;
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  font-family: monospace;
+}
+#outboundForm pre { overflow: auto; }
 </style>
 </head>
 <body>
@@ -446,6 +454,34 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
           </div></div>
           <div class="card-actions"><button id="saveSettings" class="btn" type="submit">Save connection</button></div>
         </form>
+        <form class="card" id="singBoxForm" hidden>
+          <div class="card-header"><div><h2>Built-in sing-box</h2><p class="card-subtitle">Paste one sing-box outbound object and choose destinations to route through it.</p></div></div>
+          <div class="card-body">
+            <p id="singBoxStatus" role="status"></p>
+            <div class="form-grid">
+              <label class="span-2">Provider outbound (JSON)<textarea id="singBoxConfig" rows="8" required spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
+              <label class="span-2">Domains (one per line)<textarea id="singBoxDomains" rows="3" spellcheck="false" placeholder="example.com" autocapitalize="off"></textarea></label>
+              <label class="span-2">IP networks (one CIDR per line)<textarea id="singBoxIPRanges" rows="3" spellcheck="false" placeholder="198.51.100.0/24" autocapitalize="off"></textarea></label>
+              <label class="span-2">Import GeoSite / GeoIP<input id="singBoxGeoFiles" type="file" accept=".json,application/json" multiple><span id="singBoxImportStatus" class="field-help" role="status"></span><span class="field-help">sing-box source rule sets with domain_suffix or ip_cidr. Imported entries are added to the fields above. Limit: 16,384 unique domains and 16,384 unique CIDRs per managed rule, including GitHub entries.</span></label>
+              <label class="span-2">GitHub Geo lists (one URL per line)<textarea id="singBoxGeoUrls" rows="3" spellcheck="false" placeholder="https://raw.githubusercontent.com/owner/repo/main/geosite.json" autocapitalize="off"></textarea><span class="field-help">Checked daily. Within the 16,384-per-list limit, manual and file entries take priority over GitHub entries. Restart Mita to apply changes.</span><span id="singBoxGeoStatus" class="field-help"></span></label>
+            </div>
+          </div>
+          <div class="card-actions">
+            <button id="disableSingBox" class="btn btn-secondary" type="button" hidden>Disable</button>
+            <button id="enableSingBox" class="btn" type="submit">Set up sing-box</button>
+          </div>
+        </form>
+        <form class="card" id="outboundForm" hidden>
+          <div class="card-header"><div><h2>Outbound</h2><p class="card-subtitle">Route destinations through SOCKS5, connect directly, or block them. Rules run top to bottom. Restart Mita after saving.</p></div></div>
+          <div class="card-body">
+            <label>Outbound configuration (JSON)<textarea id="outboundConfig" rows="12" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
+            <details><summary>Example with sing-box</summary><pre>{
+  "proxies": [{"name": "sing-box", "host": "127.0.0.1", "port": 1080}],
+  "rules": [{"domainNames": ["example.com"], "action": "PROXY", "proxyNames": ["sing-box"]}]
+}</pre></details>
+          </div>
+          <div class="card-actions"><button id="saveOutbound" class="btn" type="submit">Save outbound</button></div>
+        </form>
         <form class="card" id="serverForm">
           <div class="card-header"><div><h2>Server settings</h2><p class="card-subtitle">Log verbosity, PostgreSQL log forwarding and backups.</p></div></div>
           <div class="card-body">
@@ -530,6 +566,7 @@ const api = {
   deleteUser: username => request(userPath(username), {method: 'DELETE'}),
   updateUser: (username, body) => request(userPath(username), {method: 'PATCH', body}),
   removeDevice: (username, id) => request(userPath(username, 'devices', id), {method: 'DELETE'}),
+  saveSingBox: body => request('api/sing-box', {method: 'PUT', body}),
   saveSettings: body => request('api/settings', {method: 'PUT', body}),
 };
 
@@ -783,6 +820,10 @@ function renderUserDetail() {
         <label class="check"><input name="allow_private_ip" type="checkbox"${attr('checked', u.allow_private_ip)}>Allow private / LAN IPs</label>
         <label class="check"><input name="allow_loopback_ip" type="checkbox"${attr('checked', u.allow_loopback_ip)}>Allow loopback</label>
       </div>
+      ${state.outbound_enabled ? html`<label>Outbound for PROXY<select name="proxy_outbound">
+        <option value=""${attr('selected', !u.proxy_outbound)}>Routing rule default</option>
+        ${state.proxy_outbounds.map(name => html`<option value="${name}"${attr('selected', name === u.proxy_outbound)}>${name}</option>`)}
+      </select><span class="field-help">Applies to this account and all its devices when a server rule selects PROXY.</span></label>` : ''}
       <button class="btn" type="submit">Save</button>
     </form>
     <p class="field-help device-settings-note">With legacy disabled, clients without X-HWID cannot fetch the subscription. Supported clients can still register a new HWID on their first refresh.</p>
@@ -795,6 +836,7 @@ async function saveDeviceSettings(form) {
     legacy_enabled: form.elements.legacy_enabled.checked,
     allow_private_ip: form.elements.allow_private_ip.checked,
     allow_loopback_ip: form.elements.allow_loopback_ip.checked,
+    ...(form.elements.proxy_outbound ? {proxy_outbound: form.elements.proxy_outbound.value} : {}),
   }), 'User settings saved');
 }
 function hideDetailPassword() {
@@ -930,6 +972,25 @@ function fillSettings(s) {
   $('#contactEmail').value = s.contact_email || '';
   $('#logLevel').value = s.log_level || 'INFO';
   $('#postgresDsn').value = s.postgres_dsn || '';
+  const bridge = s.sing_box;
+  $('#singBoxForm').hidden = !state.sing_box_available;
+  $('#singBoxStatus').textContent = state.sing_box_running
+    ? 'Local SOCKS5 is running.' : (bridge ? 'Local SOCKS5 is stopped.' : 'Not configured.');
+  $('#singBoxConfig').value = bridge ? JSON.stringify(bridge.outbound, null, 2) : '';
+  $('#singBoxDomains').value = bridge ? bridge.domains.join('\n') : '';
+  $('#singBoxIPRanges').value = bridge ? (bridge.ip_ranges || []).join('\n') : '';
+  $('#singBoxGeoUrls').value = bridge ? (bridge.geo_urls || []).join('\n') : '';
+  const geoStatus = bridge && bridge.geo_updated_at
+    ? 'Last saved GitHub list: ' + displayTime(bridge.geo_updated_at) : '';
+  const skipped = bridge && bridge.geo_skipped || [];
+  $('#singBoxGeoStatus').textContent = [geoStatus, skipped.length ? 'Skipped: ' + skipped.join(', ') : '']
+    .filter(Boolean).join('. ');
+  $('#disableSingBox').hidden = !bridge;
+  $('#enableSingBox').textContent = bridge ? 'Update sing-box' : 'Set up sing-box';
+  const outboundEnabled = state.outbound_enabled === true;
+  $('#outboundForm').hidden = !outboundEnabled;
+  $('#outboundConfig').value = outboundEnabled
+    ? JSON.stringify(s.egress || {proxies: [], rules: []}, null, 2) : '';
 }
 function resetAddUserForm() {
   $('#username').value = '';
@@ -948,6 +1009,10 @@ async function load() {
   const data = await api.state();
   state.users = data.users || [];
   state.settings = data.settings || {};
+  state.outbound_enabled = data.outbound_enabled === true;
+  state.proxy_outbounds = data.proxy_outbounds || [];
+  state.sing_box_available = data.sing_box_available === true;
+  state.sing_box_running = data.sing_box_running === true;
   renderStats();
   renderUsers();
   renderDeviceDirectory();
@@ -1055,6 +1120,115 @@ $('#connectionForm').addEventListener('submit', async e => {
     contact_email: $('#contactEmail').value.trim(),
   }), 'Connection settings saved');
   if (ok) fillSettings(state.settings);
+});
+const GEO_DESTINATION_LIMIT = 16384;
+
+function normalizeGeoDomain(value) {
+  if (typeof value !== 'string' || /[^\x00-\x7F]/.test(value)) return null;
+  const domain = value.trim().toLowerCase().replace(/\.$/, '');
+  const label = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+  return domain.length <= 253 && domain.split('.').every(part => label.test(part)) ? domain : null;
+}
+
+function readGeoRuleSet(source) {
+  if (!source || ![1, 2, 3, 4].includes(source.version) || !Array.isArray(source.rules) || !source.rules.length) {
+    throw new Error('Expected a sing-box source rule set with a version and rules array.');
+  }
+  const domains = [];
+  const ipRanges = [];
+  const skipped = new Set();
+  const domainSelectors = ['domain', 'domain_suffix', 'domain_regex', 'domain_keyword'];
+  for (const rule of source.rules) {
+    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) throw new Error('Geo rule must be an object.');
+    const keys = Object.keys(rule).filter(key => key !== 'type');
+    const ipRule = keys.length === 1 && keys[0] === 'ip_cidr';
+    if ((rule.type !== undefined && rule.type !== 'default') ||
+        (!ipRule && (!keys.length || !keys.every(key => domainSelectors.includes(key))))) {
+      skipped.add('compound rules');
+      continue;
+    }
+    for (const key of keys) {
+      if (!['domain_suffix', 'ip_cidr'].includes(key)) {
+        skipped.add(key);
+        continue;
+      }
+      const values = Array.isArray(rule[key]) ? rule[key] : [rule[key]];
+      for (const value of values) {
+        if (key === 'ip_cidr') {
+          if (typeof value === 'string' && value.trim()) ipRanges.push(value.trim());
+          else skipped.add('invalid CIDRs');
+        } else if (typeof value === 'string' && value.trim().startsWith('.')) {
+          skipped.add('subdomain-only suffixes');
+        } else {
+          const domain = normalizeGeoDomain(value);
+          if (domain) domains.push(domain);
+          else skipped.add('invalid domain suffixes');
+        }
+      }
+    }
+  }
+  if (!domains.length && !ipRanges.length) throw new Error('Geo rule set has no compatible domain suffixes or CIDRs.');
+  return {domains, ipRanges, skipped: [...skipped].sort()};
+}
+
+const destinationLines = field => $(field).value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+
+$('#singBoxGeoFiles').addEventListener('change', async e => {
+  const input = e.target;
+  const files = Array.from(input.files);
+  try {
+    let bytes = 0;
+    const lists = await Promise.all(files.map(file => {
+      bytes += file.size;
+      if (bytes > 4 * 1024 * 1024) throw new Error('Choose rule sets totaling at most 4 MiB.');
+      return file.text().then(text => readGeoRuleSet(JSON.parse(text)));
+    }));
+    const skipped = [...new Set(lists.flatMap(list => list.skipped))].sort();
+    for (const [field, key, label] of [
+      ['#singBoxDomains', 'domains', 'domain suffixes'], ['#singBoxIPRanges', 'ipRanges', 'CIDRs'],
+    ]) {
+      const existing = destinationLines(field);
+      const seen = new Set(existing.map(value => key === 'domains' ? normalizeGeoDomain(value) || value : value));
+      let overflow = 0;
+      for (const value of lists.flatMap(list => list[key])) {
+        if (seen.has(value)) continue;
+        seen.add(value);
+        if (seen.size <= GEO_DESTINATION_LIMIT) existing.push(value);
+        else overflow++;
+      }
+      if (overflow) skipped.push(overflow + ' ' + label + ' beyond the ' + GEO_DESTINATION_LIMIT + ' entry limit');
+      $(field).value = existing.join('\n');
+    }
+    $('#singBoxImportStatus').textContent = skipped.length ? 'Skipped: ' + skipped.join(', ') : '';
+  } catch (error) {
+    toast(error.message, 'error');
+  } finally {
+    input.value = '';
+  }
+});
+
+$('#singBoxForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const ok = await mutate($('#enableSingBox'), () => api.saveSingBox({
+    outbound: JSON.parse($('#singBoxConfig').value),
+    domains: destinationLines('#singBoxDomains'),
+    ip_ranges: destinationLines('#singBoxIPRanges'),
+    geo_urls: destinationLines('#singBoxGeoUrls'),
+  }), 'sing-box started. Restart Mita to apply the routing rule.');
+  if (ok) fillSettings(state.settings);
+});
+$('#disableSingBox').onclick = async () => {
+  if (!await confirmAction('Disable sing-box?', 'Affected domains will need a Mita restart to use the remaining rules.', 'Disable')) return;
+  const ok = await mutate($('#disableSingBox'), () => api.saveSingBox({
+    enabled: false,
+  }), 'sing-box stopped. Restart Mita to apply the routing change.');
+  if (ok) fillSettings(state.settings);
+};
+$('#outboundForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  await mutate($('#saveOutbound'), () => api.saveSettings({
+    egress: JSON.parse($('#outboundConfig').value),
+  }), 'Outbound saved. Restart Mita to apply the rules.');
 });
 $('#serverForm').addEventListener('submit', async e => {
   e.preventDefault();

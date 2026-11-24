@@ -48,7 +48,7 @@ function setup(overrides = {}) {
     dataset: {tab}, classList: { active: false, toggle(name,value) { if(name==='active')this.active=value; } },
     setAttribute() {},
   }));
-  const state = { users: [{
+  const state = { outbound_enabled: overrides.outboundEnabled, users: [{
     username: 'alice', allow_private_ip: false, allow_loopback_ip: false,
     legacy_enabled: true, device_limit: 2, subscription_url: 'https://vpn.example/sub/SECRET_TOKEN',
     devices: [{id: '0123456789abcdef', name: 'Laptop', hwid: 'sensitive-hwid',
@@ -235,4 +235,63 @@ test('users on the placeholder password are flagged with a reset shortcut', asyn
   state.users[0].default_password = false;
   await ctx.load();
   assert.equal(element('#detailPasswordWarning').hidden, true);
+});
+
+test('outbound editor is available only in standalone Linux mode', async () => {
+  for (const enabled of [false, true]) {
+    const {ctx, element} = setup({outboundEnabled: enabled});
+    await ctx.load();
+    ctx.fillSettings({});
+    assert.equal(element('#outboundForm').hidden, !enabled);
+  }
+});
+
+test('account settings show and save a named outbound only on standalone Linux', async () => {
+  for (const enabled of [false, true]) {
+    const {ctx, element, state} = setup({outboundEnabled: enabled});
+    state.proxy_outbounds = ['east', 'west'];
+    state.users[0].proxy_outbound = 'west';
+    await ctx.load();
+    ctx.openUser('alice');
+    const details = element('#detailDeviceUsers').innerHTML;
+    if (!enabled) {
+      assert.doesNotMatch(details, /name="proxy_outbound"/);
+      continue;
+    }
+    assert.match(details, /<option value="east">east<\/option>/);
+    assert.match(details, /<option value="west" selected>west<\/option>/);
+    let payload;
+    const fetchState = ctx.fetch;
+    ctx.fetch = async (url, options) => {
+      if (options?.method === 'PATCH') {
+        payload = JSON.parse(options.body);
+        return {ok: true, json: async () => ({})};
+      }
+      return fetchState(url, options);
+    };
+    await ctx.saveDeviceSettings({
+      dataset: {deviceForm: 'alice'},
+      elements: {device_limit: {value: '2'}, legacy_enabled: {checked: true},
+        allow_private_ip: {checked: false}, allow_loopback_ip: {checked: false},
+        proxy_outbound: {value: 'east'}},
+      querySelector() { return element('#formSubmit'); },
+    });
+    assert.equal(payload.proxy_outbound, 'east');
+  }
+});
+
+test('Geo source import preserves suffix and CIDR selectors and rejects unsupported matches', () => {
+  const {ctx} = setup();
+  const source = {version: 3, rules: [
+    {domain_suffix: ['Example.com.', '_dmarc.example.com', 'пример.рф'], domain: ['exact.example'], domain_regex: ['.*']},
+    {ip_cidr: ['198.51.100.0/24']},
+  ]};
+  const parsed = ctx.readGeoRuleSet(source);
+  assert.deepEqual([...parsed.domains], ['example.com']);
+  assert.deepEqual([...parsed.ipRanges], ['198.51.100.0/24']);
+  assert.deepEqual([...parsed.skipped], ['domain', 'domain_regex', 'invalid domain suffixes']);
+  assert.throws(() => ctx.readGeoRuleSet({version: 3, rules: [{domain: ['example.com']}]}), /no compatible/);
+  assert.throws(() => ctx.readGeoRuleSet({version: 3, rules: [
+    {domain_suffix: ['example.com'], ip_cidr: ['198.51.100.0/24']},
+  ]}), /no compatible/);
 });

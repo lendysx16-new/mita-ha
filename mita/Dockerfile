@@ -18,7 +18,26 @@ RUN apt-get update \
        "https://github.com/enfein/mieru/releases/download/v${MITA_VERSION}/mita_${MITA_VERSION}_${DEB_ARCH}.deb" \
     && dpkg-deb -x /tmp/mita.deb /tmp/mita-root
 
-FROM ${MITA_BASE_IMAGE}
+# Build the routed Linux variant against the exact Mita 3.40.0 source.
+FROM golang:1.25-bookworm AS mita-routed-builder
+WORKDIR /src
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl patch protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/* \
+    && go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2
+RUN curl -fL --retry 3 -o /tmp/mieru.tar.gz \
+      https://codeload.github.com/enfein/mieru/tar.gz/9812207bb8aefc3dd4dcc6a5ce268bf5e28b6c54 \
+    && tar -xzf /tmp/mieru.tar.gz --strip-components=1 \
+    && rm /tmp/mieru.tar.gz
+COPY upstream/per-user-outbound.patch /tmp/per-user-outbound.patch
+COPY upstream/user_outbound.go upstream/user_outbound_test.go pkg/socks5/
+RUN patch --batch --fuzz=0 -p1 < /tmp/per-user-outbound.patch \
+    && protoc -I pkg --go_out=pkg/appctl --go_opt=module=github.com/enfein/mieru/v3/pkg/appctl \
+         pkg/appctl/proto/base.proto \
+    && go test ./pkg/socks5 -run TestPerUserProxyOutbound \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/mita ./cmd/mita
+
+FROM ${MITA_BASE_IMAGE} AS mita-runtime
 
 ARG BUILD_VERSION
 ARG BUILD_ARCH
@@ -47,3 +66,11 @@ RUN chmod 0755 /usr/bin/mita /run.sh /app/webapp.py \
     && chmod 0644 /app/subscription.html /app/admin.html /app/clients.json
 
 CMD ["/run.sh"]
+
+FROM ghcr.io/sagernet/sing-box:v1.14.4 AS sing-box
+
+FROM mita-runtime AS linux
+COPY --from=mita-routed-builder /out/mita /usr/bin/mita
+COPY --from=sing-box /usr/local/bin/sing-box /usr/local/bin/sing-box
+
+FROM mita-runtime AS home-assistant
