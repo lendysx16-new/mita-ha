@@ -560,3 +560,20 @@ test('subscription groups filter concrete servers and only the chosen config is 
   assert.equal(element('#outboundSubscriptionUrl').value, '');
   assert.equal(element('#outboundSubscriptionHeaders').value, '');
 });
+
+test('reopening an outbound restores its saved subscription fields', async () => {
+  const {ctx, state, element} = setup();
+  const source = {url: 'https://provider.example/sub?token=private', headers: 'User-Agent: Happ'};
+  state.settings.outbounds = [{name: 'nl', outbound: {type: 'trojan'}, subscription: {refresh: false}}];
+  await ctx.load();
+  element('#outboundEditor').elements = {name: {value: '', focus() {}}, config: {value: '', focus() {}}};
+  ctx.fetch = async (url, request) => {
+    assert.equal(request.method, 'POST');
+    assert.match(url, /\/outbounds\/nl\/subscription\/source$/);
+    return {ok: true, json: async () => source};
+  };
+  await ctx.openOutboundEditor('nl');
+  assert.equal(element('#outboundSubscriptionUrl').value, source.url);
+  assert.equal(element('#outboundSubscriptionHeaders').value, source.headers);
+  assert.equal(element('#outboundSubscriptionRefresh').checked, false);
+});

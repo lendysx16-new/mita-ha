@@ -72,6 +72,7 @@ LOG_DB_STATUS = {
 }
 BACKUP_INTERVAL_SECONDS = 24 * 60 * 60
 BACKUP_RETRY_SECONDS = 5 * 60
+BACKUP_ROUTE_RETRY_SECONDS = 5
 BACKUP_KEEP_COUNT = 30
 BACKUP_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 BACKUP_STATUS_LOCK = threading.RLock()
@@ -710,7 +711,9 @@ def backup_db_worker():
         except Exception as exc:
             # Do not print exception details or the DSN: backup contains secrets.
             set_backup_status(connected=False, last_error=db_error_text(exc, dsn))
-            next_backup_at = time.monotonic() + BACKUP_RETRY_SECONDS
+            # On startup the backup worker can reach this point before awgm-box is ready.
+            delay = BACKUP_ROUTE_RETRY_SECONDS if isinstance(exc, PgRouteError) else BACKUP_RETRY_SECONDS
+            next_backup_at = time.monotonic() + delay
         time.sleep(1)
 
 
@@ -3706,6 +3709,7 @@ ADMIN_ROUTES = [
     ("POST", r"/api/outbound-subscription", "outbound_subscription"),
     ("POST", r"/api/outbound-candidate/test", "test_outbound_candidate"),
     ("POST", OUTBOUND + r"/subscription", "outbound_subscription"),
+    ("POST", OUTBOUND + r"/subscription/source", "outbound_subscription_source"),
     ("POST", r"/api/mita/restart", "restart_mita"),
     ("PUT", OUTBOUND, "update_outbound"),
     ("POST", OUTBOUND + r"/test", "test_outbound"),
@@ -3972,15 +3976,26 @@ class AdminHandler(CommonHandler):
         validate_outbound_assignments(get_users(), managed_egress(settings))
         apply_routing(settings, previous_settings)
 
+    def saved_subscription_entry(self, name):
+        with LOCK:
+            entry = next((e for e in outbound_entries(get_settings()) if e["name"] == name), None)
+        if entry is None or not entry.get("subscription"):
+            raise ApiError(HTTPStatus.NOT_FOUND, "saved subscription not found")
+        return entry
+
+    def route_outbound_subscription_source(self, name):
+        self.require_sing_box()
+        self.read_json(max_bytes=1024)
+        binding = self.saved_subscription_entry(name)["subscription"]
+        self.send_json(HTTPStatus.OK, {key: binding.get(key, "") for key in ("url", "headers")},
+                       headers={"Cache-Control": "no-store"})
+
     def route_outbound_subscription(self, name=None):
         self.require_sing_box()
         body = self.read_json(max_bytes=32768)
         binding = None
         if name is not None:
-            with LOCK:
-                entry = next((e for e in outbound_entries(get_settings()) if e["name"] == name), None)
-            if entry is None or not entry.get("subscription"):
-                raise ApiError(HTTPStatus.NOT_FOUND, "saved subscription not found")
+            entry = self.saved_subscription_entry(name)
             binding = entry["subscription"]
             body = binding
         url = body.get("url")

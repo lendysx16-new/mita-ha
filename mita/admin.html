@@ -652,6 +652,7 @@ const api = {
   removeDevice: (username, id) => request(userPath(username, 'devices', id), {method: 'DELETE'}),
   outboundSubscription: (url, headers) => request('api/outbound-subscription', {method: 'POST', body: {url, headers}}),
   savedOutboundSubscription: name => request('api/outbounds/' + encodeURIComponent(name) + '/subscription', {method: 'POST', body: {}}),
+  savedOutboundSubscriptionSource: name => request('api/outbounds/' + encodeURIComponent(name) + '/subscription/source', {method: 'POST', body: {}}),
   testOutboundCandidate: config => request('api/outbound-candidate/test', {method: 'POST', body: {config}}),
   addOutbound: body => request('api/outbounds', {method: 'POST', body}),
   updateOutbound: (name, body) => request('api/outbounds/' + encodeURIComponent(name), {method: 'PUT', body}),
@@ -1488,6 +1489,8 @@ let subscriptionSuggestedName = '';
 let loadedSubscription = null;
 let selectedSubscription = null;
 let savedSubscriptionName = null;
+let savedSubscriptionSource = null;
+let subscriptionEditor = 0;
 let subscriptionTestRunning = false;
 
 function showSubscriptionTestChoice() {
@@ -1497,12 +1500,14 @@ function showSubscriptionTestChoice() {
 }
 
 function clearOutboundSubscription() {
+  subscriptionEditor++;
   subscriptionLoad++;
   subscriptionServers = [];
   subscriptionSuggestedName = '';
   loadedSubscription = null;
   selectedSubscription = null;
   savedSubscriptionName = null;
+  savedSubscriptionSource = null;
   $('#outboundSubscriptionRefreshField').hidden = true;
   $('#outboundSubscriptionRefresh').checked = false;
   $('#outboundSubscription').open = false;
@@ -1515,6 +1520,14 @@ function clearOutboundSubscription() {
   $('#outboundSubscriptionStatus').textContent = '';
   $('#outboundSubscriptionTestField').hidden = true;
   showSubscriptionTestChoice();
+}
+
+function subscriptionFields() {
+  return {url: $('#outboundSubscriptionUrl').value.trim(), headers: $('#outboundSubscriptionHeaders').value};
+}
+
+function sameSubscriptionSource(a, b) {
+  return Boolean(a && b && a.url === b.url && a.headers === b.headers);
 }
 
 function renderSubscriptionServers(activeIndex) {
@@ -1530,10 +1543,10 @@ function renderSubscriptionServers(activeIndex) {
 }
 
 $('#loadOutboundSubscription').onclick = async () => {
-  const url = $('#outboundSubscriptionUrl').value.trim();
-  const saved = !url && savedSubscriptionName;
+  const source = subscriptionFields();
+  const {url, headers} = source;
+  const saved = savedSubscriptionName && ((!url && !headers) || sameSubscriptionSource(source, savedSubscriptionSource));
   if (!url && !saved) { toast('Enter a subscription URL.', 'error'); return; }
-  const headers = $('#outboundSubscriptionHeaders').value;
   const load = ++subscriptionLoad;
   const status = $('#outboundSubscriptionStatus');
   const button = $('#loadOutboundSubscription');
@@ -1618,7 +1631,7 @@ function closeRoutingEditor(kind) {
   if (typeof form.reset === 'function') form.reset();
   if (kind === 'outbound') clearOutboundSubscription();
 }
-function openOutboundEditor(name) {
+async function openOutboundEditor(name) {
   closeRoutingEditor('list');
   clearOutboundSubscription();
   const form = $('#outboundEditor');
@@ -1637,6 +1650,21 @@ function openOutboundEditor(name) {
   }
   form.hidden = false;
   (saved ? f.config : f.name).focus();
+  if (saved?.subscription) {
+    const editor = subscriptionEditor;
+    try {
+      const source = await api.savedOutboundSubscriptionSource(saved.name);
+      if (editor !== subscriptionEditor) return;
+      savedSubscriptionSource = source;
+      const fields = subscriptionFields();
+      if (!fields.url && !fields.headers) {
+        $('#outboundSubscriptionUrl').value = source.url;
+        $('#outboundSubscriptionHeaders').value = source.headers;
+      }
+    } catch (error) {
+      if (editor === subscriptionEditor) $('#outboundSubscriptionStatus').textContent = error.message;
+    }
+  }
 }
 function routeTargets() {
   return [...outboundNames().map(name => ({value: 'proxy:' + name, label: name})),
@@ -1707,6 +1735,12 @@ $('#outboundEditor').addEventListener('submit', async e => {
   let result;
   const ok = await mutate(button, async () => {
     const body = {config: f.config.value};
+    const fields = subscriptionFields();
+    const source = selectedSubscription?.stored || !selectedSubscription ? savedSubscriptionSource : selectedSubscription;
+    const hasFields = Boolean(fields.url || fields.headers);
+    if ((hasFields && !sameSubscriptionSource(fields, source)) || (!hasFields && selectedSubscription && !selectedSubscription.stored)) {
+      throw new Error('Load servers and choose a server to save these subscription settings.');
+    }
     if (!$('#outboundSubscriptionRefreshField').hidden) {
       const source = selectedSubscription || (savedSubscriptionName ? {stored: true} : null);
       if (source) body.subscription = {...source, refresh: $('#outboundSubscriptionRefresh').checked};

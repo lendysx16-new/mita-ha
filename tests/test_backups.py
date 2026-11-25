@@ -184,6 +184,24 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(app.get_backup_status()["last_error"], "RuntimeError")
         self.assertNotIn("secret", app.get_backup_status()["last_error"])
 
+    def test_worker_retries_quickly_while_awgm_box_starts(self):
+        dsn = "postgresql://db"
+        with (
+            mock.patch.object(app, "psycopg2", object()),
+            mock.patch.object(app, "get_settings", return_value={"postgres_dsn": dsn, "postgres_outbound": "proxy"}),
+            mock.patch.object(app, "save_postgres_backup", side_effect=[
+                app.PgRouteError("awgm-box is not running"), {"reason": "startup", "count": 1},
+            ]) as backup,
+            mock.patch.object(app.time, "monotonic", side_effect=[0, 0, 1, 5, 5]),
+            mock.patch.object(app.time, "sleep", side_effect=[None, None, StopIteration]) as sleep,
+        ):
+            with self.assertRaises(StopIteration):
+                app.backup_db_worker()
+        self.assertEqual(sleep.call_args_list, [mock.call(1), mock.call(4), mock.call(1)])
+        self.assertEqual(backup.call_args_list, [mock.call(dsn, "startup")] * 2)
+        self.assertTrue(app.get_backup_status()["connected"])
+        self.assertEqual(app.get_backup_status()["last_error"], "")
+
 
     def test_dropped_connection_reports_the_real_error_not_interface_error(self):
         class DriverError(Exception):

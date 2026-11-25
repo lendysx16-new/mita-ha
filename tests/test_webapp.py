@@ -163,6 +163,10 @@ proxy-groups:
         self.assertFalse(result["outbound"]["subscription"]["refresh"])
         previous = app.get_settings()["outbounds"][0]
         self.assertFalse(app.subscription_refresh_due(previous["subscription"], app.datetime.max))
+        self.assertEqual(self.call("POST", name + "/subscription/source", {}, auth=False)[0], 401)
+        self.assertEqual(self.call("POST", name + "/subscription/source", {}), (
+            200, {"url": url, "headers": "X-Test: private-header"},
+        ))
         with mock.patch.object(app, "fetch_outbound_subscription", return_value=source) as fetch:
             status, preview = self.call("POST", name + "/subscription", {})
             self.assertEqual(status, 200)
