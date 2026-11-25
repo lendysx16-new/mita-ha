@@ -3,6 +3,7 @@
 set -eu
 
 config=/data/hysteria2.yaml
+generation=/run/hysteria2/generation
 pid=
 
 stop_server() {
@@ -20,6 +21,10 @@ while :; do
     current=$(sha256sum "$config" | cut -d ' ' -f 1)
     if [ "$current" != "$previous" ] || [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
       stop_server
+      # Notify the backend of each new counter epoch. The separate volume only
+      # contains this marker; Hysteria cannot write to Mita's credentials.
+      cat /proc/sys/kernel/random/uuid > "$generation.tmp"
+      mv "$generation.tmp" "$generation"
       hysteria server -c "$config" &
       pid=$!
       previous=$current

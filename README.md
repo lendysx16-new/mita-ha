@@ -39,7 +39,8 @@ docker compose up -d --build
 The deployment has separate `backend` and `mita` containers. The backend runs
 the Python admin/subscription servers and the outbound-only awgm-box router;
 the `mita` container runs only the Mieru server. Both share the existing named
-`mita-data` volume. Mita listens on TCP 2022, subscriptions on TCP 8099 and the
+`mita-data` volume. A separate `hysteria-status` volume contains only a
+process-generation marker for traffic accounting. Mita listens on TCP 2022, subscriptions on TCP 8099 and the
 admin panel on `127.0.0.1:8098`. The backend controls Mita through an internal
 Unix socket; its **Restart Mita** action restarts only the Mita process.
 Existing volumes, accounts and subscription URLs are preserved when upgrading
@@ -58,8 +59,21 @@ default so existing Mieru subscribers are unaffected. To enable it:
 
 1. Put a valid TLS certificate and its private key in `hysteria/certs/` as
    `fullchain.pem` and `privkey.pem`. Set `HYSTERIA_CERT_DIR` in `.env` if you
-   already manage the certificate in another directory. The server's hostname
-   (or the optional SNI name) must match the certificate.
+   already manage the certificate in another directory **containing regular
+   files**. Do not point it directly at Certbot's `/etc/letsencrypt/live/<domain>`:
+   those files are symlinks to `../../archive/`, which will be broken inside
+   this single-directory bind mount. For Certbot, copy the resolved files:
+
+   ```sh
+   mkdir -p hysteria/certs
+   cp -L /etc/letsencrypt/live/vpn.example.com/fullchain.pem hysteria/certs/fullchain.pem
+   cp -L /etc/letsencrypt/live/vpn.example.com/privkey.pem hysteria/certs/privkey.pem
+   chmod 600 hysteria/certs/privkey.pem
+   ```
+
+   Repeat the copy after renewal (for example with a Certbot deploy hook).
+   Hysteria reads the certificate files on each TLS handshake, so a restart
+   is not required. The hostname (or optional SNI) must match the certificate.
 2. In **Settings → Public connection**, enable **Add Hysteria 2 to subscriptions**.
    Set the hostname, UDP port (443 by default) and optional SNI, then save.
 3. Start the additional container:
@@ -71,6 +85,21 @@ default so existing Mieru subscribers are unaffected. To enable it:
 4. Allow the chosen UDP port in the VPS firewall. Users only need to **update
    their existing subscription** in Mihomo; it gains a selectable Hysteria 2
    node alongside Mieru, with device-specific credentials when HWID is used.
+
+**If Caddy is on the same IP:** Caddy enables HTTP/3 on UDP 443 by default,
+which conflicts with Hysteria's default UDP 443. Either choose another HY2 UDP
+port (for example `8443`) in the admin panel and open that port, or disable
+HTTP/3 for Caddy's HTTPS listener with this global Caddyfile option:
+
+```caddy
+{
+  servers :443 {
+    protocols h1 h2
+  }
+}
+```
+
+Keep any existing global Caddy options in that same top-level `{ ... }` block.
 
 For Mieru-only operation use `docker compose up -d --build` as before. Hysteria
 2 reads an automatically generated config from the existing data volume. Its
@@ -85,8 +114,11 @@ When routing is enabled Hysteria uses the **same awgm-box policies** as Mieru,
 including individual account outbound overrides; the rule selection is based
 on Hysteria 2.14's authenticated client ID. Localhost destinations are always
 blocked. Private-network access follows the account's LAN setting. Hysteria
-traffic is polled every minute and added to Mieru's 24h/7d/30d totals in the
-Traffic tab (hourly granularity). The Hysteria traffic history is included in
+traffic is polled every minute without clearing server counters; cumulative
+checkpoints and the process-generation marker prevent duplicate accounting
+after backend failures or Hysteria restarts. A sudden Hysteria crash can still
+lose traffic since the last poll. Totals are added to Mieru's 24h/7d/30d
+figures in the Traffic tab (hourly granularity). The history is included in
 PostgreSQL backups. If the backend stops, *new* Hysteria sessions are denied
 until it returns. The backend still owns awgm-box, so restarting it also
 temporarily interrupts traffic that uses routed outbounds. Direct Hysteria

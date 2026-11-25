@@ -17,6 +17,7 @@ services:
       MITA_HY2_PORT: ${MITA_HY2_PORT:-443}
     volumes:
       - mita-data:/data
+      - hysteria-status:/run/hysteria2:ro
 
   mita:
     build:
@@ -43,6 +44,7 @@ services:
     entrypoint: ["/bin/sh", "/watch.sh"]
     volumes:
       - mita-data:/data:ro
+      - hysteria-status:/run/hysteria2
       - ./hysteria/watch.sh:/watch.sh:ro
       - ${HYSTERIA_CERT_DIR:-./hysteria/certs}:/certs:ro
 
@@ -65,3 +67,4 @@ services:
 volumes:
   mita-data:
     name: ${MITA_DATA_VOLUME:-mita-linux-data}
+  hysteria-status:

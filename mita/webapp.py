@@ -50,6 +50,7 @@ MITA_LOG_PATH = DATA_DIR / "mita.log"
 LOG_FORWARD_STATE_PATH = DATA_DIR / "log-forwarder-state.json"
 HY2_CONFIG_PATH = DATA_DIR / "hysteria2.yaml"
 HY2_TRAFFIC_PATH = DATA_DIR / "hysteria2-traffic.json"
+HY2_GENERATION_PATH = Path("/run/hysteria2/generation")
 
 ADMIN_PORT = 8098
 SUB_PORT = 8099
@@ -3333,8 +3334,23 @@ def summarize_traffic_rows(rows):
 TRAFFIC_FIELDS = ("day_down", "day_up", "week_down", "week_up", "month_down", "month_up")
 
 
+def hy2_traffic_state():
+    """Load historical hourly totals and the last durable Hysteria counters.
+
+    Old installations stored the hourly buckets directly at the top level.
+    """
+    state = load_json(HY2_TRAFFIC_PATH, {})
+    if state.get("version") == 2:
+        return state
+    return {"version": 2, "hours": state, "counters": {}}
+
+
+def hy2_generation():
+    return HY2_GENERATION_PATH.read_text().strip() if HY2_GENERATION_PATH.exists() else ""
+
+
 def hy2_traffic_rows():
-    history = load_json(HY2_TRAFFIC_PATH, {})
+    history = hy2_traffic_state()["hours"]
     now = int(time.time() // 3600)
     result = {}
     for account_id, buckets in history.items():
@@ -3568,7 +3584,15 @@ def sync_hysteria2_config():
         if settings.get("hysteria2_enabled"):
             config = hysteria2_config(settings, get_users())
             encoded = json.dumps(config, indent=2, ensure_ascii=False) + "\n"  # JSON is valid YAML.
-            if not HY2_CONFIG_PATH.exists() or HY2_CONFIG_PATH.read_text() != encoded:
+            exists = HY2_CONFIG_PATH.exists()
+            if not exists or HY2_CONFIG_PATH.read_text() != encoded:
+                # The watcher restarts Hysteria on config changes. Save the
+                # counters before the old process disappears, if it is running.
+                if exists:
+                    try:
+                        poll_hysteria2_traffic()
+                    except (ValueError, OSError, StateError, urllib.error.URLError):
+                        pass  # The optional Hysteria container may be stopped.
                 write_json(HY2_CONFIG_PATH, config)
         else:
             HY2_CONFIG_PATH.unlink(missing_ok=True)
@@ -3592,14 +3616,23 @@ def hysteria2_config_worker(stop_event):
 
 
 def poll_hysteria2_traffic():
-    """Save per-hour traffic before clearing Hysteria's in-memory counters."""
-    if not get_settings().get("hysteria2_enabled"):
-        return
-    traffic = hy2_api("/traffic?clear=1")
-    if not isinstance(traffic, dict):
-        raise ValueError("Hysteria returned invalid traffic statistics")
+    """Checkpoint cumulative counters without resetting server-side statistics.
+
+    Persisting the last sample together with hourly deltas avoids losing bytes
+    when a disk write or the backend fails after fetching a sample.
+    """
     with LOCK:
-        history = load_json(HY2_TRAFFIC_PATH, {})
+        if not get_settings().get("hysteria2_enabled"):
+            return
+        generation = hy2_generation()
+        traffic = hy2_api("/traffic")
+        if not isinstance(traffic, dict):
+            raise ValueError("Hysteria returned invalid traffic statistics")
+        if generation != hy2_generation():
+            raise ValueError("Hysteria restarted during traffic collection")
+        state = hy2_traffic_state()
+        history = state["hours"]
+        previous = state["counters"] if state.get("generation", "") == generation else {}
         current_hour = int(time.time() // 3600)
         for name, counters in traffic.items():
             if not isinstance(name, str) or not isinstance(counters, dict):
@@ -3607,14 +3640,26 @@ def poll_hysteria2_traffic():
             tx, rx = counters.get("tx"), counters.get("rx")
             if not all(type(value) is int and 0 <= value <= 10**15 for value in (tx, rx)):
                 continue
-            buckets = history.setdefault(name, {})
-            entry = buckets.setdefault(str(current_hour), [0, 0])
-            entry[0] += tx  # Hysteria tx = download towards client
-            entry[1] += rx  # Hysteria rx = upload from client
+            last = previous.get(name)
+            if (isinstance(last, list) and len(last) == 2
+                    and all(type(value) is int and value >= 0 for value in last)
+                    and tx >= last[0] and rx >= last[1]):
+                delta_tx, delta_rx = tx - last[0], rx - last[1]
+            else:
+                # Hysteria restarted: its in-memory cumulative counters reset.
+                delta_tx, delta_rx = tx, rx
+            if delta_tx or delta_rx:
+                buckets = history.setdefault(name, {})
+                entry = buckets.setdefault(str(current_hour), [0, 0])
+                entry[0] += delta_tx  # Hysteria tx = download towards client
+                entry[1] += delta_rx  # Hysteria rx = upload from client
+            previous[name] = [tx, rx]
         floor = current_hour - 30 * 24
-        history = {name: {key: value for key, value in buckets.items() if int(key) >= floor}
-                   for name, buckets in history.items()}
-        write_json(HY2_TRAFFIC_PATH, history)
+        state["hours"] = {name: {key: value for key, value in buckets.items() if int(key) >= floor}
+                          for name, buckets in history.items()}
+        state["counters"] = previous
+        state["generation"] = generation
+        write_json(HY2_TRAFFIC_PATH, state)
 
 
 def hysteria2_traffic_worker(stop_event):

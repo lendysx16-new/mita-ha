@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -29,6 +30,7 @@ class HysteriaTests(unittest.TestCase):
             "MITA_CONFIG_PATH": directory / "mita-server.json",
             "HY2_CONFIG_PATH": directory / "hysteria2.yaml",
             "HY2_TRAFFIC_PATH": directory / "hysteria2-traffic.json",
+            "HY2_GENERATION_PATH": directory / "hysteria-generation",
         }.items():
             patch = mock.patch.object(app, name, value)
             patch.start()
@@ -53,6 +55,7 @@ class HysteriaTests(unittest.TestCase):
             "hysteria2_auth_secret": "a-very-long-secret-for-http-auth",
             "hysteria2_stats_secret": "another-secret-for-stats",
         })
+        app.HY2_GENERATION_PATH.write_text("server-1")
 
     def restore_hysteria_state(self):
         app.HY2_LAST_ACCOUNTS = self.original_last
@@ -154,6 +157,67 @@ class HysteriaTests(unittest.TestCase):
             view = app.get_traffic_view()
         self.assertEqual(view[0]["day_down"], "5.0KiB")
         self.assertEqual(view[0]["day_up"], "3.0KiB")
+
+    def test_cumulative_counters_do_not_double_count_and_survive_restart(self):
+        samples = [
+            {"alice": {"tx": 4096, "rx": 1024}},
+            {"alice": {"tx": 4096, "rx": 1024}},
+            {"alice": {"tx": 5120, "rx": 1536}},
+        ]
+        with mock.patch.object(app, "hy2_api", side_effect=samples) as api:
+            for _ in samples:
+                app.poll_hysteria2_traffic()
+        self.assertEqual(api.call_args_list, [mock.call("/traffic")] * 3)
+        self.assertEqual(app.hy2_traffic_rows()["alice"]["day_down"], "5.0KiB")
+        self.assertEqual(app.hy2_traffic_rows()["alice"]["day_up"], "1.5KiB")
+
+        # A fresh process can have higher counters than the old one already.
+        # Its generation marker still ensures those bytes are all accounted for.
+        app.HY2_GENERATION_PATH.write_text("server-2")
+        with mock.patch.object(app, "hy2_api", return_value={"alice": {"tx": 8192, "rx": 2048}}):
+            app.poll_hysteria2_traffic()
+        self.assertEqual(app.hy2_traffic_rows()["alice"]["day_down"], "13.0KiB")
+        self.assertEqual(app.hy2_traffic_rows()["alice"]["day_up"], "3.5KiB")
+
+    def test_failed_checkpoint_does_not_clear_hysteria_counters(self):
+        with mock.patch.object(app, "hy2_api", return_value={"alice": {"tx": 4096, "rx": 1024}}), \
+             mock.patch.object(app, "write_json", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                app.poll_hysteria2_traffic()
+        self.assertFalse(app.HY2_TRAFFIC_PATH.exists())
+
+        with mock.patch.object(app, "hy2_api", return_value={"alice": {"tx": 6144, "rx": 2048}}):
+            app.poll_hysteria2_traffic()
+        self.assertEqual(app.hy2_traffic_rows()["alice"]["day_down"], "6.0KiB")
+        self.assertEqual(app.hy2_traffic_rows()["alice"]["day_up"], "2.0KiB")
+
+    def test_sample_is_discarded_if_hysteria_restarts_mid_request(self):
+        with mock.patch.object(app, "hy2_generation", side_effect=["server-1", "server-2"]), \
+             mock.patch.object(app, "hy2_api", return_value={"alice": {"tx": 4096, "rx": 1024}}):
+            with self.assertRaisesRegex(ValueError, "restarted during"):
+                app.poll_hysteria2_traffic()
+        self.assertFalse(app.HY2_TRAFFIC_PATH.exists())
+
+    def test_old_hourly_history_is_migrated_without_losing_totals(self):
+        app.write_json(app.HY2_TRAFFIC_PATH, {
+            "alice": {str(int(time.time() // 3600)): [1024, 512]},
+        })
+        with mock.patch.object(app, "hy2_api", return_value={"alice": {"tx": 2048, "rx": 1024}}):
+            app.poll_hysteria2_traffic()
+        self.assertEqual(app.hy2_traffic_rows()["alice"]["day_down"], "3.0KiB")
+        self.assertEqual(app.hy2_traffic_rows()["alice"]["day_up"], "1.5KiB")
+        self.assertEqual(app.load_json(app.HY2_TRAFFIC_PATH, {})["version"], 2)
+
+    def test_config_change_flushes_traffic_before_hysteria_restart(self):
+        with mock.patch.object(app, "hy2_api", return_value={}), \
+             mock.patch.object(app, "poll_hysteria2_traffic") as flush:
+            app.sync_hysteria2_config()
+            self.assertEqual(flush.call_count, 0)
+            settings = app.get_settings()
+            settings["hysteria2_port"] = 8443
+            app.write_json(app.SETTINGS_PATH, settings)
+            app.sync_hysteria2_config()
+            flush.assert_called_once_with()
 
     def test_hysteria_secrets_are_not_exposed_to_admin(self):
         settings = app.admin_settings(app.get_settings())
