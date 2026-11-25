@@ -13,12 +13,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Python syntax
-        run: python3 -m py_compile mita/webapp.py
+        run: python3 -m py_compile mita/webapp.py mita/daemon.py
       - name: Backend regression tests
         run: python3 -m unittest discover -s tests -v
       - name: Shell syntax and offline Linux installer checks
         run: |
-          bash -n mita/run.sh
+          bash -n mita/run-backend.sh
+          sh -n hysteria/watch.sh
           bash -n mita/install-linux.sh
           export MITA_INSTALL_ARCH=x86_64
           bash mita/install-linux.sh clashmi deb --dry-run | grep -F 'KaringX/clashmi|'
@@ -91,6 +92,7 @@ jobs:
         run: |
           docker build -t mita-ci mita
           docker run --rm --network none --entrypoint /usr/local/bin/awgm-box mita-ci version
+          docker build --target mita-runtime -t mita-server-ci mita
           docker build --target awgm-box-runtime -t awgm-box-ci mita
           docker run --rm --network none awgm-box-ci version
 

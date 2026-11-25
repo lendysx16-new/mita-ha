@@ -1,9 +1,10 @@
 services:
-  mita:
+  backend:
     build: ./mita
     init: true
     network_mode: host
     restart: unless-stopped
+    command: ["/run-backend.sh"]
     environment:
       MITA_ADMIN_PASSWORD: ${MITA_ADMIN_PASSWORD:-}
       MITA_PUBLIC_HOST: ${MITA_PUBLIC_HOST:-localhost}
@@ -11,8 +12,39 @@ services:
       MITA_SUBSCRIPTION_BASE_URL: ${MITA_SUBSCRIPTION_BASE_URL:-http://localhost:8099}
       MITA_POSTGRES_DSN: ${MITA_POSTGRES_DSN:-}
       MITA_OUTBOUND_PROBE_URL: ${MITA_OUTBOUND_PROBE_URL:-}
+      MITA_CONTROL_SOCKET: /data/mita-control.sock
+      MITA_HY2_HOST: ${MITA_HY2_HOST:-}
+      MITA_HY2_PORT: ${MITA_HY2_PORT:-443}
     volumes:
       - mita-data:/data
+
+  mita:
+    build:
+      context: ./mita
+      target: mita-runtime
+    init: true
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - mita-data:/data
+
+  hysteria2:
+    image: tobyxdd/hysteria:v2.14.0
+    profiles: ["hysteria2"]
+    init: true
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/watch.sh"]
+    volumes:
+      - mita-data:/data:ro
+      - ./hysteria/watch.sh:/watch.sh:ro
+      - ${HYSTERIA_CERT_DIR:-./hysteria/certs}:/certs:ro
 
   awgm-box:
     build:

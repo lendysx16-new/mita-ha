@@ -26,3 +26,6 @@ Thumbs.db
 
 # Router config rendered for `awgm-box check` (tests/render_router_config.py)
 /ci-router/
+
+# TLS private keys for the optional Hysteria 2 server
+/hysteria/certs/

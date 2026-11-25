@@ -47,6 +47,17 @@ COPY --from=awgm-box-downloader /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert
 COPY --from=awgm-box-downloader /usr/local/bin/awgm-box /usr/local/bin/awgm-box
 ENTRYPOINT ["/usr/local/bin/awgm-box"]
 
+FROM debian:bookworm-slim AS mita-runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=mita-routed-builder /out/mita /usr/bin/mita
+COPY daemon.py /app/daemon.py
+RUN chmod 0755 /usr/bin/mita /app/daemon.py
+CMD ["python3", "/app/daemon.py"]
+
 FROM debian:bookworm-slim
 
 RUN apt-get update \
@@ -55,13 +66,15 @@ RUN apt-get update \
 
 COPY --from=mita-routed-builder /out/mita /usr/bin/mita
 COPY --from=awgm-box-downloader /usr/local/bin/awgm-box /usr/local/bin/awgm-box
-COPY run.sh /run.sh
+COPY run-backend.sh /run-backend.sh
 COPY webapp.py /app/webapp.py
 COPY subscription.html /app/subscription.html
 COPY admin.html /app/admin.html
 COPY clients.json /app/clients.json
 
-RUN chmod 0755 /usr/bin/mita /run.sh /app/webapp.py \
+RUN chmod 0755 /usr/bin/mita /run-backend.sh /app/webapp.py \
     && chmod 0644 /app/subscription.html /app/admin.html /app/clients.json
 
-CMD ["/run.sh"]
+HEALTHCHECK --interval=5s --timeout=2s --start-period=30s --retries=12 \
+    CMD python3 -c 'import socket; socket.create_connection(("127.0.0.1", 8098), timeout=2).close()' || exit 1
+CMD ["/run-backend.sh"]
