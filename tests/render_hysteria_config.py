@@ -14,7 +14,7 @@ settings = {
     "hysteria2_port": 8443,
     "hysteria2_auth_secret": "ci-auth-secret",
     "hysteria2_stats_secret": "ci-stats-secret",
-    "routing_final": "reject",
+    "routing_final": "block",
     "router_password": "ci-router-password",
 }
 users = [
