@@ -265,6 +265,35 @@ class HysteriaTests(unittest.TestCase):
         conn.connect.assert_called_once_with(socket_path)
         conn.sendall.assert_called_once_with(b"restart\n")
 
+    def test_panel_status_reports_whether_hysteria_answers(self):
+        self.addCleanup(app.HY2_STATUS_CACHE.update, at=0.0, value=None)
+
+        def fresh():
+            app.HY2_STATUS_CACHE.update(at=0.0, value=None)
+            return app.hysteria2_status()
+
+        settings = app.get_settings()
+        settings["hysteria2_enabled"] = False
+        app.write_json(app.SETTINGS_PATH, settings)
+        self.assertEqual(fresh(), {"enabled": False})
+        settings["hysteria2_enabled"] = True
+        app.write_json(app.SETTINGS_PATH, settings)
+
+        status = fresh()  # enabled, but the backend has not written the config yet
+        self.assertFalse(status["running"])
+        self.assertIn("hysteria-config volume", status["error"])
+
+        app.write_json(app.HY2_CONFIG_PATH, {"listen": ":443"})
+        with mock.patch.object(app, "hy2_api", return_value={"alice": 2, "dev_abc": 1}) as api:
+            self.assertEqual(fresh(), {"enabled": True, "running": True, "online": 3, "error": ""})
+            api.assert_called_once_with("/online", timeout=1.5)
+            app.hysteria2_status()
+            api.assert_called_once()  # cached for a few seconds
+        with mock.patch.object(app, "hy2_api", side_effect=app.urllib.error.URLError("refused")):
+            status = fresh()
+        self.assertFalse(status["running"])
+        self.assertIn("docker compose --profile hysteria2 up -d", status["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

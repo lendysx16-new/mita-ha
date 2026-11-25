@@ -563,9 +563,10 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
             <label class="span-2">Subscription base URL<input id="base" type="url" placeholder="https://vpn.example.com" spellcheck="false"></label>
             <label class="span-2">Contact email (optional)<input id="contactEmail" type="email" maxlength="254" placeholder="support@example.com" autocomplete="email" spellcheck="false"><span class="field-help">Shown on the public subscription page only when set. Leave blank to hide it.</span></label>
             <label class="check span-2"><input id="hy2Enabled" type="checkbox"> Add Hysteria 2 to subscriptions</label>
+            <div id="hy2Status" class="status-line span-2" role="status" hidden></div>
             <label>Hysteria 2 hostname<input id="hy2Host" placeholder="vpn.example.com" spellcheck="false"><span class="field-help">Leave blank to reuse the Mieru hostname.</span></label>
             <label>Hysteria 2 UDP port<input id="hy2Port" type="number" required min="1" max="65535" inputmode="numeric"></label>
-            <label class="span-2">Hysteria 2 TLS SNI (optional)<input id="hy2Sni" placeholder="vpn.example.com" spellcheck="false"><span class="field-help">Certificate is read from /certs/fullchain.pem and /certs/privkey.pem in the Hysteria container. Enable the Compose hysteria2 profile.</span></label>
+            <label class="span-2">Hysteria 2 TLS SNI (optional)<input id="hy2Sni" placeholder="vpn.example.com" spellcheck="false"><span class="field-help">Must match the TLS certificate. The certificate files and the hysteria2 Compose profile are set up on the server (see README).</span></label>
           </div></div>
           <div class="card-actions"><button id="saveSettings" class="btn" type="submit">Save connection</button></div>
         </form>
@@ -1081,6 +1082,7 @@ function fillSettings(s) {
   $('#hy2Host').value = s.hysteria2_host || '';
   $('#hy2Port').value = s.hysteria2_port || 443;
   $('#hy2Sni').value = s.hysteria2_sni || '';
+  renderHysteriaStatus();
   $('#logLevel').value = s.log_level || 'INFO';
   $('#postgresDsn').value = s.postgres_dsn || '';
   const dbVia = s.postgres_outbound || '';
@@ -1122,11 +1124,13 @@ async function load() {
   state.restart_pending = data.restart_pending === true;
   state.geo_dat = data.geo_dat || {};
   state.routing_active = data.routing_active === true;
+  state.hysteria2 = data.hysteria2 || {enabled: false};
   state.sing_box_route = data.sing_box_route || null;
   renderStats();
   renderUsers();
   renderDeviceDirectory();
   renderRouting();
+  renderHysteriaStatus();
   if (ROUTING_TABS.includes(state.tab) && !state.outbound_enabled) setTab('usersTab');
   if (state.user) {
     if (currentUser()) renderUserDetail();
@@ -1390,6 +1394,17 @@ function healthCell(name) {
 function healthMessage(name, health) {
   if (!health) return '';
   return health.ok ? name + ' works (' + health.latency_ms + ' ms).' : name + ' check failed: ' + (health.error || 'unknown error') + '.';
+}
+
+function renderHysteriaStatus() {
+  const el = $('#hy2Status');
+  const status = state.hysteria2 || {enabled: false};
+  el.hidden = !status.enabled;
+  if (!status.enabled) return;
+  el.dataset.state = status.running ? 'ok' : 'error';
+  el.textContent = status.running
+    ? 'Hysteria 2 is running · ' + plural(status.online || 0, 'client', 'clients') + ' online.'
+    : 'Subscriptions include Hysteria 2, but it is not working: ' + (status.error || 'no answer') + '.';
 }
 
 function renderSingBoxStatus() {

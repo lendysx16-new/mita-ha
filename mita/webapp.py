@@ -3572,7 +3572,7 @@ HY2_LAST_ACCOUNTS = None
 HY2_PENDING_KICKS = set()
 
 
-def hy2_api(path, method="GET", payload=None):
+def hy2_api(path, method="GET", payload=None, timeout=3):
     settings = get_settings()
     secret = settings.get("hysteria2_stats_secret", "")
     if not settings.get("hysteria2_enabled") or not secret:
@@ -3583,11 +3583,39 @@ def hy2_api(path, method="GET", payload=None):
         headers={"Authorization": secret, "Content-Type": "application/json"},
         method=method,
     )
-    with urllib.request.urlopen(request, timeout=3) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         data = response.read(1024 * 1024 + 1)
     if len(data) > 1024 * 1024:
         raise ValueError("Hysteria traffic response too large")
     return json.loads(data) if data else {}
+
+
+HY2_STATUS_TTL = 10
+HY2_STATUS_CACHE = {"at": 0.0, "value": None}
+
+
+def hysteria2_status():
+    """Whether the optional Hysteria server answers, for the admin panel (cached briefly)."""
+    if not get_settings().get("hysteria2_enabled"):
+        return {"enabled": False}
+    now = time.monotonic()
+    if HY2_STATUS_CACHE["value"] is not None and now - HY2_STATUS_CACHE["at"] < HY2_STATUS_TTL:
+        return HY2_STATUS_CACHE["value"]
+    status = {"enabled": True, "running": False, "online": 0, "error": ""}
+    if not HY2_CONFIG_PATH.exists():
+        status["error"] = ("the Hysteria config was not written: the backend needs the hysteria-config volume "
+                           "from compose.yaml")
+    else:
+        try:
+            online = hy2_api("/online", timeout=1.5)
+            status["running"] = True
+            status["online"] = sum(value for value in online.values() if type(value) is int) if isinstance(
+                online, dict) else 0
+        except (OSError, ValueError, urllib.error.URLError):
+            status["error"] = ("Hysteria is not answering. Start it with `docker compose --profile hysteria2 up -d` "
+                               "and check `docker compose logs hysteria2` (certificate paths, UDP port in use)")
+    HY2_STATUS_CACHE.update(at=now, value=status)
+    return status
 
 
 def sync_hysteria2_config():
@@ -4181,6 +4209,7 @@ class AdminHandler(CommonHandler):
             "geo_dat": geo_dat_status(),
             "routing_active": routing_active(settings),
             "sing_box_route": (sing_box_config_or_none(settings) or {}).get("route"),
+            "hysteria2": hysteria2_status(),
         }
 
     def route_get_traffic(self):

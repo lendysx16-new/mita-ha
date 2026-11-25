@@ -577,3 +577,19 @@ test('reopening an outbound restores its saved subscription fields', async () =>
   assert.equal(element('#outboundSubscriptionHeaders').value, source.headers);
   assert.equal(element('#outboundSubscriptionRefresh').checked, false);
 });
+
+test('Hysteria status warns when subscriptions include a server that does not answer', async () => {
+  const {ctx, element, state} = setup({outboundEnabled: true});
+  state.hysteria2 = {enabled: true, running: false, online: 0, error: 'Hysteria is not answering'};
+  await ctx.load();
+  assert.equal(element('#hy2Status').hidden, false);
+  assert.equal(element('#hy2Status').dataset.state, 'error');
+  assert.match(element('#hy2Status').textContent, /include Hysteria 2, but it is not working: Hysteria is not answering/);
+  state.hysteria2 = {enabled: true, running: true, online: 1, error: ''};
+  await ctx.load();
+  assert.equal(element('#hy2Status').dataset.state, 'ok');
+  assert.match(element('#hy2Status').textContent, /running · 1 client online/);
+  state.hysteria2 = {enabled: false};
+  await ctx.load();
+  assert.equal(element('#hy2Status').hidden, true);
+});

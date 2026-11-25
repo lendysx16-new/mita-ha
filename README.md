@@ -1,336 +1,184 @@
 # Mita + Hysteria 2 server
 
-A Docker Compose deployment of **mita**, the server of the
-[mieru](https://github.com/enfein/mieru) proxy protocol, with a local admin
-panel, per-user subscription links and awgm-box based routing through your
-provider servers.
+Docker Compose deployment of a [mieru](https://github.com/enfein/mieru) proxy server (Mita) with an
+admin panel, per-user subscription links, optional Hysteria 2, and routing through provider servers
+(awgm-box, a sing-box fork). Linux amd64/arm64.
 
-- Mita 3.40.0 (built from source with a per-account outbound patch) for Linux amd64 / arm64
-- admin panel: users, HWID devices, traffic, settings, outbounds and routing
-- add, change and delete users without restarting Mita
-- per-user subscription page and Mihomo YAML for Clash Mi, Karing, FlClashX and other clients
-- optional Hysteria 2.14 server alongside Mieru (same HWIDs, subscription, outbounds and traffic view)
-- outbounds from share links (Hysteria2, VLESS REALITY, Trojan, …) with health checks
-- routing policies with GeoSite / GeoIP categories, applied by awgm-box
-- automatic PostgreSQL backups and restore
+Services in `compose.yaml` (all use host networking):
 
-## Install
+| Service | What it runs | Started by |
+|---|---|---|
+| `backend` | admin panel, subscription server, awgm-box router | `docker compose up -d` |
+| `mita` | the Mieru server | `docker compose up -d` |
+| `hysteria2` | Hysteria 2 server | `docker compose --profile hysteria2 up -d` (optional) |
 
-Needs Docker Engine with the Compose plugin. Create `.env` next to
-`compose.yaml`:
+## Deploy
 
-```sh
-MITA_ADMIN_PASSWORD=...          # at least 24 characters, e.g. openssl rand -hex 24
-MITA_PUBLIC_HOST=vpn.example.com # host clients connect to
-MITA_PUBLIC_PORT=2022            # public TCP port of Mita (after port forwarding)
-MITA_SUBSCRIPTION_BASE_URL=https://vpn.example.com
-MITA_POSTGRES_DSN=               # optional: postgresql://user:password@host:5432/db for backups
-# MITA_HY2_HOST=vpn.example.com  # optional Hysteria 2 defaults, editable in the panel
-# MITA_HY2_PORT=443
-```
+Run every step on the server as root, in order. Replace `vpn.example.com` with the real domain.
 
-The public settings are only defaults for a fresh install; later change them
-in the admin panel. `.env` contains secrets, keep it private.
+1. **Install Docker** Engine with the Compose plugin (`docker compose version` must work).
 
-```sh
-docker compose up -d --build
-```
+2. **Get the code**
+   ```sh
+   git clone https://github.com/lendysx16-new/mita-ha.git /opt/mita-ha
+   cd /opt/mita-ha
+   ```
 
-The deployment has separate `backend` and `mita` containers. The backend runs
-the Python admin/subscription servers and the outbound-only awgm-box router;
-the `mita` container runs only the Mieru server. Both share the existing named
-`mita-data` volume. Hysteria gets only a separate `hysteria-config` volume and
-read-only certificates, never the users, settings or backup data in `/data`.
-The `hysteria-status` volume holds a process-generation marker for accounting.
-Mita listens on TCP 2022, subscriptions on TCP 8099 and the
-admin panel on `127.0.0.1:8098`. The backend controls Mita through an internal
-Unix socket; its **Restart Mita** action restarts only the Mita process.
-Existing volumes, accounts and subscription URLs are preserved when upgrading
-from the old single-container deployment.
+3. **Create `.env`** in `/opt/mita-ha` (keep it private, it holds secrets):
+   ```sh
+   cat > .env <<EOF
+   MITA_ADMIN_PASSWORD=$(openssl rand -hex 24)
+   MITA_PUBLIC_HOST=vpn.example.com
+   MITA_PUBLIC_PORT=2022
+   MITA_SUBSCRIPTION_BASE_URL=https://vpn.example.com
+   EOF
+   ```
+   `MITA_PUBLIC_*` are only defaults for the first start; later they are edited in the panel.
+   Optional variables are listed in [Environment variables](#environment-variables).
 
-All services use host networking because awgm-box's authenticated SOCKS5
-listeners and Mita's Unix socket are local to the VPS. Keep TCP 8097 (Hysteria
-authorization), TCP 8098 (admin), TCP 9090 (Hysteria stats) and the awgm-box
-SOCKS5 ports bound to loopback. Restrict public access to TCP 8099 with the
-firewall, and publish only `/sub/*` via your HTTPS reverse proxy.
+4. **Start**
+   ```sh
+   docker compose up -d --build
+   ```
+   The first build compiles Mita and takes a few minutes.
 
-### Optional Hysteria 2 inbound
+5. **Check**
+   ```sh
+   docker compose ps                 # backend is "healthy", mita is "running"
+   docker compose logs --tail 30 backend mita
+   ```
+   `backend` exits immediately if `MITA_ADMIN_PASSWORD` is missing or shorter than 24 characters.
 
-Hysteria 2 is a **second server**, not an awgm-box outbound. It is disabled by
-default so existing Mieru subscribers are unaffected. To enable it:
+6. **Open the firewall**: allow TCP `2022` (Mieru) and TCP `80`/`443` (reverse proxy). Do **not**
+   expose TCP `8099`, `8098`, `8097`, `9090` or the loopback SOCKS ports (see [Ports](#ports)).
 
-1. Use an existing TLS certificate and private key. By default Hysteria reads
-   `hysteria/certs/fullchain.pem` and `hysteria/certs/privkey.pem`. If the server
-   already has Certbot certificates, mount the **whole** Let's Encrypt tree
-   read-only, including `archive/` (needed for the symlinks in `live/`):
+7. **Publish subscriptions** through an HTTPS reverse proxy. Only `/sub/*` may be public. Caddy:
+   ```caddy
+   vpn.example.com {
+     handle /sub/* {
+       reverse_proxy http://127.0.0.1:8099
+     }
+   }
+   ```
 
+8. **Open the admin panel** from your computer through an SSH tunnel, then browse to
+   http://127.0.0.1:8098 and sign in as `admin` with `MITA_ADMIN_PASSWORD`:
+   ```sh
+   ssh -L 8098:127.0.0.1:8098 root@vpn.example.com
+   ```
+
+9. **Create users** in **Users → + Add user**. The first start creates a user `change-me` with a
+   random password; delete it. Each user's subscription link (`https://vpn.example.com/sub/<token>`)
+   is on the user's page; clients import it, a browser shows a setup page.
+
+## Optional: Hysteria 2
+
+1. **TLS certificate** for the Hysteria hostname. Either put `fullchain.pem` and `privkey.pem` into
+   `/opt/mita-ha/hysteria/certs/`, or reuse Certbot/Let's Encrypt certificates by adding to `.env`:
    ```dotenv
    HYSTERIA_CERT_DIR=/etc/letsencrypt
    MITA_HY2_TLS_CERT=/certs/live/vpn.example.com/fullchain.pem
    MITA_HY2_TLS_KEY=/certs/live/vpn.example.com/privkey.pem
    ```
-
-   Any other host certificate directory also works: `HYSTERIA_CERT_DIR` is
-   mounted inside Hysteria at `/certs`. Set `MITA_HY2_TLS_CERT` and
-   `MITA_HY2_TLS_KEY` to the corresponding **container paths**, if their names
-   differ. Hysteria reads certificates on each TLS handshake, so renewed files
-   need no copy or restart. The hostname (or optional SNI) must match the cert.
-2. In **Settings → Public connection**, enable **Add Hysteria 2 to subscriptions**.
-   Set the hostname, UDP port (443 by default) and optional SNI, then save.
-3. Start the additional container:
-
+   `HYSTERIA_CERT_DIR` is mounted at `/certs` inside the container; the two paths are container
+   paths. Renewed certificates are picked up without a restart.
+2. **Pick the UDP port.** If Caddy runs on the same IP, it uses UDP 443 for HTTP/3: either use another
+   port (e.g. `8443`) or disable HTTP/3 in the Caddyfile global options:
+   ```caddy
+   {
+     servers :443 {
+       protocols h1 h2
+     }
+   }
+   ```
+3. **Apply** `.env` changes and start Hysteria:
    ```sh
+   docker compose up -d
    docker compose --profile hysteria2 up -d
    ```
+4. **Enable it in the panel**: **Settings → Public connection → Add Hysteria 2 to subscriptions**, set
+   hostname (must match the certificate), UDP port, optional SNI, **Save connection**.
+5. **Check**: the panel shows "Hysteria 2 is running" under the checkbox. If it shows an error, read
+   `docker compose logs --tail 50 hysteria2`.
+6. **Open the UDP port** in the firewall. Users refresh their subscription and get a second node.
 
-4. Allow the chosen UDP port in the VPS firewall. Users only need to **update
-   their existing subscription** in Mihomo; it gains a selectable Hysteria 2
-   node alongside Mieru, with device-specific credentials when HWID is used.
+## Optional: route traffic through provider servers
 
-**If Caddy is on the same IP:** Caddy enables HTTP/3 on UDP 443 by default,
-which conflicts with Hysteria's default UDP 443. Either choose another HY2 UDP
-port (for example `8443`) in the admin panel and open that port, or disable
-HTTP/3 for Caddy's HTTPS listener with this global Caddyfile option:
+All in the admin panel; changes apply without restarting the server unless the panel asks for it.
 
-```caddy
-{
-  servers :443 {
-    protocols h1 h2
-  }
-}
-```
+1. **Outbounds → + Add outbound**: paste a share link (`vless://` incl. REALITY/XHTTP, `hysteria2://`,
+   `trojan://`, `ss://`, `tuic://`, `vmess://`, `socks5://`), awgm-box JSON, or **Import from
+   subscription URL**. The **Status** column must show `OK · N ms`.
+2. **Routing → + Add policy**: domains, CIDRs and categories (`geosite:youtube`, `geoip:ru`, …) →
+   an outbound, Direct or Block. Set **Everything else** at the bottom. First match wins.
+3. If a yellow **Restart Mita** bar appears, press it (needed after adding/removing outbounds).
+4. Optional per user: **Users → user → Outbound for PROXY**.
 
-Keep any existing global Caddy options in that same top-level `{ ... }` block.
+## Optional: PostgreSQL backups
 
-For Mieru-only operation use `docker compose up -d --build` as before. Hysteria
-2 reads an automatically generated config from the existing data volume. Its
-local auth service is at `127.0.0.1:8097` and the statistics API is at
-`127.0.0.1:9090`, both protected by random secrets stored in settings. Do not
-forward these ports. Hysteria restarts when the generated configuration changes
-(for example when an account's outbound changes); active QUIC connections then
-reconnect. New and revoked credentials are checked dynamically through the
-backend and revoked credentials are also kicked from active sessions.
+Set the connection in **Settings → Server settings** (or `MITA_POSTGRES_DSN` in `.env` before the
+first start). Snapshots are written on start and every 24 h (newest 30 kept) to table
+`mita_backups`. If the direct path to the database is unreliable, choose an outbound in
+**Connect via**.
 
-When routing is enabled Hysteria uses the **same awgm-box policies** as Mieru,
-including individual account outbound overrides; the rule selection is based
-on Hysteria 2.14's authenticated client ID. Localhost destinations are always
-blocked. Private-network access follows the account's LAN setting, including
-domains resolving to private addresses. Hysteria's ACL engine resolves domain
-requests on the server before matching the rules; switching the checks to
-`cidr(..., dst.host)` does not prevent that resolution and would remove DNS
-rebinding protection. Hysteria
-traffic is polled every minute without clearing server counters; cumulative
-checkpoints and the process-generation marker prevent duplicate accounting
-after backend failures or Hysteria restarts. A sudden Hysteria crash can still
-lose traffic since the last poll. Totals are added to Mieru's 24h/7d/30d
-figures in the Traffic tab (hourly granularity). The history is included in
-PostgreSQL backups. If the backend stops, *new* Hysteria sessions are denied
-until it returns. The backend still owns awgm-box, so restarting it also
-temporarily interrupts traffic that uses routed outbounds. Direct Hysteria
-sessions do not depend on the router once authenticated.
-
-### Admin panel
-
-Open it through an SSH tunnel and sign in as `admin` with
-`MITA_ADMIN_PASSWORD`:
-
+Restore into a new, empty installation (before its first start):
 ```sh
-ssh -L 8098:127.0.0.1:8098 user@server
-```
-
-then open http://127.0.0.1:8098. The **Users** tab lists accounts; open one for
-its subscription link, password and token actions, HWID devices, device limit,
-LAN access and outbound. **Devices** lists every registered device,
-**Traffic** shows per-user and per-device totals (24 hours, 7 and 30 days), and
-**Settings** holds the public connection, contact email, log level and
-PostgreSQL. User changes are applied with `mita reload`.
-
-The first start creates the account `change-me` with a random password; rename
-or delete it after adding your own users. Accounts that still use the old
-public placeholder password are flagged with **Default password**.
-
-### Subscriptions
-
-Block external access to TCP 8099 with the host firewall and publish only
-`/sub/*` through your HTTPS reverse proxy, for example Caddy:
-
-```caddy
-vpn.example.com {
-  handle /sub/* {
-    reverse_proxy http://127.0.0.1:8099
-  }
-}
-```
-
-Each user gets `https://vpn.example.com/sub/<token>`. Clients receive Mihomo
-YAML from it; a browser gets a two-step setup page (install a client, then
-import the profile with its deep link). Add `?raw=1` to see the YAML in a
-browser. An optional **Contact email** from Settings is shown on that page.
-
-Clients that send `x-hwid` (Clash Mi and Karing with `xhwid=true`, FlClashX,
-Koala Clash, SlothClash, ClashFest) get a private credential per device behind
-the same URL, limited by the user's device limit. **Legacy credential enabled**
-keeps the shared username/password working for clients without HWID; turn it
-off once all devices have registered. Clients, their HWID support, deep links
-and release assets are listed in `mita/clients.json`, which the backend, the
-setup page and `mita/install-linux.sh` (Linux terminal install on the setup
-page) all read.
-
-## Route traffic through outbounds
-
-The backend image bundles [awgm-box release 42](https://github.com/hoaxisr/awgm-box/releases/tag/42)
-for amd64 and arm64. It uses the existing outbound settings and backups.
-The bundled awgm-box decides where traffic goes. Mita
-sends every connection to awgm-box's loopback router port; awgm-box applies
-your routing policies and sends each connection to one of your outbounds,
-directly, or blocks it. Routing stays off (Mita connects directly)
-until you add an outbound or a policy.
-
-### Outbounds tab
-
-Add your provider servers. Paste a share link (`hysteria2://` / `hy2://`,
-`vless://` including REALITY, `vmess://`, `trojan://`, `ss://`, `tuic://`,
-`socks5://`, `http://`) or one sing-box outbound JSON object, and give it a
-name (the link's own name is used if you leave it empty). awgm-box checks the
-outbound before it is saved. Outbounds cannot be renamed, and one that a
-policy, **Everything else** or an account still uses cannot be deleted.
-
-VLESS XHTTP links and Clash `xhttp-opts` are supported. The importer maps the
-path, host, mode and common XHTTP options to awgm-box. For advanced layouts
-such as a separate download transport, use native awgm-box JSON.
-Native JSON also supports Mieru, TrustTunnel, AmneziaWG (`type: awg`), and
-MASQUE (`type: masque-client`). AmneziaWG and MASQUE use the userspace network
-stack. Mieru can also be imported from Clash subscriptions.
-
-For REALITY, awgm-box 42 leaves X25519MLKEM768 enabled by default with
-compatible uTLS fingerprints. The importer preserves an explicit
-`support-x25519mlkem768` flag from Clash `reality-opts` or a share-link query.
-In native outbound JSON the field is `tls.reality.support_x25519mlkem768`.
-This controls the TLS key share.
-
-To choose a server from a provider subscription, open **Add outbound → Import
-from subscription URL**. If your provider requires custom request headers,
-paste them as one `Name: value` pair per line before clicking **Load servers**.
-Mita drops custom headers if redirected to another host or port. Filter by a named group
-when the subscription includes groups, choose a server, then save it as an
-outbound. The importer supports public HTTPS subscriptions with plain or
-base64-encoded share links, sing-box JSON outbounds, compatible Clash proxy
-entries, and Happ/INCY subscriptions that return Xray JSON profiles. For Xray
-profiles Mita imports individual proxy servers and uses its own DNS and
-routing. Groups are filters; the saved outbound points to the server you chose.
-Use **Test selected server** to check a candidate before saving. To switch an
-existing outbound, edit it, load servers from its saved subscription, and save
-the new selection. Routing policies and account assignments keep the same
-outbound name.
-
-Leave **Refresh the selected server from its subscription daily** enabled to
-keep tracking that server by the provider's name and protocol. If it is
-missing, ambiguous, or the new configuration cannot be applied, Mita keeps
-the previous config and retries in about an hour. A successful change
-restarts awgm-box so active connections through it may reconnect.
-The subscription URL and request headers are kept in settings and backups
-even when daily refresh is disabled, so you can still switch servers manually.
-
-The **Status** column shows whether each outbound actually works: Mita fetches
-`https://www.gstatic.com/generate_204` through the outbound and shows the
-latency or the error. It checks on save, every five minutes, and when you press
-**Test**; a failed check does not block saving. Set `MITA_OUTBOUND_PROBE_URL`
-in `.env` to probe a different http(s) URL. If awgm-box exits, it is restarted
-with increasing delays up to one minute; while it is down, routed traffic fails.
-
-### Routing tab
-
-Each **policy** sends its domains, CIDRs and GeoSite / GeoIP categories to one
-saved outbound, directly, or blocks them. Policies are checked top to bottom
-(reorder them with the arrows); the first match wins. **Everything else**
-decides what happens to traffic no policy matched (direct by default). Saving
-a policy restarts only awgm-box, so it applies within a second without touching
-Mita; active connections through awgm-box are reset.
-
-- Domains match the domain and its subdomains. A policy holds up to 4,096
-  domains and 4,096 networks of its own.
-- Categories are written `geosite:<name>` (domains) or `geoip:<name>` (IP
-  networks), up to eight per policy, for example `geosite:youtube`,
-  `geosite:telegram` + `geoip:telegram`, `geosite:category-ads-all`. Names come
-  from [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat/tree/sing/geo)
-  (`sing` branch); a GitHub link to any sing-box source `.json` works too. A
-  wrong name fails on save with "HTTP 404 (no such category?)".
-- Categories are stored as local awgm-box rule sets without losing anything:
-  exact domains, suffixes, keywords and regular expressions all apply, and
-  there is no entry limit. They are downloaded on save and refreshed daily;
-  awgm-box picks up refreshed files without a restart.
-- **Geo sources** can point `geosite:` and/or `geoip:` at a v2ray `.dat` file
-  on GitHub (release downloads work) or jsDelivr instead, for example Runet
-  Freedom's
-  `https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat`
-  for `geosite:ru-blocked`; `geosite:<name>@<attribute>` keeps only entries with
-  that attribute. Files are cached in `/data/geo-cache` (not in backups).
-- **Import GeoSite / GeoIP file** copies the suffixes and CIDRs of a local
-  sing-box source file into the policy's own fields once.
-- Clients that connect by IP are sniffed (TLS SNI / HTTP Host) so domain rules
-  still apply. **Generated awgm-box route** shows the rules awgm-box runs.
-
-### Restart Mita and per-account outbounds
-
-Policy changes never need a Mita restart. Mita itself only needs one when
-outbounds are added or removed, so that they can be chosen for an account, or
-when routing is turned on for the first time. The **Restart Mita** button at
-the top of both tabs then turns prominent; it requests a Mita process restart
-over a Unix socket in the `mita` container. Connections drop for a few seconds
-while the admin panel and awgm-box keep running.
-
-In a user's settings, **Outbound for PROXY** makes every policy that sends
-traffic to an outbound use the chosen outbound instead for that account and its
-HWID devices; direct, blocked and **Everything else = direct** traffic is
-unchanged. Client subscription URLs and configs stay the same.
-
-Outbound configs, policies and their credentials are included in PostgreSQL
-backups; treat them as confidential. Settings from earlier versions are moved
-automatically on start: the single built-in sing-box becomes the outbound
-`managed-sing-box`, SOCKS5 proxies from the old JSON editor become `socks`
-outbounds, and a catch-all `*` policy becomes **Everything else**.
-
-If you previously enabled the external `sing-box` Compose profile, stop that
-service before enabling the new `awgm-box` profile. Move its local
-`sing-box/config.json` to `awgm-box/config.json`.
-
-An external awgm-box (the `awgm-box` Compose profile with
-`awgm-box/config.example.json`) still works: keep its SOCKS5 inbound on
-`127.0.0.1:1080` with a password and add it in the Outbounds tab as
-`socks5://user:password@127.0.0.1:1080`.
-
-## PostgreSQL backups and restore
-
-With a PostgreSQL connection set, Mita stores a compressed snapshot in the
-table `mita_backups` on every start and every 24 hours (retrying every five
-minutes on errors) and keeps the newest 30. A snapshot contains `users.json`
-(credentials, devices, subscription tokens), `settings.json` (including
-outbounds and routing), `mita-server.json` and the traffic metrics, but no logs.
-Treat the database as confidential.
-
-**Connect via** under Settings sends backups and log forwarding through one of
-your outbounds instead of directly, for example when the direct path to the
-database drops large packets (small queries work, backups hang). awgm-box then
-forwards `127.0.0.1:1179` to the database host and port from the connection
-string through that outbound; TLS to the database still verifies its real host
-name. This needs a single TCP host in the connection string, and an outbound in
-use there cannot be deleted. A stalled connection gives up after about a minute,
-and the backup status shows the database error.
-
-To restore into a new installation, set `MITA_POSTGRES_DSN` in `.env` and run,
-before the first start:
-
-```sh
+echo 'MITA_POSTGRES_DSN=postgresql://user:password@host:5432/db' >> .env
 docker compose build
 docker compose run --rm --entrypoint python3 backend /app/webapp.py --restore-postgres latest
 docker compose up -d
 ```
+`latest` can be replaced with an `id` from `mita_backups`. Restore refuses a non-empty volume; set
+`MITA_DATA_VOLUME=<new-name>` in `.env` to restore next to old data.
 
-Replace `latest` with an `id` from `mita_backups` to pick a snapshot. The
-restore refuses a non-empty data volume; set `MITA_DATA_VOLUME` in `.env` to a
-new volume name to keep an old one. An interrupted restore blocks startup until
-you rerun it. Point the original hostname and routes at the new server to keep
-subscription URLs working, and run only one instance against the same tables.
+## Update
+
+```sh
+cd /opt/mita-ha
+git pull
+docker compose up -d --build
+docker compose --profile hysteria2 up -d   # only if Hysteria is used
+```
+Data, users and subscription links are kept in the `mita-data` volume.
+
+## Reference
+
+### Environment variables
+
+| Variable | Required | Meaning |
+|---|---|---|
+| `MITA_ADMIN_PASSWORD` | yes | admin panel password, ≥ 24 characters |
+| `MITA_PUBLIC_HOST` | first start | public host of the Mieru server |
+| `MITA_PUBLIC_PORT` | first start | public TCP port of Mieru (default `2022`) |
+| `MITA_SUBSCRIPTION_BASE_URL` | first start | public HTTPS base of subscription links |
+| `MITA_POSTGRES_DSN` | no | PostgreSQL connection for backups and logs |
+| `MITA_HY2_HOST`, `MITA_HY2_PORT` | no | Hysteria defaults (editable in the panel) |
+| `HYSTERIA_CERT_DIR` | no | host directory mounted at `/certs` for Hysteria (default `./hysteria/certs`) |
+| `MITA_HY2_TLS_CERT`, `MITA_HY2_TLS_KEY` | no | certificate/key paths inside `/certs` |
+| `MITA_OUTBOUND_PROBE_URL` | no | URL used to test outbounds (default `https://www.gstatic.com/generate_204`) |
+| `MITA_DATA_VOLUME` | no | name of the data volume (default `mita-linux-data`) |
+
+### Ports
+
+| Port | Who listens | Expose publicly? |
+|---|---|---|
+| TCP 2022 | Mieru | yes |
+| UDP 443 (or chosen) | Hysteria 2 | yes, if Hysteria is used |
+| TCP 8099 | subscription server | no, only `/sub/*` via the reverse proxy |
+| TCP 8098 | admin panel (127.0.0.1) | no, use an SSH tunnel |
+| TCP 8097, 9090 | Hysteria auth / stats (127.0.0.1) | no |
+| TCP 1081+, 1179, 1180, 2081+ | awgm-box SOCKS and forwards (127.0.0.1) | no |
+
+### Troubleshooting
+
+| Symptom | Check / fix |
+|---|---|
+| `backend` keeps restarting | `docker compose logs backend`; usually `MITA_ADMIN_PASSWORD` missing or short |
+| `mita` not starting | it waits for `backend` to be healthy; `docker compose logs mita` |
+| subscription link 404 | the reverse proxy must forward `/sub/*` to `127.0.0.1:8099` |
+| Hysteria error in the panel | `docker compose --profile hysteria2 up -d`; `docker compose logs hysteria2` (certificate path, UDP port busy) |
+| outbound Status shows an error | **Test** in Outbounds; the error text comes from awgm-box |
+| backup error in Settings | the status shows the database error; try **Connect via** an outbound |
 
 ## Development
 
@@ -338,6 +186,4 @@ subscription URLs working, and run only one instance against the same tables.
 python3 -m unittest discover -s tests -v
 node --test tests/*.mjs
 ```
-
-The tests use temporary files and mock Mita and awgm-box. CI also builds the
-image, which compiles the patched Mita core and runs its test.
+CI also builds the images and checks generated awgm-box and Hysteria configs with the real binaries.
