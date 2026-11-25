@@ -116,7 +116,7 @@ jobs:
           hy2() {
             docker run --rm --network none -v "$out:/config:ro" \
               --entrypoint hysteria tobyxdd/hysteria:v2.14.0 \
-              acl test -c /config/server.yaml --no-resolve "$@"
+              acl test -c /config/server.yaml "$@"
           }
           check_acl() {
             local expected="$1"
@@ -132,6 +132,6 @@ jobs:
               return 1
             fi
           }
-          check_acl reject --auth alice 10.0.0.1:80
-          check_acl router --auth bob 10.0.0.1:80
-          check_acl reject --auth bob 127.0.0.1:80
+          check_acl reject --ipv4 10.0.0.1 --auth alice 10.0.0.1:80
+          check_acl router --ipv4 10.0.0.1 --auth bob 10.0.0.1:80
+          check_acl reject --ipv4 127.0.0.1 --auth bob 127.0.0.1:80
