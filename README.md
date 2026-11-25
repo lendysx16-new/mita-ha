@@ -1,4 +1,4 @@
-# Mita server
+# Mita + Hysteria 2 server
 
 A Docker Compose deployment of **mita**, the server of the
 [mieru](https://github.com/enfein/mieru) proxy protocol, with a local admin
@@ -9,6 +9,7 @@ provider servers.
 - admin panel: users, HWID devices, traffic, settings, outbounds and routing
 - add, change and delete users without restarting Mita
 - per-user subscription page and Mihomo YAML for Clash Mi, Karing, FlClashX and other clients
+- optional Hysteria 2.14 server alongside Mieru (same HWIDs, subscription, outbounds and traffic view)
 - outbounds from share links (Hysteria2, VLESS REALITY, Trojan, …) with health checks
 - routing policies with GeoSite / GeoIP categories, applied by awgm-box
 - automatic PostgreSQL backups and restore
@@ -24,6 +25,8 @@ MITA_PUBLIC_HOST=vpn.example.com # host clients connect to
 MITA_PUBLIC_PORT=2022            # public TCP port of Mita (after port forwarding)
 MITA_SUBSCRIPTION_BASE_URL=https://vpn.example.com
 MITA_POSTGRES_DSN=               # optional: postgresql://user:password@host:5432/db for backups
+# MITA_HY2_HOST=vpn.example.com  # optional Hysteria 2 defaults, editable in the panel
+# MITA_HY2_PORT=443
 ```
 
 The public settings are only defaults for a fresh install; later change them
@@ -33,9 +36,98 @@ in the admin panel. `.env` contains secrets, keep it private.
 docker compose up -d --build
 ```
 
-The service uses host networking: Mita listens on TCP 2022, the subscription
-server on 8099 and the admin panel only on `127.0.0.1:8098`. Mita users can
-never reach the host's loopback addresses.
+The deployment has separate `backend` and `mita` containers. The backend runs
+the Python admin/subscription servers and the outbound-only awgm-box router;
+the `mita` container runs only the Mieru server. Both share the existing named
+`mita-data` volume. Hysteria gets only a separate `hysteria-config` volume and
+read-only certificates, never the users, settings or backup data in `/data`.
+The `hysteria-status` volume holds a process-generation marker for accounting.
+Mita listens on TCP 2022, subscriptions on TCP 8099 and the
+admin panel on `127.0.0.1:8098`. The backend controls Mita through an internal
+Unix socket; its **Restart Mita** action restarts only the Mita process.
+Existing volumes, accounts and subscription URLs are preserved when upgrading
+from the old single-container deployment.
+
+All services use host networking because awgm-box's authenticated SOCKS5
+listeners and Mita's Unix socket are local to the VPS. Keep TCP 8097 (Hysteria
+authorization), TCP 8098 (admin), TCP 9090 (Hysteria stats) and the awgm-box
+SOCKS5 ports bound to loopback. Restrict public access to TCP 8099 with the
+firewall, and publish only `/sub/*` via your HTTPS reverse proxy.
+
+### Optional Hysteria 2 inbound
+
+Hysteria 2 is a **second server**, not an awgm-box outbound. It is disabled by
+default so existing Mieru subscribers are unaffected. To enable it:
+
+1. Use an existing TLS certificate and private key. By default Hysteria reads
+   `hysteria/certs/fullchain.pem` and `hysteria/certs/privkey.pem`. If the server
+   already has Certbot certificates, mount the **whole** Let's Encrypt tree
+   read-only, including `archive/` (needed for the symlinks in `live/`):
+
+   ```dotenv
+   HYSTERIA_CERT_DIR=/etc/letsencrypt
+   MITA_HY2_TLS_CERT=/certs/live/vpn.example.com/fullchain.pem
+   MITA_HY2_TLS_KEY=/certs/live/vpn.example.com/privkey.pem
+   ```
+
+   Any other host certificate directory also works: `HYSTERIA_CERT_DIR` is
+   mounted inside Hysteria at `/certs`. Set `MITA_HY2_TLS_CERT` and
+   `MITA_HY2_TLS_KEY` to the corresponding **container paths**, if their names
+   differ. Hysteria reads certificates on each TLS handshake, so renewed files
+   need no copy or restart. The hostname (or optional SNI) must match the cert.
+2. In **Settings → Public connection**, enable **Add Hysteria 2 to subscriptions**.
+   Set the hostname, UDP port (443 by default) and optional SNI, then save.
+3. Start the additional container:
+
+   ```sh
+   docker compose --profile hysteria2 up -d
+   ```
+
+4. Allow the chosen UDP port in the VPS firewall. Users only need to **update
+   their existing subscription** in Mihomo; it gains a selectable Hysteria 2
+   node alongside Mieru, with device-specific credentials when HWID is used.
+
+**If Caddy is on the same IP:** Caddy enables HTTP/3 on UDP 443 by default,
+which conflicts with Hysteria's default UDP 443. Either choose another HY2 UDP
+port (for example `8443`) in the admin panel and open that port, or disable
+HTTP/3 for Caddy's HTTPS listener with this global Caddyfile option:
+
+```caddy
+{
+  servers :443 {
+    protocols h1 h2
+  }
+}
+```
+
+Keep any existing global Caddy options in that same top-level `{ ... }` block.
+
+For Mieru-only operation use `docker compose up -d --build` as before. Hysteria
+2 reads an automatically generated config from the existing data volume. Its
+local auth service is at `127.0.0.1:8097` and the statistics API is at
+`127.0.0.1:9090`, both protected by random secrets stored in settings. Do not
+forward these ports. Hysteria restarts when the generated configuration changes
+(for example when an account's outbound changes); active QUIC connections then
+reconnect. New and revoked credentials are checked dynamically through the
+backend and revoked credentials are also kicked from active sessions.
+
+When routing is enabled Hysteria uses the **same awgm-box policies** as Mieru,
+including individual account outbound overrides; the rule selection is based
+on Hysteria 2.14's authenticated client ID. Localhost destinations are always
+blocked. Private-network access follows the account's LAN setting, including
+domains resolving to private addresses. Hysteria's ACL engine resolves domain
+requests on the server before matching the rules; switching the checks to
+`cidr(..., dst.host)` does not prevent that resolution and would remove DNS
+rebinding protection. Hysteria
+traffic is polled every minute without clearing server counters; cumulative
+checkpoints and the process-generation marker prevent duplicate accounting
+after backend failures or Hysteria restarts. A sudden Hysteria crash can still
+lose traffic since the last poll. Totals are added to Mieru's 24h/7d/30d
+figures in the Traffic tab (hourly granularity). The history is included in
+PostgreSQL backups. If the backend stops, *new* Hysteria sessions are denied
+until it returns. The backend still owns awgm-box, so restarting it also
+temporarily interrupts traffic that uses routed outbounds. Direct Hysteria
+sessions do not depend on the router once authenticated.
 
 ### Admin panel
 
@@ -86,7 +178,7 @@ page) all read.
 
 ## Route traffic through outbounds
 
-The Linux image bundles [awgm-box release 42](https://github.com/hoaxisr/awgm-box/releases/tag/42)
+The backend image bundles [awgm-box release 42](https://github.com/hoaxisr/awgm-box/releases/tag/42)
 for amd64 and arm64. It uses the existing outbound settings and backups.
 The bundled awgm-box decides where traffic goes. Mita
 sends every connection to awgm-box's loopback router port; awgm-box applies
@@ -183,9 +275,9 @@ Mita; active connections through awgm-box are reset.
 Policy changes never need a Mita restart. Mita itself only needs one when
 outbounds are added or removed, so that they can be chosen for an account, or
 when routing is turned on for the first time. The **Restart Mita** button at
-the top of both tabs then turns prominent; it runs `mita stop` and `mita start`
-inside the container, so connections drop for a few seconds while the admin
-panel and awgm-box keep running.
+the top of both tabs then turns prominent; it requests a Mita process restart
+over a Unix socket in the `mita` container. Connections drop for a few seconds
+while the admin panel and awgm-box keep running.
 
 In a user's settings, **Outbound for PROXY** makes every policy that sends
 traffic to an outbound use the chosen outbound instead for that account and its
@@ -230,7 +322,7 @@ before the first start:
 
 ```sh
 docker compose build
-docker compose run --rm --entrypoint python3 mita /app/webapp.py --restore-postgres latest
+docker compose run --rm --entrypoint python3 backend /app/webapp.py --restore-postgres latest
 docker compose up -d
 ```
 

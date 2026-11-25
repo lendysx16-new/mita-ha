@@ -1,3 +1,10 @@
+## Unreleased
+
+- Split the Mieru server and Python backend into separate Docker Compose containers using the existing shared data volume and a local Unix control socket. The backend still manages the outbound-only awgm-box process.
+- Add optional Hysteria 2.14 inbound in its own container, configured from the admin panel and published alongside Mieru in the same Mihomo subscription.
+- Reuse legacy/HWID device credentials through local HTTP authentication. Hysteria ACL forwards through the existing awgm-box router and retains per-account outbound overrides, LAN access, and loopback blocking.
+- Hysteria traffic counters are aggregated by hour into the current traffic view and PostgreSQL backups; disabled/rotated devices are disconnected via the Hysteria stats API.
+
 ## 3.40.0.2
 
 - Linux only: the project now runs as a Docker Compose service. The Home Assistant add-on packaging (add-on manifest, repository file, translations, base image, Ingress access) is removed; existing add-on installs no longer receive updates. Move them with a PostgreSQL backup and `--restore-postgres`.

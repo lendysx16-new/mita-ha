@@ -13,12 +13,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Python syntax
-        run: python3 -m py_compile mita/webapp.py
+        run: python3 -m py_compile mita/webapp.py mita/daemon.py
       - name: Backend regression tests
         run: python3 -m unittest discover -s tests -v
       - name: Shell syntax and offline Linux installer checks
         run: |
-          bash -n mita/run.sh
+          bash -n mita/run-backend.sh
+          sh -n hysteria/watch.sh
           bash -n mita/install-linux.sh
           export MITA_INSTALL_ARCH=x86_64
           bash mita/install-linux.sh clashmi deb --dry-run | grep -F 'KaringX/clashmi|'
@@ -40,7 +41,11 @@ jobs:
           import yaml
           for path in ["compose.yaml", ".github/workflows/validate.yml"]:
               with open(path, "r", encoding="utf-8") as f:
-                  yaml.safe_load(f)
+                  config = yaml.safe_load(f)
+              if path == "compose.yaml":
+                  mounts = config["services"]["hysteria2"]["volumes"]
+                  assert not any("mita-data" in str(mount) for mount in mounts), mounts
+                  assert any("hysteria-config" in str(mount) for mount in mounts), mounts
               print(path, "OK")
           PY
       - name: Validate standalone admin panel
@@ -91,6 +96,7 @@ jobs:
         run: |
           docker build -t mita-ci mita
           docker run --rm --network none --entrypoint /usr/local/bin/awgm-box mita-ci version
+          docker build --target mita-runtime -t mita-server-ci mita
           docker build --target awgm-box-runtime -t awgm-box-ci mita
           docker run --rm --network none awgm-box-ci version
 
@@ -102,3 +108,30 @@ jobs:
           python3 tests/render_router_config.py "$out"
           docker run --rm --network none -v "$out:$out:ro" \
             --entrypoint /usr/local/bin/awgm-box mita-ci check -c "$out/config.json"
+
+      - name: Validate Hysteria 2.14 ACL with its real parser
+        run: |
+          out="$PWD/ci-hysteria"
+          python3 tests/render_hysteria_config.py "$out"
+          hy2() {
+            docker run --rm --network none -v "$out:/config:ro" \
+              --entrypoint hysteria tobyxdd/hysteria:v2.14.0 \
+              acl test -c /config/server.yaml "$@"
+          }
+          check_acl() {
+            local expected="$1"
+            shift
+            local output
+            if ! output=$(hy2 "$@" 2>&1); then
+              printf 'Hysteria ACL command failed:\n%s\n' "$output" >&2
+              return 1
+            fi
+            printf '%s\n' "$output"
+            if ! grep -E "Outbound: +${expected}( |$)" <<< "$output"; then
+              printf 'Expected outbound %s was not selected\n' "$expected" >&2
+              return 1
+            fi
+          }
+          check_acl reject --ipv4 10.0.0.1 --auth alice 10.0.0.1:80
+          check_acl router --ipv4 10.0.0.1 --auth bob 10.0.0.1:80
+          check_acl reject --ipv4 127.0.0.1 --auth bob 127.0.0.1:80

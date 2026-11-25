@@ -48,9 +48,14 @@ MITA_CONFIG_PATH = DATA_DIR / "mita-server.json"
 SUBSCRIPTION_PAGE_PATH = Path("/app/subscription.html")
 MITA_LOG_PATH = DATA_DIR / "mita.log"
 LOG_FORWARD_STATE_PATH = DATA_DIR / "log-forwarder-state.json"
+HY2_CONFIG_PATH = Path("/hysteria-config/hysteria2.yaml")
+HY2_TRAFFIC_PATH = DATA_DIR / "hysteria2-traffic.json"
+HY2_GENERATION_PATH = Path("/run/hysteria2/generation")
 
 ADMIN_PORT = 8098
 SUB_PORT = 8099
+HY2_AUTH_PORT = 8097
+HY2_STATS_PORT = 9090
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 HWID_RE = re.compile(r"^[A-Za-z0-9=-]{10,64}$")
 DEVICE_ID_RE = re.compile(r"^[A-Fa-f0-9]{16}$")
@@ -362,7 +367,7 @@ def build_backup_archive():
 
     The archive stores credentials and must be treated as confidential.
     """
-    names = ("users.json", "settings.json", "mita-server.json")
+    names = ("users.json", "settings.json", "mita-server.json", "hysteria2-traffic.json")
     files = []
     total = 0
     with LOCK:
@@ -549,7 +554,8 @@ def save_postgres_backup(dsn, reason="scheduled"):
 
 RESTORE_MARKER = ".restore-in-progress"
 RESTORE_STAGE = ".restore-staging"
-RESTORE_FILES = {"users.json", "settings.json", "mita-server.json", "options.json", "mita-state"}
+RESTORE_FILES = {"users.json", "settings.json", "mita-server.json", "options.json",
+                 "mita-state", "hysteria2-traffic.json"}
 
 
 @contextlib.contextmanager
@@ -609,6 +615,7 @@ def install_backup_archive(payload, dsn):
         "settings.json": dict,
         "mita-server.json": dict,
         "options.json": dict,
+        "hysteria2-traffic.json": dict,
     }
     root = DATA_DIR / RESTORE_STAGE
     root.mkdir(mode=0o700)
@@ -805,6 +812,16 @@ def env_public_port():
     return port
 
 
+def env_hysteria_port():
+    try:
+        port = int(os.environ.get("MITA_HY2_PORT", "443"))
+    except ValueError as exc:
+        raise StateError("MITA_HY2_PORT must be an integer between 1 and 65535") from exc
+    if not 1 <= port <= 65535:
+        raise StateError("MITA_HY2_PORT must be an integer between 1 and 65535")
+    return port
+
+
 def initialize_state():
     if not USERS_PATH.exists():
         # A first account so clients can connect right away; its password is random.
@@ -839,9 +856,17 @@ def initialize_state():
             "default_allow_loopback_ip": False,
             "postgres_dsn": os.environ.get("MITA_POSTGRES_DSN", "").strip(),
             "contact_email": "",
+            "hysteria2_enabled": False,
+            "hysteria2_host": os.environ.get("MITA_HY2_HOST", "").strip(),
+            "hysteria2_port": env_hysteria_port(),
+            "hysteria2_sni": "",
         })
 
     settings = get_settings()
+    if not settings.get("hysteria2_auth_secret") or not settings.get("hysteria2_stats_secret"):
+        settings["hysteria2_auth_secret"] = settings.get("hysteria2_auth_secret") or secrets.token_urlsafe(32)
+        settings["hysteria2_stats_secret"] = settings.get("hysteria2_stats_secret") or secrets.token_urlsafe(32)
+        write_json(SETTINGS_PATH, settings)
     moved = migrate_legacy_sing_box(settings)
     if migrate_to_router(settings) or moved:
         write_json(SETTINGS_PATH, settings)
@@ -2490,6 +2515,8 @@ APPLIED_ROUTER = False  # the running Mita sends its traffic to the sing-box rou
 def sing_box_needed(settings):
     """sing-box must run while the settings route through it *or* the running Mita still
     does; otherwise turning routing off would cut traffic until Mita restarts."""
+    if os.environ.get("MITA_CONTROL_SOCKET"):
+        load_applied_proxy_outbounds()
     return sing_box_available() and (routing_enabled(settings) or APPLIED_ROUTER)
 
 
@@ -2633,8 +2660,9 @@ def proxy_outbound_names(egress):
 # Mita applies egress changes only on restart, but `mita reload` does update the
 # per-user outbound choice, and the routing core rejects PROXY traffic for an
 # account whose outbound it does not know. `webapp.py --init` records the set right
-# before run.sh starts Mita, and serve() loads it, so restarting only the web
-# process cannot mistake unapplied settings for live ones. None means "unknown"
+# before a local Mita start, or daemon.py records it after Mita starts in its
+# own container. This prevents a backend restart from treating unapplied settings
+# as live ones. None means "unknown"
 # (tests, one-shot commands) and treats every configured outbound as live.
 APPLIED_PROXY_OUTBOUNDS = None
 
@@ -2685,24 +2713,47 @@ def load_applied_proxy_outbounds():
 
 def restart_pending(settings):
     """True when saved routing differs from what the running Mita started with."""
+    if os.environ.get("MITA_CONTROL_SOCKET"):
+        load_applied_proxy_outbounds()
     return APPLIED_EGRESS is not None and egress_fingerprint(settings) != APPLIED_EGRESS
 
 
 def restart_mita():
-    """Apply the saved config with `mita stop` + `mita start`; the daemon and this panel keep running."""
+    """Apply the saved Mita config without restarting the backend or outbound router."""
     with LOCK:
         rebuild_mita_config()
-        output = []
-        for command in ("stop", "start"):
-            for attempt in range(2):
-                proc = subprocess.run(["/usr/bin/mita", command], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                      text=True, timeout=30, env=os.environ.copy())
-                if proc.returncode == 0:
-                    break
-                time.sleep(1)
-            output.append(proc.stdout.strip())
-            if proc.returncode:
-                raise MitaReloadError(f"mita {command} failed: {proc.stdout.strip()}")
+        control_socket = os.environ.get("MITA_CONTROL_SOCKET")
+        if control_socket:
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+                    conn.settimeout(30)
+                    conn.connect(control_socket)
+                    conn.sendall(b"restart\n")
+                    reply = b""
+                    while not reply.endswith(b"\n") and len(reply) < 8192:
+                        block = conn.recv(8192 - len(reply))
+                        if not block:
+                            break
+                        reply += block
+                answer = json.loads(reply)
+            except (OSError, ValueError) as exc:
+                raise MitaReloadError(f"Mita control service unavailable: {exc}") from exc
+            if not answer.get("ok"):
+                raise MitaReloadError("Mita restart failed: " + str(answer.get("error", "unknown error")))
+            output = ["Mita restarted in its own container"]
+        else:
+            # Local development and old single-container installations.
+            output = []
+            for command in ("stop", "start"):
+                for attempt in range(2):
+                    proc = subprocess.run(["/usr/bin/mita", command], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                          text=True, timeout=30, env=os.environ.copy())
+                    if proc.returncode == 0:
+                        break
+                    time.sleep(1)
+                output.append(proc.stdout.strip())
+                if proc.returncode:
+                    raise MitaReloadError(f"mita {command} failed: {proc.stdout.strip()}")
         record_applied_proxy_outbounds(persist=True)
         if not sing_box_needed(get_settings()):
             SING_BOX.stop()  # Mita no longer routes through it
@@ -2711,6 +2762,8 @@ def restart_mita():
 
 def split_proxy_outbounds(settings):
     """Return (assignable now, configured but waiting for a Mita restart)."""
+    if os.environ.get("MITA_CONTROL_SOCKET"):
+        load_applied_proxy_outbounds()
     configured = proxy_outbound_names(managed_egress(settings))
     if APPLIED_PROXY_OUTBOUNDS is None:
         return configured, set()
@@ -2987,6 +3040,8 @@ def public_outbound(entry):
 def admin_settings(settings):
     settings = settings.copy()
     settings.pop("router_password", None)
+    settings.pop("hysteria2_auth_secret", None)
+    settings.pop("hysteria2_stats_secret", None)
     settings["postgres_outbound"] = settings.get("postgres_outbound") or ""
     settings["outbounds"] = [public_outbound(entry) for entry in outbound_entries(settings)]
     settings["routing_final"] = settings.get("routing_final") or "direct"
@@ -3286,16 +3341,82 @@ def summarize_traffic_rows(rows):
     return result
 
 
+TRAFFIC_FIELDS = ("day_down", "day_up", "week_down", "week_up", "month_down", "month_up")
+
+
+def hy2_traffic_state():
+    """Load historical hourly totals and the last durable Hysteria counters.
+
+    Old installations stored the hourly buckets directly at the top level.
+    """
+    state = load_json(HY2_TRAFFIC_PATH, {})
+    if state.get("version") == 2:
+        return state
+    return {"version": 2, "hours": state, "counters": {}}
+
+
+def hy2_generation():
+    return HY2_GENERATION_PATH.read_text().strip() if HY2_GENERATION_PATH.exists() else ""
+
+
+def hy2_traffic_rows():
+    history = hy2_traffic_state()["hours"]
+    now = int(time.time() // 3600)
+    result = {}
+    for account_id, buckets in history.items():
+        if not isinstance(buckets, dict):
+            continue
+        sums = [[0, 0] for _ in range(3)]
+        last = "-"
+        for key, counts in buckets.items():
+            try:
+                hour = int(key)
+                if not isinstance(counts, list) or len(counts) != 2:
+                    continue
+                down, up = int(counts[0]), int(counts[1])
+                if min(down, up) < 0 or hour > now:
+                    continue
+            except (ValueError, TypeError):
+                continue
+            age = now - hour
+            for i, window in enumerate((24, 7 * 24, 30 * 24)):
+                if age < window:
+                    sums[i][0] += down
+                    sums[i][1] += up
+            if age < 30 * 24 and (down or up):
+                stamp = datetime.fromtimestamp(hour * 3600, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+                last = latest_activity((last, stamp))
+        result[account_id] = {
+            **{field: format_iec_bytes(value) for field, value in zip(TRAFFIC_FIELDS, sum(sums, []))},
+            "last_active": last,
+        }
+    return result
+
+
+def merge_protocol_traffic(mita_row, hy2_row):
+    if not hy2_row:
+        return mita_row
+    merged = dict(mita_row)
+    for field in TRAFFIC_FIELDS:
+        merged[field] = format_iec_bytes(parse_iec_bytes(mita_row.get(field)) + parse_iec_bytes(hy2_row[field]))
+    merged["last_active"] = latest_activity((mita_row.get("last_active"), hy2_row["last_active"]))
+    return merged
+
+
 def get_traffic_view():
     raw_rows = get_mita_user_traffic()
     raw_by_username = {row["username"]: row for row in raw_rows}
+    hy2_rows = hy2_traffic_rows()
     result = []
 
     for user in get_users():
         children = []
         legacy_row = raw_by_username.get(user["username"])
+        if not legacy_row and user["username"] in hy2_rows:
+            legacy_row = {"username": user["username"]}
         if legacy_row:
-            children.append({"name": "Legacy", "kind": "legacy", **legacy_row})
+            children.append({"name": "Legacy", "kind": "legacy", **merge_protocol_traffic(
+                legacy_row, hy2_rows.get(user["username"]))})
 
         for device in user.get("devices", []):
             row = raw_by_username.get(device.get("mita_username"))
@@ -3304,10 +3425,10 @@ def get_traffic_view():
                     "name": device_display_name(device),
                     "kind": "device",
                     "device_id": device.get("id", ""),
-                    **row,
+                    **merge_protocol_traffic(row, hy2_rows.get(device.get("mita_username"))),
                 })
             else:
-                children.append({
+                empty = {
                     "name": device_display_name(device),
                     "kind": "device",
                     "device_id": device.get("id", ""),
@@ -3319,7 +3440,8 @@ def get_traffic_view():
                     "week_up": "0B",
                     "month_down": "0B",
                     "month_up": "0B",
-                })
+                }
+                children.append(merge_protocol_traffic(empty, hy2_rows.get(device.get("mita_username"))))
 
         totals = summarize_traffic_rows(children)
         result.append({
@@ -3348,6 +3470,221 @@ def device_display_name(device):
     return "Device " + str(device.get("id", ""))[:6]
 
 
+def hy2_credential(username, password):
+    """Hysteria takes one password string; encode the existing credential pair losslessly."""
+    raw = json.dumps([username, password], separators=(",", ":"), ensure_ascii=False).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def hy2_authenticate(auth):
+    if not isinstance(auth, str) or len(auth) > 4096 or not re.fullmatch(r"[A-Za-z0-9_-]+", auth):
+        return None
+    try:
+        raw = base64.b64decode(auth + "=" * (-len(auth) % 4), altchars=b"-_", validate=True)
+        credentials = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not (isinstance(credentials, list) and len(credentials) == 2
+            and all(isinstance(value, str) for value in credentials)):
+        return None
+    username, password = credentials
+    # compare_digest(str, str) throws for non-ASCII input. Reject invalid UTF-8
+    # (including JSON lone surrogates) before entering the account loop.
+    try:
+        username_bytes, password_bytes = username.encode("utf-8"), password.encode("utf-8")
+    except UnicodeError:
+        return None
+    with LOCK:
+        for user in get_users():
+            if user.get("legacy_enabled", True) and secrets.compare_digest(username_bytes, user["username"].encode("utf-8")):
+                return username if secrets.compare_digest(password_bytes, user["password"].encode("utf-8")) else None
+            for device in user.get("devices", []):
+                if secrets.compare_digest(username_bytes, device.get("mita_username", "").encode("utf-8")):
+                    return username if secrets.compare_digest(password_bytes, device["password"].encode("utf-8")) else None
+    return None
+
+
+def hy2_accounts(users):
+    """Active credential IDs, secrets, outbound overrides and LAN permission."""
+    result = {}
+    for user in users:
+        records = [(user["username"], user["password"])] if user.get("legacy_enabled", True) else []
+        records += [(device["mita_username"], device["password"]) for device in user.get("devices", [])]
+        for name, password in records:
+            result[name] = (password, user.get("proxy_outbound", ""), bool(user.get("allow_private_ip")))
+    return result
+
+
+HY2_LOOPBACK = ('cidr("127.0.0.0/8")', 'cidr("::1/128")',
+                'cidr("0.0.0.0/8")', 'cidr("::/128")',
+                'cidr("::ffff:127.0.0.0/104")')
+HY2_PRIVATE = ('cidr("10.0.0.0/8")', 'cidr("172.16.0.0/12")',
+               'cidr("192.168.0.0/16")', 'cidr("169.254.0.0/16")',
+               'cidr("100.64.0.0/10")', 'cidr("fc00::/7")', 'cidr("fe80::/10")')
+
+
+def hysteria2_config(settings, users):
+    """Hysteria 2.14+ ACL mirrors Mita's router and per-account outbound override."""
+    port = int(settings.get("hysteria2_port", 443))
+    if not 1 <= port <= 65535:
+        raise ValueError("invalid Hysteria 2 UDP port")
+    accounts = hy2_accounts(users)
+    rules = [{"outbound": "reject", "match": " || ".join(HY2_LOOPBACK)}]
+    allowed_lan = sorted(name for name, (_, _, allowed) in accounts.items() if allowed)
+    private_match = "(" + " || ".join(HY2_PRIVATE) + ")"
+    if allowed_lan:
+        private_match += " && !(auth.id in " + json.dumps(allowed_lan) + ")"
+    rules.append({"outbound": "reject", "match": private_match})
+
+    if routing_enabled(settings):
+        outbounds = [{"name": "router", "type": "socks5", "socks5": {
+            "addr": f"127.0.0.1:{ROUTER_PORT}", "username": "mita",
+            "password": router_password(settings),
+        }}]
+        entries = outbound_entries(settings)
+        for index, entry in enumerate(entries):
+            outbounds.append({"name": f"via-{index}", "type": "socks5", "socks5": {
+                "addr": f"127.0.0.1:{entry['port'] + VIA_PORT_OFFSET}",
+                "username": "mita", "password": entry["password"],
+            }})
+            ids = sorted(name for name, (_, outbound, _) in accounts.items() if outbound == entry["name"])
+            if ids:
+                rules.append({"outbound": f"via-{index}",
+                              "match": "auth.id in " + json.dumps(ids)})
+        rules.append({"outbound": "router"})
+    else:
+        outbounds = [{"name": "direct", "type": "direct"}]
+        rules.append({"outbound": "direct"})
+    return {
+        "listen": f":{port}",
+        "tls": {"cert": os.environ.get("MITA_HY2_TLS_CERT") or "/certs/fullchain.pem",
+                "key": os.environ.get("MITA_HY2_TLS_KEY") or "/certs/privkey.pem"},
+        "auth": {"type": "http", "http": {"url":
+            f"http://127.0.0.1:{HY2_AUTH_PORT}/auth/{settings['hysteria2_auth_secret']}"}},
+        "trafficStats": {"listen": f"127.0.0.1:{HY2_STATS_PORT}",
+                         "secret": settings["hysteria2_stats_secret"]},
+        "outbounds": outbounds,
+        "acl": {"rules": rules},
+    }
+
+
+HY2_LAST_ACCOUNTS = None
+HY2_PENDING_KICKS = set()
+
+
+def hy2_api(path, method="GET", payload=None):
+    settings = get_settings()
+    secret = settings.get("hysteria2_stats_secret", "")
+    if not settings.get("hysteria2_enabled") or not secret:
+        return {}
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{HY2_STATS_PORT}{path}",
+        data=json.dumps(payload).encode() if payload is not None else None,
+        headers={"Authorization": secret, "Content-Type": "application/json"},
+        method=method,
+    )
+    with urllib.request.urlopen(request, timeout=3) as response:
+        data = response.read(1024 * 1024 + 1)
+    if len(data) > 1024 * 1024:
+        raise ValueError("Hysteria traffic response too large")
+    return json.loads(data) if data else {}
+
+
+def sync_hysteria2_config():
+    """Only rewrite the config on changes; restarting Hysteria drops its QUIC sessions."""
+    global HY2_LAST_ACCOUNTS
+    with LOCK:
+        settings = get_settings()
+        accounts = hy2_accounts(get_users())
+        if settings.get("hysteria2_enabled"):
+            config = hysteria2_config(settings, get_users())
+            encoded = json.dumps(config, indent=2, ensure_ascii=False) + "\n"  # JSON is valid YAML.
+            exists = HY2_CONFIG_PATH.exists()
+            if not exists or HY2_CONFIG_PATH.read_text() != encoded:
+                # The watcher restarts Hysteria on config changes. Save the
+                # counters before the old process disappears, if it is running.
+                if exists:
+                    try:
+                        poll_hysteria2_traffic()
+                    except (ValueError, OSError, StateError, urllib.error.URLError):
+                        pass  # The optional Hysteria container may be stopped.
+                write_json(HY2_CONFIG_PATH, config)
+        else:
+            HY2_CONFIG_PATH.unlink(missing_ok=True)
+        # Rotation or deletion must also disconnect already-authenticated sessions.
+        stale = (sorted(name for name, record in HY2_LAST_ACCOUNTS.items()
+                        if accounts.get(name, (None,))[0] != record[0])
+                 if HY2_LAST_ACCOUNTS is not None else [])
+        HY2_PENDING_KICKS.update(stale)
+        HY2_LAST_ACCOUNTS = accounts
+    if HY2_PENDING_KICKS and settings.get("hysteria2_enabled"):
+        hy2_api("/kick", method="POST", payload=sorted(HY2_PENDING_KICKS))
+        HY2_PENDING_KICKS.clear()
+
+
+def hysteria2_config_worker(stop_event):
+    while not stop_event.wait(2):
+        try:
+            sync_hysteria2_config()
+        except (ValueError, OSError, StateError, urllib.error.URLError) as exc:
+            print(f"[web] Hysteria 2 sync failed: {type(exc).__name__}", flush=True)
+
+
+def poll_hysteria2_traffic():
+    """Checkpoint cumulative counters without resetting server-side statistics.
+
+    Persisting the last sample together with hourly deltas avoids losing bytes
+    when a disk write or the backend fails after fetching a sample.
+    """
+    with LOCK:
+        if not get_settings().get("hysteria2_enabled"):
+            return
+        generation = hy2_generation()
+        traffic = hy2_api("/traffic")
+        if not isinstance(traffic, dict):
+            raise ValueError("Hysteria returned invalid traffic statistics")
+        if generation != hy2_generation():
+            raise ValueError("Hysteria restarted during traffic collection")
+        state = hy2_traffic_state()
+        history = state["hours"]
+        previous = state["counters"] if state.get("generation", "") == generation else {}
+        current_hour = int(time.time() // 3600)
+        for name, counters in traffic.items():
+            if not isinstance(name, str) or not isinstance(counters, dict):
+                continue
+            tx, rx = counters.get("tx"), counters.get("rx")
+            if not all(type(value) is int and 0 <= value <= 10**15 for value in (tx, rx)):
+                continue
+            last = previous.get(name)
+            if (isinstance(last, list) and len(last) == 2
+                    and all(type(value) is int and value >= 0 for value in last)
+                    and tx >= last[0] and rx >= last[1]):
+                delta_tx, delta_rx = tx - last[0], rx - last[1]
+            else:
+                # Hysteria restarted: its in-memory cumulative counters reset.
+                delta_tx, delta_rx = tx, rx
+            if delta_tx or delta_rx:
+                buckets = history.setdefault(name, {})
+                entry = buckets.setdefault(str(current_hour), [0, 0])
+                entry[0] += delta_tx  # Hysteria tx = download towards client
+                entry[1] += delta_rx  # Hysteria rx = upload from client
+            previous[name] = [tx, rx]
+        floor = current_hour - 30 * 24
+        state["hours"] = {name: {key: value for key, value in buckets.items() if int(key) >= floor}
+                          for name, buckets in history.items()}
+        state["counters"] = previous
+        state["generation"] = generation
+        write_json(HY2_TRAFFIC_PATH, state)
+
+
+def hysteria2_traffic_worker(stop_event):
+    while not stop_event.wait(60):
+        try:
+            poll_hysteria2_traffic()
+        except (ValueError, OSError, StateError, urllib.error.URLError) as exc:
+            print(f"[web] Hysteria 2 traffic collection failed: {type(exc).__name__}", flush=True)
+
+
 def subscription_yaml(user, credential=None):
     settings = get_settings()
     credential = credential or {
@@ -3363,7 +3700,7 @@ def subscription_yaml(user, credential=None):
     port = int(settings["public_mieru_port"])
     username = credential["username"]
     password = credential["password"]
-    return f"""mixed-port: 7890
+    base = f"""mixed-port: 7890
 allow-lan: false
 mode: global
 log-level: info
@@ -3379,13 +3716,35 @@ proxies:
     username: {yaml_q(username)}
     password: {yaml_q(password)}
     multiplexing: MULTIPLEXING_HIGH
+"""
+    if settings.get("hysteria2_enabled"):
+        hy_host = settings.get("hysteria2_host") or host
+        hy_sni = settings.get("hysteria2_sni") or hy_host
+        hy_name = "Hysteria 2 " + user["username"]
+        if label and label != user["username"]:
+            hy_name += " · " + label
+        base += f"""  - name: {yaml_q(hy_name)}
+    type: hysteria2
+    server: {yaml_q(hy_host)}
+    port: {int(settings.get('hysteria2_port', 443))}
+    password: {yaml_q(hy2_credential(username, password))}
+    sni: {yaml_q(hy_sni)}
+    skip-cert-verify: false
+    udp: true
+"""
+    else:
+        hy_name = None
 
+    base += f"""
 proxy-groups:
   - name: PROXY
     type: select
     proxies:
       - {yaml_q(name)}
 """
+    if hy_name:
+        base += f"      - {yaml_q(hy_name)}\n"
+    return base
 
 
 def find_user_by_token(token):
@@ -4153,6 +4512,18 @@ class AdminHandler(CommonHandler):
                 settings["postgres_dsn"] = postgres_dsn
             if "contact_email" in body:
                 settings["contact_email"] = normalize_contact_email(body["contact_email"])
+            if "hysteria2_enabled" in body:
+                if not isinstance(body["hysteria2_enabled"], bool):
+                    raise ValueError("hysteria2_enabled must be a boolean")
+                settings["hysteria2_enabled"] = body["hysteria2_enabled"]
+            if "hysteria2_host" in body or "hysteria2_sni" in body:
+                for key in ("hysteria2_host", "hysteria2_sni"):
+                    value = body.get(key, settings.get(key, ""))
+                    if not isinstance(value, str) or len(value) > 253 or any(c.isspace() for c in value) or "/" in value:
+                        raise ValueError(f"invalid {key}")
+                    settings[key] = value.strip()
+            if "hysteria2_port" in body:
+                settings["hysteria2_port"] = parse_int(body, "hysteria2_port", 443, 1, 65535)
             if "postgres_outbound" in body:
                 via = body["postgres_outbound"] or ""
                 if not isinstance(via, str):
@@ -4308,6 +4679,31 @@ class SubscriptionHandler(CommonHandler):
         )
 
 
+class HysteriaAuthHandler(CommonHandler):
+    """Local-only HTTP authentication endpoint. It never registers new HWIDs."""
+
+    def log_message(self, format, *args):
+        pass  # The URL contains a secret and must not appear in logs.
+
+    def do_POST(self):
+        expected = get_settings().get("hysteria2_auth_secret", "")
+        path = urllib.parse.urlsplit(self.path).path
+        prefix = "/auth/"
+        if not expected or not path.startswith(prefix) or not secrets.compare_digest(path[len(prefix):], expected):
+            self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 8192:
+                raise ValueError("bad request size")
+            data = json.loads(self.rfile.read(length))
+            account_id = hy2_authenticate(data.get("auth") if isinstance(data, dict) else None)
+        except (ValueError, UnicodeDecodeError, StateError) as exc:
+            account_id = None
+        self.send_json(HTTPStatus.OK, {"ok": bool(account_id), "id": account_id or ""},
+                       headers={"Cache-Control": "no-store"})
+
+
 class Server(ThreadingHTTPServer):
     # The stdlib default backlog of 5 resets connections during short bursts.
     request_queue_size = 64
@@ -4318,18 +4714,24 @@ def serve():
     admin_host = "127.0.0.1"  # reach it through an SSH tunnel
     admin = Server((admin_host, ADMIN_PORT), AdminHandler)
     sub = Server(("0.0.0.0", SUB_PORT), SubscriptionHandler)
+    hy2_auth = Server(("127.0.0.1", HY2_AUTH_PORT), HysteriaAuthHandler)
 
     stop_bridge = threading.Event()
     load_applied_proxy_outbounds()
+    sync_hysteria2_config()
 
     def shutdown_handler(signum, frame):
         threading.Thread(target=admin.shutdown, daemon=True).start()
         threading.Thread(target=sub.shutdown, daemon=True).start()
+        threading.Thread(target=hy2_auth.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, shutdown_handler)
     signal.signal(signal.SIGINT, shutdown_handler)
 
     threading.Thread(target=sub.serve_forever, name="subscription-server", daemon=True).start()
+    threading.Thread(target=hy2_auth.serve_forever, name="hysteria2-auth", daemon=True).start()
+    threading.Thread(target=hysteria2_config_worker, args=(stop_bridge,), name="hysteria2-config", daemon=True).start()
+    threading.Thread(target=hysteria2_traffic_worker, args=(stop_bridge,), name="hysteria2-traffic", daemon=True).start()
     threading.Thread(target=log_db_worker, name="postgres-log-forwarder", daemon=True).start()
     threading.Thread(target=backup_db_worker, name="postgres-backup-worker", daemon=True).start()
     if sing_box_available():
@@ -4347,6 +4749,7 @@ def serve():
             SING_BOX.stop()
         admin.server_close()
         sub.server_close()
+        hy2_auth.server_close()
 
 
 if __name__ == "__main__":
@@ -4371,8 +4774,8 @@ if __name__ == "__main__":
         if not admin_password():
             raise StateError("set MITA_ADMIN_PASSWORD to a password of at least 24 characters")
         initialize()
-        if args.init:
-            # run.sh starts Mita right after this step from the config just written.
+        if args.init and not os.environ.get("MITA_CONTROL_SOCKET"):
+            # In local single-container mode Mita starts right after init.
             record_applied_proxy_outbounds(persist=True)
     except (StateError, ValueError, OSError) as exc:
         parser.exit(1, f"Startup failed: {exc}\n")
