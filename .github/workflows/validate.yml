@@ -100,6 +100,15 @@ jobs:
           docker build --target awgm-box-runtime -t awgm-box-ci mita
           docker run --rm --network none awgm-box-ci version
 
+      - name: awgm-box accepts the router config Mita generates
+        run: |
+          # Every outbound type the share-link parser produces, policies with a local
+          # rule set, reject/direct, Everything else and the PostgreSQL forward.
+          out="$PWD/ci-router"
+          python3 tests/render_router_config.py "$out"
+          docker run --rm --network none -v "$out:$out:ro" \
+            --entrypoint /usr/local/bin/awgm-box mita-ci check -c "$out/config.json"
+
       - name: Validate Hysteria 2.14 ACL with its real parser
         run: |
           out="$PWD/ci-hysteria"
@@ -109,15 +118,20 @@ jobs:
               --entrypoint hysteria tobyxdd/hysteria:v2.14.0 \
               acl test -c /config/server.yaml --no-resolve "$@"
           }
-          hy2 --auth alice 10.0.0.1:80 | grep -E 'Outbound: +reject'
-          hy2 --auth bob 10.0.0.1:80 | grep -E 'Outbound: +router'
-          hy2 --auth bob 127.0.0.1:80 | grep -E 'Outbound: +reject'
-
-      - name: awgm-box accepts the router config Mita generates
-        run: |
-          # Every outbound type the share-link parser produces, policies with a local
-          # rule set, reject/direct, Everything else and the PostgreSQL forward.
-          out="$PWD/ci-router"
-          python3 tests/render_router_config.py "$out"
-          docker run --rm --network none -v "$out:$out:ro" \
-            --entrypoint /usr/local/bin/awgm-box mita-ci check -c "$out/config.json"
+          check_acl() {
+            local expected="$1"
+            shift
+            local output
+            if ! output=$(hy2 "$@" 2>&1); then
+              printf 'Hysteria ACL command failed:\n%s\n' "$output" >&2
+              return 1
+            fi
+            printf '%s\n' "$output"
+            if ! grep -E "Outbound: +${expected}( |$)" <<< "$output"; then
+              printf 'Expected outbound %s was not selected\n' "$expected" >&2
+              return 1
+            fi
+          }
+          check_acl reject --auth alice 10.0.0.1:80
+          check_acl router --auth bob 10.0.0.1:80
+          check_acl reject --auth bob 127.0.0.1:80
