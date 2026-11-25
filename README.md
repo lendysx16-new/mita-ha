@@ -39,8 +39,10 @@ docker compose up -d --build
 The deployment has separate `backend` and `mita` containers. The backend runs
 the Python admin/subscription servers and the outbound-only awgm-box router;
 the `mita` container runs only the Mieru server. Both share the existing named
-`mita-data` volume. A separate `hysteria-status` volume contains only a
-process-generation marker for traffic accounting. Mita listens on TCP 2022, subscriptions on TCP 8099 and the
+`mita-data` volume. Hysteria gets only a separate `hysteria-config` volume and
+read-only certificates, never the users, settings or backup data in `/data`.
+The `hysteria-status` volume holds a process-generation marker for accounting.
+Mita listens on TCP 2022, subscriptions on TCP 8099 and the
 admin panel on `127.0.0.1:8098`. The backend controls Mita through an internal
 Unix socket; its **Restart Mita** action restarts only the Mita process.
 Existing volumes, accounts and subscription URLs are preserved when upgrading
@@ -57,23 +59,22 @@ firewall, and publish only `/sub/*` via your HTTPS reverse proxy.
 Hysteria 2 is a **second server**, not an awgm-box outbound. It is disabled by
 default so existing Mieru subscribers are unaffected. To enable it:
 
-1. Put a valid TLS certificate and its private key in `hysteria/certs/` as
-   `fullchain.pem` and `privkey.pem`. Set `HYSTERIA_CERT_DIR` in `.env` if you
-   already manage the certificate in another directory **containing regular
-   files**. Do not point it directly at Certbot's `/etc/letsencrypt/live/<domain>`:
-   those files are symlinks to `../../archive/`, which will be broken inside
-   this single-directory bind mount. For Certbot, copy the resolved files:
+1. Use an existing TLS certificate and private key. By default Hysteria reads
+   `hysteria/certs/fullchain.pem` and `hysteria/certs/privkey.pem`. If the server
+   already has Certbot certificates, mount the **whole** Let's Encrypt tree
+   read-only, including `archive/` (needed for the symlinks in `live/`):
 
-   ```sh
-   mkdir -p hysteria/certs
-   cp -L /etc/letsencrypt/live/vpn.example.com/fullchain.pem hysteria/certs/fullchain.pem
-   cp -L /etc/letsencrypt/live/vpn.example.com/privkey.pem hysteria/certs/privkey.pem
-   chmod 600 hysteria/certs/privkey.pem
+   ```dotenv
+   HYSTERIA_CERT_DIR=/etc/letsencrypt
+   MITA_HY2_TLS_CERT=/certs/live/vpn.example.com/fullchain.pem
+   MITA_HY2_TLS_KEY=/certs/live/vpn.example.com/privkey.pem
    ```
 
-   Repeat the copy after renewal (for example with a Certbot deploy hook).
-   Hysteria reads the certificate files on each TLS handshake, so a restart
-   is not required. The hostname (or optional SNI) must match the certificate.
+   Any other host certificate directory also works: `HYSTERIA_CERT_DIR` is
+   mounted inside Hysteria at `/certs`. Set `MITA_HY2_TLS_CERT` and
+   `MITA_HY2_TLS_KEY` to the corresponding **container paths**, if their names
+   differ. Hysteria reads certificates on each TLS handshake, so renewed files
+   need no copy or restart. The hostname (or optional SNI) must match the cert.
 2. In **Settings → Public connection**, enable **Add Hysteria 2 to subscriptions**.
    Set the hostname, UDP port (443 by default) and optional SNI, then save.
 3. Start the additional container:
@@ -113,7 +114,11 @@ backend and revoked credentials are also kicked from active sessions.
 When routing is enabled Hysteria uses the **same awgm-box policies** as Mieru,
 including individual account outbound overrides; the rule selection is based
 on Hysteria 2.14's authenticated client ID. Localhost destinations are always
-blocked. Private-network access follows the account's LAN setting. Hysteria
+blocked. Private-network access follows the account's LAN setting, including
+domains resolving to private addresses. Hysteria's ACL engine resolves domain
+requests on the server before matching the rules; switching the checks to
+`cidr(..., dst.host)` does not prevent that resolution and would remove DNS
+rebinding protection. Hysteria
 traffic is polled every minute without clearing server counters; cumulative
 checkpoints and the process-generation marker prevent duplicate accounting
 after backend failures or Hysteria restarts. A sudden Hysteria crash can still

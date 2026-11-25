@@ -1,4 +1,5 @@
 """Hysteria 2 auth, subscription, ACL, and accounting regressions."""
+import base64
 import http.client
 import importlib.util
 import json
@@ -74,6 +75,9 @@ class HysteriaTests(unittest.TestCase):
         self.assertIsNone(app.hy2_authenticate(app.hy2_credential("dev_abc", "wrong")))
         self.assertEqual(app.hy2_authenticate(app.hy2_credential("alice", "secret:with:colon")), "alice")
         self.assertIsNone(app.hy2_authenticate("not-a-credential"))
+        self.assertIsNone(app.hy2_authenticate(app.hy2_credential("пользователь", "secret")))
+        invalid_unicode = base64.urlsafe_b64encode(b'["\\ud800","secret"]').decode().rstrip("=")
+        self.assertIsNone(app.hy2_authenticate(invalid_unicode))
 
         settings = app.get_settings()
         settings["hysteria2_enabled"] = False
@@ -102,6 +106,8 @@ class HysteriaTests(unittest.TestCase):
         path = "/auth/a-very-long-secret-for-http-auth"
         credential = app.hy2_credential("dev_abc", "secret-dev")
         self.assertEqual(auth(path, credential), (200, {"ok": True, "id": "dev_abc"}))
+        self.assertEqual(auth(path, app.hy2_credential("пользователь", "secret")),
+                         (200, {"ok": False, "id": ""}))
         self.assertEqual(auth("/auth/wrong", credential)[0], 404)
         users = app.get_users()
         users[0]["devices"] = []
@@ -127,7 +133,27 @@ class HysteriaTests(unittest.TestCase):
         self.assertIn('"alice"', config["acl"]["rules"][-2]["match"])
         self.assertIn('auth.id in [', config["acl"]["rules"][1]["match"])
         self.assertIn('cidr("127.0.0.0/8")', config["acl"]["rules"][0]["match"])
+        self.assertIn('cidr("10.0.0.0/8")', config["acl"]["rules"][1]["match"])
         self.assertEqual(config["acl"]["rules"][-1], {"outbound": "router"})
+
+    def test_existing_host_certificate_paths_are_used(self):
+        with mock.patch.dict(os.environ, {
+            "MITA_HY2_TLS_CERT": "/certs/live/vpn.example.com/fullchain.pem",
+            "MITA_HY2_TLS_KEY": "/certs/live/vpn.example.com/privkey.pem",
+        }):
+            config = app.hysteria2_config(app.get_settings(), app.get_users())
+        self.assertEqual(config["tls"], {
+            "cert": "/certs/live/vpn.example.com/fullchain.pem",
+            "key": "/certs/live/vpn.example.com/privkey.pem",
+        })
+
+    def test_invalid_hysteria_env_port_is_reported_without_crashing(self):
+        for value in ("oops", "0", "65536", "-1"):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"MITA_HY2_PORT": value}):
+                with self.assertRaisesRegex(app.StateError, "MITA_HY2_PORT must be an integer"):
+                    app.env_hysteria_port()
+        with mock.patch.dict(os.environ, {"MITA_HY2_PORT": "8443"}):
+            self.assertEqual(app.env_hysteria_port(), 8443)
 
     def test_sync_does_not_restart_unnecessarily_and_kicks_rotated_credentials(self):
         with mock.patch.object(app, "hy2_api", return_value={}) as api:

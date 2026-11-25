@@ -48,7 +48,7 @@ MITA_CONFIG_PATH = DATA_DIR / "mita-server.json"
 SUBSCRIPTION_PAGE_PATH = Path("/app/subscription.html")
 MITA_LOG_PATH = DATA_DIR / "mita.log"
 LOG_FORWARD_STATE_PATH = DATA_DIR / "log-forwarder-state.json"
-HY2_CONFIG_PATH = DATA_DIR / "hysteria2.yaml"
+HY2_CONFIG_PATH = Path("/hysteria-config/hysteria2.yaml")
 HY2_TRAFFIC_PATH = DATA_DIR / "hysteria2-traffic.json"
 HY2_GENERATION_PATH = Path("/run/hysteria2/generation")
 
@@ -812,6 +812,16 @@ def env_public_port():
     return port
 
 
+def env_hysteria_port():
+    try:
+        port = int(os.environ.get("MITA_HY2_PORT", "443"))
+    except ValueError as exc:
+        raise StateError("MITA_HY2_PORT must be an integer between 1 and 65535") from exc
+    if not 1 <= port <= 65535:
+        raise StateError("MITA_HY2_PORT must be an integer between 1 and 65535")
+    return port
+
+
 def initialize_state():
     if not USERS_PATH.exists():
         # A first account so clients can connect right away; its password is random.
@@ -848,7 +858,7 @@ def initialize_state():
             "contact_email": "",
             "hysteria2_enabled": False,
             "hysteria2_host": os.environ.get("MITA_HY2_HOST", "").strip(),
-            "hysteria2_port": int(os.environ.get("MITA_HY2_PORT", "443")),
+            "hysteria2_port": env_hysteria_port(),
             "hysteria2_sni": "",
         })
 
@@ -3478,14 +3488,18 @@ def hy2_authenticate(auth):
             and all(isinstance(value, str) for value in credentials)):
         return None
     username, password = credentials
-    # compare_digest(str, str) rejects non-ASCII passwords; UTF-8 bytes work.
-    password_bytes = password.encode("utf-8")
+    # compare_digest(str, str) throws for non-ASCII input. Reject invalid UTF-8
+    # (including JSON lone surrogates) before entering the account loop.
+    try:
+        username_bytes, password_bytes = username.encode("utf-8"), password.encode("utf-8")
+    except UnicodeError:
+        return None
     with LOCK:
         for user in get_users():
-            if user.get("legacy_enabled", True) and secrets.compare_digest(username, user["username"]):
+            if user.get("legacy_enabled", True) and secrets.compare_digest(username_bytes, user["username"].encode("utf-8")):
                 return username if secrets.compare_digest(password_bytes, user["password"].encode("utf-8")) else None
             for device in user.get("devices", []):
-                if secrets.compare_digest(username, device.get("mita_username", "")):
+                if secrets.compare_digest(username_bytes, device.get("mita_username", "").encode("utf-8")):
                     return username if secrets.compare_digest(password_bytes, device["password"].encode("utf-8")) else None
     return None
 
@@ -3543,7 +3557,8 @@ def hysteria2_config(settings, users):
         rules.append({"outbound": "direct"})
     return {
         "listen": f":{port}",
-        "tls": {"cert": "/certs/fullchain.pem", "key": "/certs/privkey.pem"},
+        "tls": {"cert": os.environ.get("MITA_HY2_TLS_CERT") or "/certs/fullchain.pem",
+                "key": os.environ.get("MITA_HY2_TLS_KEY") or "/certs/privkey.pem"},
         "auth": {"type": "http", "http": {"url":
             f"http://127.0.0.1:{HY2_AUTH_PORT}/auth/{settings['hysteria2_auth_secret']}"}},
         "trafficStats": {"listen": f"127.0.0.1:{HY2_STATS_PORT}",

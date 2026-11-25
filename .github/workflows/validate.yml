@@ -41,7 +41,11 @@ jobs:
           import yaml
           for path in ["compose.yaml", ".github/workflows/validate.yml"]:
               with open(path, "r", encoding="utf-8") as f:
-                  yaml.safe_load(f)
+                  config = yaml.safe_load(f)
+              if path == "compose.yaml":
+                  mounts = config["services"]["hysteria2"]["volumes"]
+                  assert not any("mita-data" in str(mount) for mount in mounts), mounts
+                  assert any("hysteria-config" in str(mount) for mount in mounts), mounts
               print(path, "OK")
           PY
       - name: Validate standalone admin panel
@@ -95,6 +99,19 @@ jobs:
           docker build --target mita-runtime -t mita-server-ci mita
           docker build --target awgm-box-runtime -t awgm-box-ci mita
           docker run --rm --network none awgm-box-ci version
+
+      - name: Validate Hysteria 2.14 ACL with its real parser
+        run: |
+          out="$PWD/ci-hysteria"
+          python3 tests/render_hysteria_config.py "$out"
+          hy2() {
+            docker run --rm --network none -v "$out:/config:ro" \
+              --entrypoint hysteria tobyxdd/hysteria:v2.14.0 \
+              acl test -c /config/server.yaml --no-resolve "$@"
+          }
+          hy2 --auth alice 10.0.0.1:80 | grep -E 'Outbound: +reject'
+          hy2 --auth bob 10.0.0.1:80 | grep -E 'Outbound: +router'
+          hy2 --auth bob 127.0.0.1:80 | grep -E 'Outbound: +reject'
 
       - name: awgm-box accepts the router config Mita generates
         run: |

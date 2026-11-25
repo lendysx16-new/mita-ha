@@ -15,8 +15,11 @@ services:
       MITA_CONTROL_SOCKET: /data/mita-control.sock
       MITA_HY2_HOST: ${MITA_HY2_HOST:-}
       MITA_HY2_PORT: ${MITA_HY2_PORT:-443}
+      MITA_HY2_TLS_CERT: ${MITA_HY2_TLS_CERT:-/certs/fullchain.pem}
+      MITA_HY2_TLS_KEY: ${MITA_HY2_TLS_KEY:-/certs/privkey.pem}
     volumes:
       - mita-data:/data
+      - hysteria-config:/hysteria-config
       - hysteria-status:/run/hysteria2:ro
 
   mita:
@@ -43,7 +46,7 @@ services:
         condition: service_healthy
     entrypoint: ["/bin/sh", "/watch.sh"]
     volumes:
-      - mita-data:/data:ro
+      - hysteria-config:/hysteria-config:ro
       - hysteria-status:/run/hysteria2
       - ./hysteria/watch.sh:/watch.sh:ro
       - ${HYSTERIA_CERT_DIR:-./hysteria/certs}:/certs:ro
@@ -67,4 +70,5 @@ services:
 volumes:
   mita-data:
     name: ${MITA_DATA_VOLUME:-mita-linux-data}
+  hysteria-config:
   hysteria-status:

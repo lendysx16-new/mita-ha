@@ -2,7 +2,7 @@
 # Hysteria does not hot-reload ACL rules. Restart only when their config changes.
 set -eu
 
-config=/data/hysteria2.yaml
+config=/hysteria-config/hysteria2.yaml
 generation=/run/hysteria2/generation
 pid=
 
@@ -21,8 +21,8 @@ while :; do
     current=$(sha256sum "$config" | cut -d ' ' -f 1)
     if [ "$current" != "$previous" ] || [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
       stop_server
-      # Notify the backend of each new counter epoch. The separate volume only
-      # contains this marker; Hysteria cannot write to Mita's credentials.
+      # Notify the backend of each new counter epoch. Hysteria's mounts contain
+      # only its own generated config, certificate chain and this marker.
       cat /proc/sys/kernel/random/uuid > "$generation.tmp"
       mv "$generation.tmp" "$generation"
       hysteria server -c "$config" &
