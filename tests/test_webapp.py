@@ -1601,7 +1601,12 @@ class RouterConfigRenderTests(unittest.TestCase):
             config = render.render(out)
             self.assertEqual(json.loads((Path(out) / "config.json").read_text()), config)
             types = {outbound["type"] for outbound in config["outbounds"]}
-            self.assertEqual(types, {"hysteria2", "vless", "trojan", "shadowsocks", "tuic", "vmess", "socks", "direct"})
+            self.assertEqual(types, {"hysteria2", "vless", "trojan", "shadowsocks", "tuic", "vmess", "socks", "mieru",
+                                     "direct"})
+            self.assertEqual([(e["type"], e["useIntegratedTun"]) for e in config["endpoints"]], [("awg", False)])
+            xhttp = next(o for o in config["outbounds"] if o.get("transport", {}).get("type") == "xhttp")
+            self.assertEqual(xhttp["transport"]["xmux"], {"max_concurrency": "16-32"})
+            self.assertEqual(xhttp["transport"]["x_padding_bytes"], "100-1000")
             tags = {inbound["tag"] for inbound in config["inbounds"]}
             self.assertTrue({"router", "probe-0", "via-0", "postgres"} <= tags)
             rules = config["route"]["rules"]

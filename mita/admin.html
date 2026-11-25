@@ -475,7 +475,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
         <div id="singBoxStatus" class="status-line" role="status">Checking awgm-box…</div>
         <section class="card" id="outboundsCard">
           <div class="card-header">
-            <div><h2>Outbounds</h2><p class="card-subtitle">Your provider servers. Every outbound runs through the bundled awgm-box, so Hysteria2, VLESS (incl. REALITY), Trojan, Shadowsocks, TUIC and SOCKS all work. Bind outbounds to domains in the <a href="#/routing">Routing</a> tab.</p></div>
+            <div><h2>Outbounds</h2><p class="card-subtitle">Your provider servers. Every outbound runs through the bundled awgm-box, so Hysteria2, VLESS (REALITY, XHTTP), Trojan, Shadowsocks, TUIC, Mieru, AmneziaWG and more work. Bind outbounds to domains in the <a href="#/routing">Routing</a> tab.</p></div>
             <button id="addOutbound" class="btn" type="button">+ Add outbound</button>
           </div>
           <form id="outboundEditor" class="routing-editor" hidden autocomplete="off">
@@ -496,7 +496,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
             </details>
             <div class="form-grid">
               <label>Name<input name="name" maxlength="64" pattern="[A-Za-z0-9_.\-]+" title="Letters, digits, _ . or -" placeholder="e.g. nl-hysteria" spellcheck="false"><span class="field-help" data-name-help>Used to pick this outbound in Routing or for an account. Leave empty to use the link's name. It cannot be renamed later.</span></label>
-              <label class="span-2">Share link or sing-box JSON<textarea name="config" rows="6" required spellcheck="false" autocapitalize="off" placeholder="hysteria2://password@server:443?sni=server#NL&#10;vless://uuid@server:443?security=reality&amp;pbk=…#DE&#10;or one awgm-box outbound object"></textarea><span class="field-help">Supported links: hysteria2:// (hy2://), vless://, vmess://, trojan://, ss://, tuic://, socks5://, http://. The link is converted to an awgm-box outbound and checked by awgm-box before saving.</span></label>
+              <label class="span-2">Share link or sing-box JSON<textarea name="config" rows="6" required spellcheck="false" autocapitalize="off" placeholder="hysteria2://password@server:443?sni=server#NL&#10;vless://uuid@server:443?security=reality&amp;pbk=…#DE&#10;or one awgm-box outbound object"></textarea><span class="field-help">Supported links: hysteria2:// (hy2://), vless:// (incl. REALITY, XHTTP and VLESS Encryption), vmess://, trojan://, ss://, tuic://, socks5://, http://. Mieru, AmneziaWG, MASQUE and TrustTunnel are added as native awgm-box JSON. Everything is checked by awgm-box before saving.</span></label>
             </div>
             <label id="outboundSubscriptionRefreshField" class="check" hidden><input id="outboundSubscriptionRefresh" type="checkbox"> Refresh the selected server from its subscription daily</label>
             <div class="editor-actions"><button class="btn btn-secondary" type="button" data-cancel-editor>Cancel</button><button class="btn" type="submit" data-save-outbound>Save outbound</button></div>

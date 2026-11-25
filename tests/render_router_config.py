@@ -1,5 +1,8 @@
 """Render a router config like the one Mita runs, for `awgm-box check` in CI.
 
+Covers every outbound kind the panel accepts: share links (incl. XHTTP) and
+native JSON (mieru, AmneziaWG endpoint).
+
 Usage: python3 tests/render_router_config.py OUT_DIR
 
 Writes OUT_DIR/config.json plus the local rule-set file it references (under
@@ -12,6 +15,7 @@ import base64
 import importlib.util
 import json
 import sys
+import urllib.parse
 import uuid
 from pathlib import Path
 
@@ -36,6 +40,20 @@ SHARE_LINKS = {
         "net": "ws", "host": "cdn.example", "path": "/vm", "tls": "tls", "sni": "vmess.example",
     }).encode()).decode(),
     "socks": "socks5://user:pass@socks.example:1080#socks",
+    "xhttp": (f"vless://{UUID}@xhttp.example:443?security=tls&sni=xhttp.example&type=xhttp&path=%2Fx&mode=auto"
+              "&extra=" + urllib.parse.quote(json.dumps({"xmux": {"maxConcurrency": "16-32"},
+                                                       "xPaddingBytes": "100-1000"})) + "#xhttp"),
+}
+
+# Native awgm-box JSON for types without share links: a mieru outbound and an
+# AmneziaWG endpoint (it must land in "endpoints", with the userspace stack).
+WG_KEY = base64.b64encode(bytes(range(32, 64))).decode()
+NATIVE_OUTBOUNDS = {
+    "mieru": {"type": "mieru", "server": "mieru.example", "server_port": 2022, "transport": "TCP",
+              "username": "user", "password": "pass"},
+    "awg": {"type": "awg", "private_key": WG_KEY, "address": ["10.8.0.2/32"], "jc": 4, "jmin": 40, "jmax": 70,
+            "peers": [{"address": "awg.example", "port": 51820, "public_key": WG_KEY,
+                       "allowed_ips": ["0.0.0.0/0", "::/0"]}]},
 }
 
 
@@ -53,7 +71,7 @@ def render(out_dir):
     app.DATA_DIR = out_dir  # rule-set files land in out_dir/geo-cache/rules
 
     outbounds = []
-    for index, (name, link) in enumerate(SHARE_LINKS.items()):
+    for index, (name, link) in enumerate({**SHARE_LINKS, **NATIVE_OUTBOUNDS}.items()):
         outbound, _ = app.parse_outbound_config(link)
         outbounds.append({"name": name, "outbound": outbound, "port": app.SING_BOX_FIRST_PORT + index,
                           "password": f"local-{name}"})

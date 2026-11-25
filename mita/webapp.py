@@ -1879,7 +1879,9 @@ def subscription_refresh_due(binding, now):
     if not binding.get("refresh", True):
         return False
     try:
-        elapsed = now.timestamp() - datetime.fromisoformat(binding["checked_at"]).timestamp()
+        # utc_now() writes "...Z"; fromisoformat only accepts "Z" from Python 3.11.
+        checked = datetime.fromisoformat(str(binding["checked_at"]).replace("Z", "+00:00"))
+        elapsed = now.timestamp() - checked.timestamp()
     except (ValueError, TypeError, KeyError, OverflowError):
         return True
     delay = SUBSCRIPTION_RETRY_INTERVAL if binding.get("error") else SUBSCRIPTION_REFRESH_INTERVAL
