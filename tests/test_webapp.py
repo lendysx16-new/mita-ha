@@ -105,6 +105,79 @@ class AdminAPITests(unittest.TestCase):
         users[0]["allow_loopback_ip"] = True
         self.assertFalse(app.build_mita_config(users, app.get_settings())["users"][0]["allowLoopbackIP"])
 
+    def test_telegram_settings_and_test_message(self):
+        token = "123456:example-token"
+        path = Path(self.temp.name) / "notifications.json"
+        with mock.patch.object(app, "NOTIFICATIONS_PATH", path), mock.patch.dict(
+            app.os.environ, {"MITA_TELEGRAM_ENABLED": "false", "MITA_TELEGRAM_CHAT_ID": "",
+                             "MITA_TELEGRAM_BOT_TOKEN": ""}
+        ), mock.patch.object(app, "send_telegram_message") as send:
+            self.assertEqual(self.call("PUT", "/api/notifications", {"enabled": True}, auth=False)[0], 401)
+            self.assertEqual(self.call("PUT", "/api/notifications", {"enabled": True})[0], 400)
+            self.assertEqual(self.call("PUT", "/api/notifications", {
+                "enabled": True, "bot_token": token, "chat_id": "-100123"
+            }), (200, {"enabled": True, "has_bot_token": True, "chat_id": "-100123"}))
+            self.assertEqual(self.call("PUT", "/api/notifications", {"enabled": False})[0], 200)
+            self.assertEqual(self.call("GET", "/api/notifications"), (
+                200, {"enabled": False, "has_bot_token": True, "chat_id": "-100123"}
+            ))
+            self.assertEqual(self.call("POST", "/api/notifications/test", {}), (200, {"sent": True}))
+            send.assert_called_once_with({"enabled": False, "bot_token": token, "chat_id": "-100123"},
+                                         "Mita: Telegram test notification.")
+            send.side_effect = OSError("Telegram delivery failed")
+            self.assertEqual(self.call("POST", "/api/notifications/test", {})[0], 502)
+
+    def test_outbound_health_bus_publishes_transitions_and_channels_retry_independently(self):
+        bus = app.OutboundHealthEventBus()
+        telegram = mock.Mock(side_effect=[OSError(), None, None])
+        smtp = mock.Mock()
+        tg_channel = app.OutboundAlertChannel(telegram)
+        smtp_channel = app.OutboundAlertChannel(smtp)
+        for channel in (tg_channel, smtp_channel):
+            channel.configure({"enabled": True}, {"nl": {"ok": True}})
+            bus.subscribe(channel.on_health)
+        healthy, down = {"nl": {"ok": True}}, {"nl": {"ok": False}}
+        bus.update(healthy)
+        bus.update(down)
+        bus.update(down)
+        with self.assertRaises(OSError):
+            tg_channel.deliver()
+        smtp_channel.deliver()
+        smtp.assert_called_once_with({"enabled": True}, "Mita: outbound nl is down.")
+        bus.update(healthy)
+        bus.update(healthy)
+        tg_channel.deliver()
+        smtp_channel.deliver()
+        self.assertEqual([call.args[1] for call in telegram.call_args_list], [
+            "Mita: outbound nl is down.", "Mita: outbound nl is down.", "Mita: outbound nl has recovered.",
+        ])
+        self.assertEqual([call.args[1] for call in smtp.call_args_list], [
+            "Mita: outbound nl is down.", "Mita: outbound nl has recovered.",
+        ])
+
+    def test_smtp_settings_and_test_keep_credentials_private(self):
+        path = Path(self.temp.name) / "notifications.json"
+        smtp_path = "/api/notifications/smtp"
+        body = {"enabled": True, "host": "smtp.example.com", "port": 587, "security": "starttls",
+                "sender": "mita@example.com", "recipient": "admin@example.com",
+                "username": "mita", "password": "smtp-secret"}
+        with mock.patch.object(app, "NOTIFICATIONS_PATH", path), mock.patch.object(app.smtplib, "SMTP") as smtp:
+            self.assertEqual(self.call("PUT", smtp_path, {**body, "recipient": "bad-address"})[0], 400)
+            status, public = self.call("PUT", smtp_path, body)
+            self.assertEqual(status, 200)
+            self.assertNotIn("password", public)
+            self.assertTrue(public["has_password"])
+            self.assertEqual(self.call("PUT", "/api/notifications", {
+                "enabled": True, "bot_token": "123:example-token", "chat_id": "-100123",
+            })[0], 200)
+            self.assertEqual(self.call("GET", smtp_path), (200, public))
+            self.assertEqual(self.call("POST", smtp_path + "/test", {}), (200, {"sent": True}))
+            smtp.assert_called_once_with("smtp.example.com", 587, timeout=5)
+            client = smtp.return_value
+            self.assertEqual([call[0] for call in client.method_calls], ["starttls", "login", "send_message", "close"])
+            client.login.assert_called_once_with("mita", "smtp-secret")
+            self.assertEqual(client.send_message.call_args.args[0]["To"], "admin@example.com")
+
     @unittest.skipUnless(app.yaml, "PyYAML is required for Clash YAML import tests")
     def test_subscription_preview_requires_auth_and_imports_grouped_clash_servers(self):
         document = """

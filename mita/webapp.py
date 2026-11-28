@@ -15,6 +15,7 @@ import re
 import secrets
 import signal
 import shutil
+import smtplib
 import socket
 import ssl
 import subprocess
@@ -25,7 +26,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
 from datetime import datetime, timezone
+from email.errors import MessageError
+from email.headerregistry import Address
+from email.message import EmailMessage
 
 try:
     import psycopg2
@@ -44,6 +49,7 @@ from pathlib import Path
 DATA_DIR = Path("/data")
 USERS_PATH = DATA_DIR / "users.json"
 SETTINGS_PATH = DATA_DIR / "settings.json"
+NOTIFICATIONS_PATH = DATA_DIR / "notifications.json"
 MITA_CONFIG_PATH = DATA_DIR / "mita-server.json"
 SUBSCRIPTION_PAGE_PATH = Path("/app/subscription.html")
 MITA_LOG_PATH = DATA_DIR / "mita.log"
@@ -3014,18 +3020,223 @@ def check_all_outbounds():
         names = [entry["name"] for entry in outbound_entries(get_settings())]
     for stale in set(OUTBOUND_HEALTH) - set(names):
         OUTBOUND_HEALTH.pop(stale, None)
+    results = {}
     for name in names:
-        check_outbound(name)
+        result = check_outbound(name)
+        if result is not None:
+            results[name] = result
+    return results
+
+
+def notification_settings():
+    settings = load_json(NOTIFICATIONS_PATH, {}, strict=True)
+    if not isinstance(settings, dict):
+        raise StateError("notifications.json has an invalid structure")
+    return settings
+
+
+def telegram_settings(settings=None):
+    if settings is None:
+        settings = notification_settings()
+    return {
+        "enabled": settings.get("enabled", os.environ.get("MITA_TELEGRAM_ENABLED", "").lower() == "true"),
+        "bot_token": settings.get("bot_token", os.environ.get("MITA_TELEGRAM_BOT_TOKEN", "").strip()),
+        "chat_id": settings.get("chat_id", os.environ.get("MITA_TELEGRAM_CHAT_ID", "").strip()),
+    }
+
+
+def public_telegram_settings(settings):
+    return {"enabled": settings["enabled"], "chat_id": settings["chat_id"],
+            "has_bot_token": bool(settings["bot_token"])}
+
+
+def validate_telegram_settings(settings, require_credentials=False):
+    token, chat_id = settings["bot_token"], settings["chat_id"]
+    if not isinstance(token, str) or (token and not re.fullmatch(r"[0-9]{1,20}:[A-Za-z0-9_-]{1,128}", token)):
+        raise ValueError("invalid Telegram bot token")
+    if not isinstance(chat_id, str) or (chat_id and not re.fullmatch(r"-?[1-9][0-9]{0,19}|@[A-Za-z0-9_]{1,32}", chat_id)):
+        raise ValueError("enter a numeric Telegram chat ID or a public channel @username")
+    if (settings["enabled"] or require_credentials) and (not token or not chat_id):
+        raise ValueError("a Telegram bot token and chat ID are required")
+
+
+def send_telegram_message(settings, message):
+    validate_telegram_settings(settings, require_credentials=True)
+    conn = HTTPSConnection("api.telegram.org", timeout=5)
+    try:
+        conn.request("POST", f"/bot{settings['bot_token']}/sendMessage",
+                     json.dumps({"chat_id": settings["chat_id"], "text": message}),
+                     {"Content-Type": "application/json"})
+        response = conn.getresponse()
+        payload = json.loads(response.read(65536)) if response.status == 200 else None
+    except (OSError, HTTPException, ValueError):
+        # Avoid logging transport exceptions that could include the request path and token.
+        raise OSError("Telegram delivery failed. Check the bot token, chat ID, bot permissions and server connectivity.") from None
+    finally:
+        conn.close()
+    if response.status != 200:
+        raise OSError(f"Telegram rejected the message (HTTP {response.status}). Check the bot token, chat ID and bot permissions.")
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        raise OSError("Telegram did not confirm delivery")
+
+
+SMTP_DEFAULTS = {
+    "enabled": False, "host": "", "port": 587, "security": "starttls",
+    "username": "", "password": "", "sender": "", "recipient": "",
+}
+
+
+def smtp_settings(settings=None):
+    if settings is None:
+        settings = notification_settings()
+    saved = settings.get("smtp", {})
+    if not isinstance(saved, dict):
+        raise StateError("notifications.json has invalid SMTP settings")
+    return {key: saved.get(key, default) for key, default in SMTP_DEFAULTS.items()}
+
+
+def public_smtp_settings(settings):
+    return {**{key: value for key, value in settings.items() if key != "password"},
+            "has_password": bool(settings["password"])}
+
+
+def validate_smtp_settings(settings, require_server=False):
+    host = settings["host"]
+    if host and not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", host):
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError:
+            raise ValueError("enter an SMTP hostname or IP address") from None
+    if settings["security"] not in ("starttls", "tls"):
+        raise ValueError("SMTP security must be STARTTLS or TLS")
+    for field in ("sender", "recipient"):
+        value = settings[field]
+        if value:
+            try:
+                address = Address(addr_spec=value)
+                if not address.username or not address.domain:
+                    raise ValueError
+            except (ValueError, MessageError):
+                raise ValueError(f"enter a single valid email address for {field}") from None
+    if settings["enabled"] or require_server:
+        if not (host and settings["sender"] and settings["recipient"]):
+            raise ValueError("SMTP host, sender and recipient are required")
+        if bool(settings["username"]) != bool(settings["password"]):
+            raise ValueError("SMTP authentication requires both username and password")
+
+
+def send_smtp_message(settings, message):
+    validate_smtp_settings(settings, require_server=True)
+    email = EmailMessage()
+    email["Subject"] = message
+    email["From"] = settings["sender"]
+    email["To"] = settings["recipient"]
+    email.set_content(message)
+    context = ssl.create_default_context()
+    host, port = settings["host"], settings["port"]
+    client = None
+    try:
+        if settings["security"] == "tls":
+            client = smtplib.SMTP_SSL(host, port, timeout=5, context=context)
+        else:
+            client = smtplib.SMTP(host, port, timeout=5)
+            client.starttls(context=context)
+        if settings["username"]:
+            client.login(settings["username"], settings["password"])
+        client.send_message(email)
+    except smtplib.SMTPAuthenticationError:
+        raise OSError("SMTP authentication failed. Check the username and password.") from None
+    except (OSError, UnicodeError, ValueError):
+        raise OSError("SMTP delivery failed. Check the server, port, TLS mode and email addresses.") from None
+    finally:
+        if client is not None:
+            with contextlib.suppress(OSError):
+                client.close()
+
+
+class OutboundHealthEventBus:
+    def __init__(self):
+        self.down = set()
+        self.subscribers = []
+
+    def subscribe(self, handler):
+        self.subscribers.append(handler)
+
+    def update(self, results):
+        down = {name for name, result in results.items() if not result["ok"]}
+        for name in sorted((down ^ self.down) & results.keys()):
+            for handler in self.subscribers:
+                handler(name, name in down)
+        self.down = down
+
+
+class OutboundAlertChannel:
+    def __init__(self, send):
+        self.send = send
+        self.settings = None
+        self.down = set()
+        self.pending = deque(maxlen=256)
+
+    def configure(self, settings, results):
+        active = settings if settings["enabled"] else None
+        if active != self.settings:
+            self.settings = active
+            self.pending.clear()
+            self.down.clear()
+            for name, result in sorted(results.items()):
+                if not result["ok"]:
+                    self.on_health(name, True)
+        self.down.intersection_update(results)
+
+    def on_health(self, name, down):
+        if self.settings is None or down == (name in self.down):
+            return
+        if down:
+            self.down.add(name)
+        else:
+            self.down.remove(name)
+        self.pending.append((name, down))
+
+    def deliver(self):
+        while self.pending:
+            name, down = self.pending[0]
+            status = "is down" if down else "has recovered"
+            self.send(self.settings, f"Mita: outbound {name} {status}.")
+            self.pending.popleft()
 
 
 def outbound_health_worker(stop_event):
     delay = 15  # first check shortly after sing-box starts
+    bus = OutboundHealthEventBus()
+    channels = [
+        ("Telegram", telegram_settings, OutboundAlertChannel(send_telegram_message)),
+        ("SMTP", smtp_settings, OutboundAlertChannel(send_smtp_message)),
+    ]
+    for _, _, channel in channels:
+        bus.subscribe(channel.on_health)
     while not stop_event.wait(delay):
         delay = HEALTH_INTERVAL
         try:
-            check_all_outbounds()
+            results = check_all_outbounds()
         except (StateError, ValueError, OSError) as exc:
             print(f"[web] outbound health check failed: {exc}", flush=True)
+            continue
+        ready = []
+        for name, load, channel in channels:
+            try:
+                channel.configure(load(), results)
+            except (StateError, ValueError, OSError):
+                print(f"[web] Could not load {name} notification settings", flush=True)
+                continue
+            ready.append((name, channel))
+        bus.update(results)
+        for name, channel in ready:
+            if stop_event.is_set():
+                return
+            try:
+                channel.deliver()
+            except (StateError, ValueError, OSError):
+                print(f"[web] {name} outbound notification failed; retrying on the next health check", flush=True)
 
 
 def public_outbound(entry):
@@ -4092,6 +4303,12 @@ ADMIN_ROUTES = [
     ("PATCH", USER, "update_user"),
     ("PUT", USER + r"/device-settings", "update_user"),  # kept for older UI builds
     ("PUT", r"/api/settings", "update_settings"),
+    ("GET", r"/api/notifications", "get_notifications"),
+    ("PUT", r"/api/notifications", "update_notifications"),
+    ("POST", r"/api/notifications/test", "test_notification"),
+    ("GET", r"/api/notifications/smtp", "get_smtp_notifications"),
+    ("PUT", r"/api/notifications/smtp", "update_smtp_notifications"),
+    ("POST", r"/api/notifications/smtp/test", "test_smtp_notification"),
     ("POST", r"/api/outbounds", "add_outbound"),
     ("POST", r"/api/outbound-subscription", "outbound_subscription"),
     ("POST", r"/api/outbound-candidate/test", "test_outbound_candidate"),
@@ -4223,6 +4440,62 @@ class AdminHandler(CommonHandler):
 
     def route_get_backup(self):
         return HTTPStatus.OK, {"status": get_backup_status()}
+
+    def route_get_notifications(self):
+        return HTTPStatus.OK, public_telegram_settings(telegram_settings())
+
+    def route_update_notifications(self):
+        body = self.read_json()
+        with LOCK:
+            saved = notification_settings()
+            settings = telegram_settings(saved)
+            settings["enabled"] = parse_bool(body, "enabled", settings["enabled"])
+            for key in ("bot_token", "chat_id"):
+                if key in body:
+                    if not isinstance(body[key], str):
+                        raise ValueError(f"{key} must be a string")
+                    settings[key] = body[key].strip()
+            validate_telegram_settings(settings)
+            write_json(NOTIFICATIONS_PATH, {**saved, **settings})
+        return HTTPStatus.OK, public_telegram_settings(settings)
+
+    def route_test_notification(self):
+        self.read_json()
+        try:
+            send_telegram_message(telegram_settings(), "Mita: Telegram test notification.")
+        except OSError as exc:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, str(exc)) from None
+        return HTTPStatus.OK, {"sent": True}
+
+    def route_get_smtp_notifications(self):
+        return HTTPStatus.OK, public_smtp_settings(smtp_settings())
+
+    def route_update_smtp_notifications(self):
+        body = self.read_json()
+        with LOCK:
+            saved = notification_settings()
+            settings = smtp_settings(saved)
+            settings["enabled"] = parse_bool(body, "enabled", settings["enabled"])
+            settings["port"] = parse_int(body, "port", settings["port"], 1, 65535)
+            for key in ("host", "security", "username", "password", "sender", "recipient"):
+                if key in body:
+                    value = body[key]
+                    if not isinstance(value, str) or len(value) > 1024 or any(c in value for c in "\r\n\x00"):
+                        raise ValueError(f"invalid SMTP {key}")
+                    settings[key] = value if key == "password" else value.strip()
+            if "username" in body and not settings["username"] and "password" not in body:
+                settings["password"] = ""
+            validate_smtp_settings(settings)
+            write_json(NOTIFICATIONS_PATH, {**saved, "smtp": settings})
+        return HTTPStatus.OK, public_smtp_settings(settings)
+
+    def route_test_smtp_notification(self):
+        self.read_json()
+        try:
+            send_smtp_message(smtp_settings(), "Mita: SMTP test notification.")
+        except OSError as exc:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, str(exc)) from None
+        return HTTPStatus.OK, {"sent": True}
 
     # ----- users -----
     def route_create_user(self):

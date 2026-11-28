@@ -18,6 +18,7 @@ jobs:
         run: python3 -m unittest discover -s tests -v
       - name: Shell syntax and offline Linux installer checks
         run: |
+          bash -n scripts/deploy-compose.sh
           bash -n mita/run-backend.sh
           sh -n hysteria/watch.sh
           bash -n mita/install-linux.sh
@@ -135,3 +136,51 @@ jobs:
           check_acl reject --ipv4 10.0.0.1 --auth alice 10.0.0.1:80
           check_acl router --ipv4 10.0.0.1 --auth bob 10.0.0.1:80
           check_acl reject --ipv4 127.0.0.1 --auth bob 127.0.0.1:80
+
+  deploy:
+    name: Deploy production
+    needs: validate
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    concurrency:
+      group: mita-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Update Docker Compose on the server
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/mita-ha' }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_SSH_KEY:?Set the DEPLOY_SSH_KEY secret}"
+          : "${DEPLOY_KNOWN_HOSTS:?Set the DEPLOY_KNOWN_HOSTS secret}"
+          if [[ ! "$DEPLOY_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ||
+                ! "$DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ||
+                ! "$DEPLOY_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( DEPLOY_PORT > 65535 )); then
+            echo "::error::Set a valid DEPLOY_HOST, DEPLOY_USER and DEPLOY_PORT"
+            exit 1
+          fi
+          if [[ ! "$DEPLOY_PATH" =~ ^/[A-Za-z0-9_./-]+$ || ! "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "::error::Invalid deployment path or commit"
+            exit 1
+          fi
+          umask 077
+          ssh_dir=$(mktemp -d)
+          trap 'rm -f -- "$ssh_dir/key" "$ssh_dir/known_hosts"; rmdir -- "$ssh_dir"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$ssh_dir/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          ssh -T -i "$ssh_dir/key" -l "$DEPLOY_USER" -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$ssh_dir/known_hosts" -o GlobalKnownHostsFile=/dev/null \
+            -o ConnectTimeout=15 -o ServerAliveInterval=30 \
+            -- "$DEPLOY_HOST" bash -s -- "$DEPLOY_PATH" "$GITHUB_SHA" < scripts/deploy-compose.sh

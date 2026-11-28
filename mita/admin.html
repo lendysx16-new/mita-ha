@@ -353,6 +353,7 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
       <a class="tab" href="#/traffic" data-tab="trafficTab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="m7 16 4-5 4 3 5-7"/></svg>Traffic</a>
       <a class="tab" href="#/outbounds" data-tab="outboundsTab" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg>Outbounds</a>
       <a class="tab" href="#/routing" data-tab="routingTab" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M8 6h3a3 3 0 0 1 3 3v0a3 3 0 0 0 3 3M8 18h3a3 3 0 0 0 3-3v0a3 3 0 0 1 3-3"/></svg>Routing</a>
+      <a class="tab" href="#/notifications" data-tab="notificationsTab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9m-8 12a2 2 0 0 0 4 0"/></svg>Notifications</a>
       <a class="tab" href="#/settings" data-tab="confTab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2" fill="var(--card)"/><circle cx="15" cy="17" r="2" fill="var(--card)"/></svg>Settings</a>
     </nav>
     <div class="sidebar-footer"><div class="connection"><span class="status-dot"></span>Local admin panel</div><small class="muted">Signed in as admin</small></div>
@@ -554,6 +555,44 @@ dialog form { display: grid; gap: 10px; padding: 22px; }
         </section>
       </div>
 
+      <div id="notificationsTab" class="tab-panel settings-stack" aria-label="Notifications">
+        <form class="card" id="telegramForm" autocomplete="off">
+          <div class="card-header"><div><h2>Telegram</h2><p class="card-subtitle">Get alerts when an outbound goes down or recovers.</p></div></div>
+          <div class="card-body"><div class="form-grid">
+            <label class="span-2"><span><input id="telegramEnabled" type="checkbox" disabled> Enable outage alerts</span></label>
+            <label>Bot token<input id="telegramToken" type="password" autocomplete="new-password" spellcheck="false" disabled>
+              <span class="field-help" id="telegramTokenHint">Create a bot with @BotFather to get its token.</span></label>
+            <label>Chat ID<input id="telegramChat" placeholder="-1001234567890 or @channel" spellcheck="false" disabled>
+              <span class="field-help">Start the bot in a private chat or give it permission to post in the target chat.</span></label>
+          </div></div>
+          <div class="card-actions">
+            <button id="testTelegram" class="btn btn-secondary" type="button" disabled>Send test to saved chat</button>
+            <button id="saveTelegram" class="btn" type="submit" disabled>Save Telegram settings</button>
+          </div>
+        </form>
+        <form class="card" id="smtpForm" autocomplete="off">
+          <div class="card-header"><div><h2>Email (SMTP)</h2><p class="card-subtitle">Get alerts when an outbound goes down or recovers.</p></div></div>
+          <div class="card-body"><div class="form-grid">
+            <label class="span-2"><span><input name="enabled" type="checkbox" disabled> Enable email alerts</span></label>
+            <label>SMTP host<input name="host" placeholder="smtp.example.com" spellcheck="false" disabled></label>
+            <label>SMTP port<input name="port" type="number" min="1" max="65535" value="587" required disabled></label>
+            <label class="span-2">Connection security<select name="security" disabled>
+              <option value="starttls">STARTTLS (usually port 587)</option>
+              <option value="tls">TLS (usually port 465)</option>
+            </select></label>
+            <label>Username<input name="username" spellcheck="false" disabled></label>
+            <label>Password<input name="password" type="password" autocomplete="new-password" disabled>
+              <span class="field-help" id="smtpPasswordHint">Leave username and password blank if your mail server does not require login.</span></label>
+            <label>Sender email<input name="sender" type="email" placeholder="mita@example.com" disabled></label>
+            <label>Recipient email<input name="recipient" type="email" placeholder="admin@example.com" disabled></label>
+          </div></div>
+          <div class="card-actions">
+            <button id="testSmtp" class="btn btn-secondary" type="button" disabled>Send test email</button>
+            <button id="saveSmtp" class="btn" type="submit" disabled>Save SMTP settings</button>
+          </div>
+        </form>
+      </div>
+
       <div id="confTab" class="tab-panel settings-stack" aria-label="Settings">
         <form class="card" id="connectionForm">
           <div class="card-header"><div><h2>Public connection</h2><p class="card-subtitle">Host and subscription URL shared with clients.</p></div></div>
@@ -665,6 +704,12 @@ const api = {
   restartMita: () => request('api/mita/restart', {method: 'POST', body: {}}),
   testOutbound: name => request('api/outbounds/' + encodeURIComponent(name) + '/test', {method: 'POST', body: {}}),
   saveSettings: body => request('api/settings', {method: 'PUT', body}),
+  telegramSettings: () => request('api/notifications'),
+  saveTelegram: body => request('api/notifications', {method: 'PUT', body}),
+  testTelegram: () => request('api/notifications/test', {method: 'POST', body: {}}),
+  smtpSettings: () => request('api/notifications/smtp'),
+  saveSmtp: body => request('api/notifications/smtp', {method: 'PUT', body}),
+  testSmtp: () => request('api/notifications/smtp/test', {method: 'POST', body: {}}),
 };
 
 /* ---------- Feedback ---------- */
@@ -764,6 +809,7 @@ const VIEWS = {
   trafficTab: {slug: 'traffic', title: 'Traffic', description: 'Per-user and per-device transfer statistics.'},
   outboundsTab: {slug: 'outbounds', title: 'Outbounds', description: 'Provider servers, run through the bundled awgm-box.'},
   routingTab: {slug: 'routing', title: 'Routing', description: 'Domain lists bound to saved outbounds, checked top to bottom.'},
+  notificationsTab: {slug: 'notifications', title: 'Notifications', description: 'Manage outbound health alerts.'},
   confTab: {slug: 'settings', title: 'Settings', description: 'Public connection, logging and backups.'},
 };
 const ROUTING_TABS = ['outboundsTab', 'routingTab'];
@@ -794,6 +840,10 @@ function setTab(id) {
   if (location.hash !== hash) location.hash = hash;
   if (id === 'trafficTab') loadTraffic();
   if (id === 'confTab') loadStatuses();
+  if (id === 'notificationsTab') {
+    loadTelegramSettings();
+    loadSmtpSettings();
+  }
   syncPolling();
 }
 function openUser(username) {
@@ -1072,6 +1122,88 @@ async function loadBackupStatus() {
   }
 }
 const loadStatuses = () => Promise.all([loadLogDbStatus(), loadBackupStatus()]);
+
+function fillTelegramSettings(settings) {
+  $('#telegramEnabled').checked = settings.enabled;
+  $('#telegramToken').value = '';
+  $('#telegramTokenHint').textContent = settings.has_bot_token
+    ? 'Token saved. Leave this field blank to keep it.'
+    : 'Create a bot with @BotFather to get its token.';
+  $('#telegramChat').value = settings.chat_id;
+  $('#testTelegram').disabled = !settings.has_bot_token || !settings.chat_id;
+}
+
+let telegramLoaded = false;
+async function loadTelegramSettings() {
+  if (telegramLoaded) return;
+  await run(null, async () => {
+    fillTelegramSettings(await api.telegramSettings());
+    for (const id of ['telegramEnabled', 'telegramToken', 'telegramChat', 'saveTelegram']) {
+      $('#' + id).disabled = false;
+    }
+    telegramLoaded = true;
+  });
+}
+
+$('#telegramForm').addEventListener('submit', e => {
+  e.preventDefault();
+  if (!telegramLoaded) return;
+  return run($('#saveTelegram'), async () => {
+    const body = {enabled: $('#telegramEnabled').checked, chat_id: $('#telegramChat').value.trim()};
+    const token = $('#telegramToken').value.trim();
+    if (token) body.bot_token = token;
+    fillTelegramSettings(await api.saveTelegram(body));
+    toast('Telegram settings saved', 'success');
+  });
+});
+
+$('#testTelegram').addEventListener('click', () => run($('#testTelegram'), async () => {
+  await api.testTelegram();
+  toast('Test message sent to Telegram', 'success');
+}));
+
+const SMTP_FIELDS = ['host', 'port', 'security', 'username', 'sender', 'recipient'];
+let smtpLoaded = false;
+function fillSmtpSettings(settings) {
+  const fields = $('#smtpForm').elements;
+  for (const key of SMTP_FIELDS) fields[key].value = settings[key];
+  fields.enabled.checked = settings.enabled;
+  fields.password.value = '';
+  $('#smtpPasswordHint').textContent = settings.has_password
+    ? 'Password saved. Leave it blank to keep it, or clear the username to remove SMTP login.'
+    : 'Leave username and password blank if your mail server does not require login.';
+  $('#testSmtp').disabled = !(settings.host && settings.sender && settings.recipient);
+}
+
+async function loadSmtpSettings() {
+  if (smtpLoaded) return;
+  await run(null, async () => {
+    fillSmtpSettings(await api.smtpSettings());
+    const fields = $('#smtpForm').elements;
+    for (const key of [...SMTP_FIELDS, 'enabled', 'password']) fields[key].disabled = false;
+    $('#saveSmtp').disabled = false;
+    smtpLoaded = true;
+  });
+}
+
+$('#smtpForm').addEventListener('submit', e => {
+  e.preventDefault();
+  if (!smtpLoaded) return;
+  return run($('#saveSmtp'), async () => {
+    const fields = $('#smtpForm').elements;
+    const body = Object.fromEntries(SMTP_FIELDS.map(key => [key, fields[key].value.trim()]));
+    body.port = Number(body.port);
+    body.enabled = fields.enabled.checked;
+    if (fields.password.value) body.password = fields.password.value;
+    fillSmtpSettings(await api.saveSmtp(body));
+    toast('SMTP settings saved', 'success');
+  });
+});
+
+$('#testSmtp').addEventListener('click', () => run($('#testSmtp'), async () => {
+  await api.testSmtp();
+  toast('Test email sent', 'success');
+}));
 
 function fillSettings(s) {
   $('#host').value = s.public_mieru_host || '';

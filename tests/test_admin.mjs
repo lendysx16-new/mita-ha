@@ -35,16 +35,17 @@ function setup(overrides = {}) {
         hidden: false, value: '', textContent: '', innerHTML: '', dataset: {},
         style: {}, onclick: null, disabled: false,
         classList: { active: false, toggle(name, value) { if (name === 'active') this.active = value; } },
-        addEventListener() {}, querySelectorAll() { return []; },
+        listeners: {}, addEventListener(event, callback) { this.listeners[event] = callback; },
+        querySelectorAll() { return []; },
         scrollIntoView() {}, focus() {}, setAttribute() {},
       };
       values.set(key, node);
     }
     return values.get(key);
   }
-  const panels = ['usersTab','userDetailTab','devicesTab','trafficTab','confTab']
+  const panels = ['usersTab','userDetailTab','devicesTab','trafficTab','notificationsTab','confTab']
     .map((id, index) => ({ id, classList: { active: index === 0, toggle(name, value) { if(name === 'active') this.active=value; } } }));
-  const tabs = ['usersTab','devicesTab','trafficTab','confTab'].map(tab=>({
+  const tabs = ['usersTab','devicesTab','trafficTab','notificationsTab','confTab'].map(tab=>({
     dataset: {tab}, classList: { active: false, toggle(name,value) { if(name==='active')this.active=value; } },
     setAttribute() {},
   }));
@@ -85,6 +86,46 @@ function setup(overrides = {}) {
   vm.runInContext(script, ctx, {filename:'admin.html'});
   return { ctx, element, panels, tabs, state };
 }
+
+test('Notifications loads and saves both channels without resending stored credentials', async () => {
+  const {ctx, element, panels} = setup();
+  await ctx.load();
+  const requests = [];
+  const smtp = {enabled: true, host: 'smtp.example.com', port: 587, security: 'starttls',
+    username: 'mita', has_password: true, sender: 'mita@example.com', recipient: 'admin@example.com'};
+  const fields = Object.fromEntries(['enabled', 'host', 'port', 'security', 'username', 'password', 'sender', 'recipient']
+    .map(name => [name, {value: '', checked: false}]));
+  element('#smtpForm').elements = fields;
+  ctx.fetch = async (url, options) => {
+    requests.push([String(url), options]);
+    return {ok: true, json: async () => String(url).includes('/smtp') ? smtp :
+      {enabled: true, has_bot_token: true, chat_id: '-100123'}};
+  };
+  // Wait for the settings fetch triggered by the route.
+  ctx.location.hash = '#/notifications';
+  ctx.applyRoute();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(panels.find(p => p.id === 'notificationsTab').classList.active, true);
+  assert.equal(element('#telegramEnabled').checked, true);
+  assert.equal(element('#telegramToken').value, '');
+  assert.equal(element('#telegramChat').value, '-100123');
+  assert.match(element('#telegramTokenHint').textContent, /Token saved/);
+  await element('#telegramForm').listeners.submit({preventDefault() {}});
+  await element('#testTelegram').listeners.click();
+  assert.equal(fields.recipient.value, 'admin@example.com');
+  assert.equal(fields.password.value, '');
+  fields.port.value = '587';
+  await element('#smtpForm').listeners.submit({preventDefault() {}});
+  await element('#testSmtp').listeners.click();
+  assert.deepEqual(requests.map(([url, options]) => [new URL(url).pathname, options.method]), [
+    ['/api/notifications', 'GET'], ['/api/notifications/smtp', 'GET'],
+    ['/api/notifications', 'PUT'], ['/api/notifications/test', 'POST'],
+    ['/api/notifications/smtp', 'PUT'], ['/api/notifications/smtp/test', 'POST'],
+  ]);
+  assert.deepEqual(JSON.parse(requests[2][1].body), {enabled: true, chat_id: '-100123'});
+  const {has_password: _, ...expectedSmtp} = smtp;
+  assert.deepEqual(JSON.parse(requests[4][1].body), expectedSmtp);
+});
 
 test('user directory hides tokens; profile and device table link to owner', async () => {
   const {ctx,element,panels,tabs} = setup();

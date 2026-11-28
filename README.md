@@ -114,6 +114,28 @@ All in the admin panel; changes apply without restarting the server unless the p
 3. If a yellow **Restart Mita** bar appears, press it (needed after adding/removing outbounds).
 4. Optional per user: **Users → user → Outbound for PROXY**.
 
+## Optional: outbound health alerts
+
+In **Notifications → Telegram**, enter a bot token from [@BotFather](https://t.me/BotFather)
+and the destination chat ID (or a public channel's `@username`). Start the bot in a private
+chat or grant it permission to post in the target chat. Enable the alerts, save, then use
+**Send test to saved chat** to verify delivery. The backend needs HTTPS access to
+`api.telegram.org`.
+
+In **Notifications → Email (SMTP)**, set the SMTP host, port, TLS mode, sender and
+recipient. Supply a username and password if the server requires authentication.
+Save, then use **Send test email** to verify the saved settings.
+
+The outbound probe runs every five minutes. Each enabled channel sends a message when an
+outbound goes down and another when it recovers. Failed deliveries retry on the next
+check independently for each channel. Each channel holds up to 256 pending alerts in
+memory. An ongoing outage can be reported again after a backend restart.
+
+Compose can supply defaults through `MITA_TELEGRAM_ENABLED=true`,
+`MITA_TELEGRAM_BOT_TOKEN`, and `MITA_TELEGRAM_CHAT_ID` in `.env`. Settings saved in
+the admin panel take precedence. Telegram and SMTP settings apply without a restart
+and are stored in the backend data volume outside the PostgreSQL backup.
+
 ## Optional: PostgreSQL backups
 
 Set the connection in **Settings → Server settings** (or `MITA_POSTGRES_DSN` in `.env` before the
@@ -140,6 +162,35 @@ docker compose up -d --build
 docker compose --profile hysteria2 up -d   # only if Hysteria is used
 ```
 Data, users and subscription links are kept in the `mita-data` volume.
+
+### Automatic deployment from GitHub Actions
+
+The **Validate** workflow deploys pushes to `main` after CI passes. You can also run it
+manually on `main`. The runner connects to the existing server over SSH and updates
+its Compose checkout to the exact commit CI tested. The deploy job stays disabled
+until the `DEPLOY_ENABLED` repository variable is set to `true`.
+
+In **Settings → Secrets and variables → Actions** add these repository variables:
+
+| Variable | Value |
+|---|---|
+| `DEPLOY_HOST` | Reachable SSH hostname or IP of the server |
+| `DEPLOY_USER` | SSH account with write access to the checkout and permission to run Docker Compose |
+| `DEPLOY_PORT` | Optional SSH port, defaults to `22` |
+| `DEPLOY_PATH` | Optional absolute checkout path, defaults to `/opt/mita-ha` |
+| `DEPLOY_ENABLED` | Set to `true` after adding the SSH secrets |
+
+Add two repository secrets:
+
+| Secret | Value |
+|---|---|
+| `DEPLOY_SSH_KEY` | Private key without a passphrase for this workflow. Install its public key in the deploy user's `authorized_keys`. |
+| `DEPLOY_KNOWN_HOSTS` | Verified server SSH host key line. Use `host ssh-ed25519 …` for port 22 or `[host]:port ssh-ed25519 …` for another port. Get the host public key from the server's console or another trusted connection. |
+
+The Actions runner must be able to reach SSH. The server needs a clean checkout on
+`main` with `origin` pointing to this repository and a readable `.env` from the
+setup above. Keep the application's secrets in that server file. If the server uses
+Hysteria 2, add `COMPOSE_PROFILES=hysteria2` there so deployment updates it too.
 
 ## Reference
 
