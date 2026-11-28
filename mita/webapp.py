@@ -5015,7 +5015,7 @@ class Server(ThreadingHTTPServer):
 def serve():
     admin_host = "127.0.0.1"  # reach it through an SSH tunnel
     admin = Server((admin_host, ADMIN_PORT), AdminHandler)
-    sub = Server(("0.0.0.0", SUB_PORT), SubscriptionHandler)
+    sub = Server(("127.0.0.1", SUB_PORT), SubscriptionHandler)
     hy2_auth = Server(("127.0.0.1", HY2_AUTH_PORT), HysteriaAuthHandler)
 
     stop_bridge = threading.Event()
@@ -5042,7 +5042,7 @@ def serve():
         threading.Thread(target=outbound_health_worker, args=(stop_bridge,), name="outbound-health", daemon=True).start()
         threading.Thread(target=subscription_refresh_worker, args=(stop_bridge,), name="outbound-subscriptions", daemon=True).start()
     print(f"[web] admin UI listening on {admin_host}:{ADMIN_PORT}", flush=True)
-    print("[web] subscription server listening on 8099", flush=True)
+    print(f"[web] subscription server listening on 127.0.0.1:{SUB_PORT}", flush=True)
     try:
         admin.serve_forever()
     finally:
