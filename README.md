@@ -201,6 +201,7 @@ Hysteria 2, add `COMPOSE_PROFILES=hysteria2` there so deployment updates it too.
 | `MITA_ADMIN_PASSWORD` | yes | admin panel password, ≥ 24 characters |
 | `MITA_PUBLIC_HOST` | first start | public host of the Mieru server |
 | `MITA_PUBLIC_PORT` | first start | public TCP port of Mieru (default `2022`) |
+| `MITA_MIERU_LISTEN_PORTS` | no | Comma-separated TCP ports to bind on the server (default `2022`) |
 | `MITA_SUBSCRIPTION_BASE_URL` | first start | public HTTPS base of subscription links |
 | `MITA_POSTGRES_DSN` | no | PostgreSQL connection for backups and logs |
 | `MITA_HY2_HOST`, `MITA_HY2_PORT` | no | Hysteria defaults (editable in the panel) |

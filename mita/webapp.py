@@ -818,6 +818,16 @@ def env_public_port():
     return port
 
 
+def mieru_listen_ports():
+    ports = {}
+    for value in os.environ.get("MITA_MIERU_LISTEN_PORTS", "2022").split(","):
+        value = value.strip()
+        if not re.fullmatch(r"[0-9]{1,5}", value) or not 1 <= int(value) <= 65535:
+            raise StateError("MITA_MIERU_LISTEN_PORTS must be a comma-separated list of TCP ports")
+        ports[int(value)] = None
+    return ports.keys()
+
+
 def env_hysteria_port():
     try:
         port = int(os.environ.get("MITA_HY2_PORT", "443"))
@@ -3392,7 +3402,7 @@ def build_mita_config(users, settings):
             })
 
     config = {
-        "portBindings": [{"port": 2022, "protocol": "TCP"}],
+        "portBindings": [{"port": port, "protocol": "TCP"} for port in mieru_listen_ports()],
         "users": mita_users,
         "loggingLevel": settings.get("log_level", "INFO"),
         "dns": {"dualStack": dns_policy},
