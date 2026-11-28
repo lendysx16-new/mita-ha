@@ -33,12 +33,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 ARG TARGETARCH
 RUN case "${TARGETARCH}" in \
-      amd64) asset="linux-amd64"; checksum="d8438f3ed030a5b964b23175c870b3749ecff9b844f48fe96723cfcd11e16f8d" ;; \
-      arm64) asset="aarch64-3.10"; checksum="e286e0704ac4daf9b0039f0fce5d6b9fc0dcf1b0ad5092615ee037eeac580dfd" ;; \
+      amd64) asset="linux-amd64"; checksum="98a488249c6fba17312a301160b0dcf75485f8a858b7146d269e8fe1a3860580" ;; \
+      arm64) asset="aarch64-3.10"; checksum="77fd534384bba1e8cc02d12d060c6d16fe49c492e78a887472d587de7d5ddd80" ;; \
       *) echo "Unsupported awgm-box architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
     && curl -fL --retry 3 -o /tmp/awgm-box \
-       "https://github.com/hoaxisr/awgm-box/releases/download/42/awgm-box-42-${asset}" \
+       "https://github.com/hoaxisr/awgm-box/releases/download/48/awgm-box-48-${asset}" \
     && echo "${checksum}  /tmp/awgm-box" | sha256sum -c - \
     && install -m 0755 /tmp/awgm-box /usr/local/bin/awgm-box
 

@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Update the bundled awgm-box from release 42 to 48 for amd64 and arm64, with pinned SHA-256 checksums.
 - Split the Mieru server and Python backend into separate Docker Compose containers using the existing shared data volume and a local Unix control socket. The backend still manages the outbound-only awgm-box process.
 - Add optional Hysteria 2.14 inbound in its own container, configured from the admin panel and published alongside Mieru in the same Mihomo subscription.
 - Reuse legacy/HWID device credentials through local HTTP authentication. Hysteria ACL forwards through the existing awgm-box router and retains per-account outbound overrides, LAN access, and loopback blocking.
